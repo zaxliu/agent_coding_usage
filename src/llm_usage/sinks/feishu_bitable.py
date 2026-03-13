@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 
 import requests
 
@@ -14,6 +15,50 @@ class SyncResult:
     created: int
     updated: int
     failed: int
+
+
+def fetch_tenant_access_token(
+    app_id: str,
+    app_secret: str,
+    request_timeout_sec: int = 20,
+) -> str:
+    resp = requests.post(
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        json={"app_id": app_id, "app_secret": app_secret},
+        timeout=request_timeout_sec,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if payload.get("code", 0) != 0:
+        raise RuntimeError(f"feishu auth error: {payload}")
+    token = payload.get("tenant_access_token")
+    if not isinstance(token, str) or not token.strip():
+        raise RuntimeError(f"feishu auth token missing: {payload}")
+    return token
+
+
+def fetch_first_table_id(
+    app_token: str,
+    bot_token: str,
+    request_timeout_sec: int = 20,
+) -> str:
+    resp = requests.get(
+        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables",
+        headers={"Authorization": f"Bearer {bot_token}"},
+        params={"page_size": 1},
+        timeout=request_timeout_sec,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if payload.get("code", 0) != 0:
+        raise RuntimeError(f"feishu list tables error: {payload}")
+    items = payload.get("data", {}).get("items", [])
+    if not items:
+        raise RuntimeError("feishu table list is empty")
+    table_id = items[0].get("table_id")
+    if not isinstance(table_id, str) or not table_id.strip():
+        raise RuntimeError(f"feishu table id missing: {payload}")
+    return table_id
 
 
 class FeishuBitableClient:
@@ -81,14 +126,74 @@ class FeishuBitableClient:
                 break
         return row_key_to_record_id
 
+    def _fetch_field_type_map(self) -> dict[str, int]:
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
+        out: dict[str, int] = {}
+        page_token: str | None = None
+        while True:
+            params = {"page_size": 500}
+            if page_token:
+                params["page_token"] = page_token
+            payload = self._request("GET", url, params=params)
+            data = payload.get("data", {})
+            for item in data.get("items", []):
+                name = item.get("field_name")
+                field_type = item.get("type")
+                if isinstance(name, str) and isinstance(field_type, int):
+                    out[name] = field_type
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token")
+            if not isinstance(page_token, str) or not page_token:
+                break
+        return out
+
+    def _normalize_datetime_value(self, value: object) -> object:
+        if isinstance(value, (int, float)):
+            return int(value if value > 10_000_000_000 else value * 1000)
+        if isinstance(value, str):
+            candidate = value.strip()
+            if not candidate:
+                return value
+            try:
+                dt = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except ValueError:
+                pass
+            try:
+                d = date.fromisoformat(candidate)
+                dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except ValueError:
+                return value
+        return value
+
+    def _normalize_fields_for_table(
+        self,
+        fields: dict[str, object],
+        field_type_map: dict[str, int],
+    ) -> dict[str, object]:
+        out: dict[str, object] = {}
+        for key, value in fields.items():
+            # Feishu Bitable field type 5 means DateTime and requires unix ms.
+            if field_type_map.get(key) == 5:
+                out[key] = self._normalize_datetime_value(value)
+            else:
+                out[key] = value
+        return out
+
     def upsert(self, rows: list[AggregateRecord]) -> SyncResult:
         existing = self.fetch_existing_row_keys()
+        field_type_map = self._fetch_field_type_map()
         created = 0
         updated = 0
         failed = 0
 
         for row in rows:
-            fields = to_feishu_fields(row)
+            raw_fields = to_feishu_fields(row)
+            fields = self._normalize_fields_for_table(raw_fields, field_type_map)
             payload = {"fields": fields}
             try:
                 record_id = existing.get(row.row_key)

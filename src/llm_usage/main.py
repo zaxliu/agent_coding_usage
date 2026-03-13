@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,7 +15,11 @@ from llm_usage.collectors import (
 from llm_usage.env import load_dotenv
 from llm_usage.identity import hash_user
 from llm_usage.reporting import print_terminal_report, write_csv_report
-from llm_usage.sinks.feishu_bitable import FeishuBitableClient
+from llm_usage.sinks.feishu_bitable import (
+    FeishuBitableClient,
+    fetch_first_table_id,
+    fetch_tenant_access_token,
+)
 
 
 def _repo_root() -> Path:
@@ -46,22 +49,11 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _resolve_username() -> tuple[str, str | None]:
+def _required_org_username() -> str:
     username = os.getenv("ORG_USERNAME", "").strip()
     if username:
-        return username, None
-
-    if sys.stdin.isatty():
-        try:
-            typed = input(
-                "ORG_USERNAME is empty. Enter your username for hashing (optional, press Enter to skip): "
-            ).strip()
-        except EOFError:
-            typed = ""
-        if typed:
-            return typed, None
-
-    return "anonymous", "ORG_USERNAME is empty; using anonymous identifier"
+        return username
+    raise RuntimeError("missing env var: ORG_USERNAME (required, e.g. san.zhang)")
 
 
 def _collect_all(lookback_days: int) -> tuple[list, list[str]]:
@@ -85,7 +77,7 @@ def cmd_init(_: argparse.Namespace) -> int:
             "\n".join(
                 [
                     "# Identity",
-                    "# ORG_USERNAME is optional; if empty, runtime can prompt, or fallback to anonymous.",
+                    "# Required: group username, e.g. san.zhang",
                     "ORG_USERNAME=",
                     "HASH_SALT=",
                     "TIMEZONE=Asia/Shanghai",
@@ -93,7 +85,10 @@ def cmd_init(_: argparse.Namespace) -> int:
                     "",
                     "# Feishu Bitable",
                     "FEISHU_APP_TOKEN=",
+                    "# Optional. If empty, sync uses the first table under FEISHU_APP_TOKEN.",
                     "FEISHU_TABLE_ID=",
+                    "FEISHU_APP_ID=",
+                    "FEISHU_APP_SECRET=",
                     "FEISHU_BOT_TOKEN=",
                     "",
                     "# Optional source path overrides (comma-separated globs)",
@@ -120,12 +115,8 @@ def cmd_init(_: argparse.Namespace) -> int:
 
 def cmd_doctor(_: argparse.Namespace) -> int:
     _load_runtime_env()
-    username = os.getenv("ORG_USERNAME", "").strip()
-    print(
-        "ORG_USERNAME: OK"
-        if username
-        else "ORG_USERNAME: OPTIONAL - empty (runtime prompt available; anonymous fallback)"
-    )
+    missing = not os.getenv("ORG_USERNAME", "").strip()
+    print(f"ORG_USERNAME: {'MISSING' if missing else 'OK'}")
 
     for var in ("HASH_SALT", "TIMEZONE"):
         missing = not os.getenv(var, "").strip()
@@ -139,14 +130,12 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
 def _build_aggregates() -> tuple[list, list[str]]:
     _load_runtime_env()
-    username, username_warning = _resolve_username()
+    username = _required_org_username()
     salt = _required_env("HASH_SALT")
     timezone_name = os.getenv("TIMEZONE", "Asia/Shanghai")
     lookback_days = int(os.getenv("LOOKBACK_DAYS", "7"))
 
     events, warnings = _collect_all(lookback_days)
-    if username_warning:
-        warnings.append(username_warning)
     user_hash = hash_user(username, salt)
     rows = aggregate_events(events, user_hash=user_hash, timezone_name=timezone_name)
     return rows, warnings
@@ -175,8 +164,15 @@ def cmd_sync(_: argparse.Namespace) -> int:
     print(f"csv: {csv_path}")
 
     app_token = _required_env("FEISHU_APP_TOKEN")
-    table_id = _required_env("FEISHU_TABLE_ID")
-    bot_token = _required_env("FEISHU_BOT_TOKEN")
+    table_id = os.getenv("FEISHU_TABLE_ID", "").strip()
+    bot_token = os.getenv("FEISHU_BOT_TOKEN", "").strip()
+    if not bot_token:
+        app_id = _required_env("FEISHU_APP_ID")
+        app_secret = _required_env("FEISHU_APP_SECRET")
+        bot_token = fetch_tenant_access_token(app_id=app_id, app_secret=app_secret)
+    if not table_id:
+        table_id = fetch_first_table_id(app_token=app_token, bot_token=bot_token)
+        print(f"info: FEISHU_TABLE_ID empty, auto-selected first table: {table_id}")
 
     client = FeishuBitableClient(app_token=app_token, table_id=table_id, bot_token=bot_token)
     result = client.upsert(rows)

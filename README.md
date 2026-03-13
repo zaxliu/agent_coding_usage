@@ -9,7 +9,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 llm-usage init
-# edit .env (ORG_USERNAME is optional)
+# edit .env (ORG_USERNAME is required, e.g. san.zhang)
 llm-usage doctor
 llm-usage collect
 llm-usage sync
@@ -38,7 +38,7 @@ Uploaded fields are whitelisted aggregate metrics only:
 
 No prompt text, session id, path, or command text is uploaded.
 
-`ORG_USERNAME` is optional. If empty, the CLI can prompt in interactive terminals; otherwise it falls back to an anonymous identifier before hashing.
+`ORG_USERNAME` is required. Set your group username in `.env` (for example `san.zhang`).
 
 ## Feishu Bitable fields
 
@@ -53,6 +53,13 @@ Create fields with exact names:
 - `output_tokens_sum` (number)
 - `row_key` (text, unique recommended)
 - `updated_at` (text/datetime)
+
+## Feishu auth env
+
+- `FEISHU_APP_TOKEN`: target bitable app token
+- `FEISHU_TABLE_ID`: target table id (optional; if empty, sync auto-selects the first table)
+- `FEISHU_APP_ID` / `FEISHU_APP_SECRET`: app credentials used to fetch `tenant_access_token` at runtime
+- `FEISHU_BOT_TOKEN` (optional): if set, used directly as bearer token and skips runtime token fetch
 
 ## Source path overrides
 

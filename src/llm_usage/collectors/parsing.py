@@ -59,12 +59,36 @@ def _extract_usage(node: dict[str, Any]) -> tuple[int, int, int]:
         or usage.get("outputTokenCount")
     )
 
-    cache_tokens = _coerce_int(usage.get("cache_tokens") or usage.get("cached_tokens"))
+    cache_tokens = _coerce_int(
+        usage.get("cache_tokens")
+        or usage.get("cached_tokens")
+        or usage.get("cached_input_tokens")
+    )
     if cache_tokens == 0:
         cache_tokens = _coerce_int(usage.get("cache_read_input_tokens")) + _coerce_int(
             usage.get("cache_creation_input_tokens")
         )
 
+    return input_tokens, cache_tokens, output_tokens
+
+
+def _extract_codex_token_count_usage(node: dict[str, Any]) -> tuple[int, int, int] | None:
+    if node.get("type") != "event_msg":
+        return None
+    payload = node.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "token_count":
+        return None
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return None
+    last_token_usage = info.get("last_token_usage")
+    if not isinstance(last_token_usage, dict):
+        return None
+    cache_tokens = _coerce_int(last_token_usage.get("cached_input_tokens"))
+    # In Codex token_count, input_tokens includes cached input. Align with
+    # other tools by storing uncached input in input_tokens.
+    input_tokens = max(0, _coerce_int(last_token_usage.get("input_tokens")) - cache_tokens)
+    output_tokens = _coerce_int(last_token_usage.get("output_tokens"))
     return input_tokens, cache_tokens, output_tokens
 
 
@@ -90,6 +114,26 @@ def extract_usage_events_from_node(
     fallback_time: datetime,
     source_ref: str,
 ) -> list[UsageEvent]:
+    if tool == "codex":
+        usage = _extract_codex_token_count_usage(node)
+        if usage is None:
+            return []
+        input_tokens, cache_tokens, output_tokens = usage
+        if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+            return []
+        event_time = _extract_time(node) or fallback_time
+        return [
+            UsageEvent(
+                tool=tool,
+                model=_extract_model(node),
+                event_time=event_time,
+                input_tokens=input_tokens,
+                cache_tokens=cache_tokens,
+                output_tokens=output_tokens,
+                source_ref=source_ref,
+            )
+        ]
+
     out: list[UsageEvent] = []
     seen: set[tuple[str, int, int, int, str]] = set()
     for candidate in walk_json_nodes(node):
