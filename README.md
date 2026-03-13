@@ -1,0 +1,68 @@
+# llm-usage-sync
+
+Local-first usage collector for Claude Code, Codex, and Cursor with Feishu Bitable aggregation.
+
+## Quick start
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
+llm-usage init
+# edit .env (ORG_USERNAME is optional)
+llm-usage doctor
+llm-usage collect
+llm-usage sync
+```
+
+## Commands
+
+- `llm-usage init`: create `.env`/`.env.example` and `reports/`
+- `llm-usage doctor`: check config and source files
+- `llm-usage collect`: local aggregation + terminal report + CSV
+- `llm-usage sync`: local aggregation and upsert to Feishu Bitable
+
+## Privacy model
+
+Uploaded fields are whitelisted aggregate metrics only:
+
+- `date_local`
+- `user_hash`
+- `tool`
+- `model`
+- `input_tokens_sum`
+- `cache_tokens_sum`
+- `output_tokens_sum`
+- `row_key`
+- `updated_at`
+
+No prompt text, session id, path, or command text is uploaded.
+
+`ORG_USERNAME` is optional. If empty, the CLI can prompt in interactive terminals; otherwise it falls back to an anonymous identifier before hashing.
+
+## Feishu Bitable fields
+
+Create fields with exact names:
+
+- `date_local` (text/date)
+- `user_hash` (text)
+- `tool` (text)
+- `model` (text)
+- `input_tokens_sum` (number)
+- `cache_tokens_sum` (number)
+- `output_tokens_sum` (number)
+- `row_key` (text, unique recommended)
+- `updated_at` (text/datetime)
+
+## Source path overrides
+
+Use comma-separated glob patterns in `.env` if defaults are not enough:
+
+- `CLAUDE_LOG_PATHS`
+- `CODEX_LOG_PATHS`
+- `CURSOR_LOG_PATHS`
+
+## Scheduling templates
+
+- Linux cron template: `templates/cron.sample`
+- macOS launchd template: `templates/com.team.llm-usage-sync.plist`
