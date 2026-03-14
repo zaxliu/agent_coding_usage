@@ -23,7 +23,7 @@ Event schema:
 
 - `claude_code`: default local globs under `~/.claude` and `~/.config/claude`
 - `codex`: default local globs under `~/.codex`
-- `cursor`: default local globs under Cursor user storage/log locations (macOS + Linux)
+- `cursor`: local globs by default; if `CURSOR_WEB_SESSION_TOKEN` is set, uses Cursor dashboard web API (`/api/dashboard/get-filtered-usage-events`). optional `CURSOR_WEB_WORKOS_ID` is sent as auxiliary auth cookie when present. if token is empty and local cursor logs are unavailable, or local logs have no events in lookback, `collect/sync` auto-open browser login to capture cookies.
 
 ## Add a new tool
 

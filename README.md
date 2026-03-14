@@ -69,6 +69,38 @@ Use comma-separated glob patterns in `.env` if defaults are not enough:
 - `CODEX_LOG_PATHS`
 - `CURSOR_LOG_PATHS`
 
+## Cursor Pro+ dashboard collection (optional)
+
+If you are on Cursor Pro+ (not Teams), you can collect historical token usage
+directly from `https://cursor.com/dashboard/usage` by setting:
+
+- `CURSOR_WEB_SESSION_TOKEN`: value of `WorkosCursorSessionToken` cookie from `cursor.com`
+- `CURSOR_WEB_WORKOS_ID` (optional): auxiliary `workos_id` cookie; auto-filled by `collect/sync` when available
+- `CURSOR_DASHBOARD_BASE_URL` (optional, default `https://cursor.com`)
+- `CURSOR_DASHBOARD_TEAM_ID` (optional, default `0`)
+- `CURSOR_DASHBOARD_PAGE_SIZE` (optional, default `300`)
+- `CURSOR_DASHBOARD_TIMEOUT_SEC` (optional, default `15`)
+
+To auto-capture the cookie from your normal browser (recommended), install once:
+
+```bash
+pip install browser-cookie3
+```
+
+Behavior:
+
+- if `CURSOR_WEB_SESSION_TOKEN` is set, cursor collector uses web dashboard API
+  (`POST /api/dashboard/get-filtered-usage-events`)
+- if existing `CURSOR_WEB_SESSION_TOKEN` is expired, collect/sync auto-refreshes it from browser cookies
+- if it is empty and local cursor logs are unavailable, or local logs have no events in lookback,
+  `llm-usage collect` / `llm-usage sync`
+  will reuse existing system-browser cookies; if still missing, it opens the normal browser for login,
+  then auto-detects session cookies from local browser profiles and saves them to `.env`
+- timeout can be adjusted with `--cursor-login-timeout-sec` on `collect` / `sync`
+- browser can be selected with `--cursor-login-browser`
+  (supports `chrome` / `edge` / `safari` / `firefox`, default `default`)
+- `--cursor-login-user-data-dir` is kept for compatibility and ignored in system-browser mode
+
 ## Scheduling templates
 
 - Linux cron template: `templates/cron.sample`
