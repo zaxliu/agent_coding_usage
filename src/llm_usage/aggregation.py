@@ -17,20 +17,39 @@ def aggregate_events(
     tz = ZoneInfo(timezone_name)
     curr = (now or datetime.now(tz)).astimezone(tz)
 
-    buckets: dict[tuple[str, str, str], dict[str, int]] = defaultdict(
-        lambda: {"input": 0, "cache": 0, "output": 0}
+    buckets: dict[tuple[str, str, str], dict[str, object]] = defaultdict(
+        lambda: {
+            "input": 0,
+            "cache": 0,
+            "output": 0,
+            "model": "unknown",
+            "model_time": None,
+            "session_fingerprint": None,
+        }
     )
 
     for event in events:
         local_date = event.event_time.astimezone(tz).date().isoformat()
-        key = (local_date, event.tool, event.model)
+        identity = event.session_fingerprint.strip() if event.session_fingerprint else f"model:{event.model}"
+        key = (local_date, event.tool, identity)
         buckets[key]["input"] += max(0, event.input_tokens)
         buckets[key]["cache"] += max(0, event.cache_tokens)
         buckets[key]["output"] += max(0, event.output_tokens)
+        if event.session_fingerprint:
+            buckets[key]["session_fingerprint"] = event.session_fingerprint.strip()
+        if event.model != "unknown":
+            model_time = buckets[key]["model_time"]
+            if not isinstance(model_time, datetime) or event.event_time >= model_time:
+                buckets[key]["model"] = event.model
+                buckets[key]["model_time"] = event.event_time
 
     out: list[AggregateRecord] = []
     updated_at = curr.isoformat()
-    for (date_local, tool, model), sums in sorted(buckets.items()):
+    for (date_local, tool, _identity), sums in sorted(buckets.items()):
+        model = str(sums["model"])
+        session_fingerprint = sums["session_fingerprint"]
+        if not isinstance(session_fingerprint, str):
+            session_fingerprint = None
         out.append(
             AggregateRecord(
                 date_local=date_local,
@@ -40,7 +59,13 @@ def aggregate_events(
                 input_tokens_sum=sums["input"],
                 cache_tokens_sum=sums["cache"],
                 output_tokens_sum=sums["output"],
-                row_key=build_row_key(user_hash, date_local, tool, model),
+                row_key=build_row_key(
+                    user_hash,
+                    date_local,
+                    tool,
+                    model,
+                    session_fingerprint=session_fingerprint,
+                ),
                 updated_at=updated_at,
             )
         )

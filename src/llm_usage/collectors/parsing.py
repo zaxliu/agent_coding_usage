@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -92,6 +93,40 @@ def _extract_codex_token_count_usage(node: dict[str, Any]) -> tuple[int, int, in
     return input_tokens, cache_tokens, output_tokens
 
 
+def _extract_codex_turn_model(node: dict[str, Any]) -> str | None:
+    if node.get("type") != "turn_context":
+        return None
+    payload = node.get("payload")
+    if not isinstance(payload, dict):
+        return None
+
+    model = _extract_model(payload)
+    if model != "unknown":
+        return model
+
+    collaboration_mode = payload.get("collaboration_mode")
+    if not isinstance(collaboration_mode, dict):
+        return None
+    settings = collaboration_mode.get("settings")
+    if not isinstance(settings, dict):
+        return None
+    nested_model = _extract_model(settings)
+    return nested_model if nested_model != "unknown" else None
+
+
+def _build_session_fingerprint(path: Path, tool: str) -> str | None:
+    if tool != "codex":
+        return None
+
+    matches = re.findall(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        path.stem,
+    )
+    if matches:
+        return f"codex:{matches[-1].lower()}"
+    return f"codex_file:{path.stem}"
+
+
 def _extract_model(node: dict[str, Any]) -> str:
     for key in ("model", "model_name", "modelName"):
         value = node.get(key)
@@ -113,6 +148,8 @@ def extract_usage_events_from_node(
     tool: str,
     fallback_time: datetime,
     source_ref: str,
+    codex_model_hint: str | None = None,
+    session_fingerprint: str | None = None,
 ) -> list[UsageEvent]:
     if tool == "codex":
         usage = _extract_codex_token_count_usage(node)
@@ -122,14 +159,18 @@ def extract_usage_events_from_node(
         if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
             return []
         event_time = _extract_time(node) or fallback_time
+        model = _extract_model(node)
+        if model == "unknown" and codex_model_hint:
+            model = codex_model_hint
         return [
             UsageEvent(
                 tool=tool,
-                model=_extract_model(node),
+                model=model,
                 event_time=event_time,
                 input_tokens=input_tokens,
                 cache_tokens=cache_tokens,
                 output_tokens=output_tokens,
+                session_fingerprint=session_fingerprint,
                 source_ref=source_ref,
             )
         ]
@@ -154,6 +195,7 @@ def extract_usage_events_from_node(
                 input_tokens=input_tokens,
                 cache_tokens=cache_tokens,
                 output_tokens=output_tokens,
+                session_fingerprint=session_fingerprint,
                 source_ref=source_ref,
             )
         )
@@ -163,6 +205,8 @@ def extract_usage_events_from_node(
 def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str | None]:
     fallback_time = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     events: list[UsageEvent] = []
+    codex_model_hint: str | None = None
+    session_fingerprint = _build_session_fingerprint(path, tool)
     try:
         if path.suffix.lower() == ".jsonl":
             for idx, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -173,24 +217,37 @@ def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str 
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if tool == "codex":
+                    turn_model = _extract_codex_turn_model(obj)
+                    if turn_model:
+                        codex_model_hint = turn_model
                 events.extend(
                     extract_usage_events_from_node(
                         obj,
                         tool=tool,
                         fallback_time=fallback_time,
                         source_ref=f"{path}:{idx}",
+                        codex_model_hint=codex_model_hint,
+                        session_fingerprint=session_fingerprint,
                     )
                 )
             return events, None
 
         if path.suffix.lower() == ".json":
             obj = json.loads(path.read_text(encoding="utf-8"))
+            if tool == "codex":
+                for candidate in walk_json_nodes(obj):
+                    turn_model = _extract_codex_turn_model(candidate)
+                    if turn_model:
+                        codex_model_hint = turn_model
             events.extend(
                 extract_usage_events_from_node(
                     obj,
                     tool=tool,
                     fallback_time=fallback_time,
                     source_ref=str(path),
+                    codex_model_hint=codex_model_hint,
+                    session_fingerprint=session_fingerprint,
                 )
             )
             return events, None

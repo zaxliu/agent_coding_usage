@@ -12,6 +12,7 @@ class UsageEvent:
     input_tokens: int
     cache_tokens: int
     output_tokens: int
+    session_fingerprint: str | None = None
     source_ref: str | None = None
 
 
