@@ -12,7 +12,11 @@ from llm_usage.collectors import (
     build_codex_collector,
     build_cursor_collector,
 )
-from llm_usage.env import load_dotenv
+from llm_usage.cursor_login import (
+    fetch_cursor_session_token_via_browser,
+    fetch_cursor_workos_id_from_local_browsers,
+)
+from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_user
 from llm_usage.reporting import print_terminal_report, write_csv_report
 from llm_usage.sinks.feishu_bitable import (
@@ -95,6 +99,17 @@ def cmd_init(_: argparse.Namespace) -> int:
                     "CLAUDE_LOG_PATHS=",
                     "CODEX_LOG_PATHS=",
                     "CURSOR_LOG_PATHS=",
+                    "",
+                    "# Optional: Cursor Pro+ web dashboard collector.",
+                    "# If CURSOR_WEB_SESSION_TOKEN is set, cursor collector uses dashboard API",
+                    "# instead of local log files.",
+                    "# collect/sync auto-open browser login when token is empty and local logs are unavailable.",
+                    "CURSOR_WEB_SESSION_TOKEN=",
+                    "CURSOR_WEB_WORKOS_ID=",
+                    "CURSOR_DASHBOARD_BASE_URL=https://cursor.com",
+                    "CURSOR_DASHBOARD_TEAM_ID=0",
+                    "CURSOR_DASHBOARD_PAGE_SIZE=300",
+                    "CURSOR_DASHBOARD_TIMEOUT_SEC=15",
                 ]
             )
             + "\n",
@@ -128,6 +143,99 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     return 0
 
 
+def _capture_and_save_cursor_token(timeout_sec: int, browser: str, user_data_dir: str) -> str:
+    env_file = _env_path()
+    if not env_file.exists():
+        cmd_init(argparse.Namespace())
+
+    token = fetch_cursor_session_token_via_browser(
+        timeout_sec=timeout_sec,
+        browser=browser,
+        user_data_dir=user_data_dir,
+    )
+    workos_id = fetch_cursor_workos_id_from_local_browsers(browser=browser) or ""
+    upsert_env_var(env_file, "CURSOR_WEB_SESSION_TOKEN", token)
+    upsert_env_var(env_file, "CURSOR_WEB_WORKOS_ID", workos_id)
+    os.environ["CURSOR_WEB_SESSION_TOKEN"] = token
+    if workos_id:
+        os.environ["CURSOR_WEB_WORKOS_ID"] = workos_id
+    else:
+        os.environ.pop("CURSOR_WEB_WORKOS_ID", None)
+    return token
+
+
+def _clear_saved_cursor_token() -> None:
+    env_file = _env_path()
+    if env_file.exists():
+        upsert_env_var(env_file, "CURSOR_WEB_SESSION_TOKEN", "")
+        upsert_env_var(env_file, "CURSOR_WEB_WORKOS_ID", "")
+    os.environ.pop("CURSOR_WEB_SESSION_TOKEN", None)
+    os.environ.pop("CURSOR_WEB_WORKOS_ID", None)
+
+
+def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: str) -> None:
+    _load_runtime_env()
+    if os.getenv("CURSOR_WEB_SESSION_TOKEN", "").strip():
+        cursor_collector = build_cursor_collector()
+        ok, msg = cursor_collector.probe()
+        if ok:
+            return
+        if "authentication failed" in msg.lower():
+            print(
+                "warn: existing CURSOR_WEB_SESSION_TOKEN appears expired; "
+                "attempting refresh from system browser cookies..."
+            )
+            _clear_saved_cursor_token()
+            try:
+                _capture_and_save_cursor_token(
+                    timeout_sec=timeout_sec,
+                    browser=browser,
+                    user_data_dir=user_data_dir,
+                )
+            except RuntimeError as exc:
+                print(f"warn: cursor token refresh failed: {exc}")
+                print("warn: continuing with local cursor sources")
+                return
+            print("info: refreshed CURSOR_WEB_SESSION_TOKEN and saved to .env")
+            return
+        print(f"warn: cursor dashboard probe failed with existing token: {msg}")
+        return
+
+    try:
+        lookback_days = max(1, int(os.getenv("LOOKBACK_DAYS", "7") or "7"))
+    except ValueError:
+        lookback_days = 7
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=lookback_days)
+
+    cursor_collector = build_cursor_collector()
+    ok, _ = cursor_collector.probe()
+    if ok:
+        local_out = cursor_collector.collect(start=start, end=end)
+        if local_out.events:
+            return
+        print(
+            "info: cursor local logs found but no events in selected lookback; "
+            "opening browser login..."
+        )
+    else:
+        print(
+            "info: CURSOR_WEB_SESSION_TOKEN is empty and local cursor logs are unavailable; "
+            "opening browser login..."
+        )
+    try:
+        _capture_and_save_cursor_token(
+            timeout_sec=timeout_sec,
+            browser=browser,
+            user_data_dir=user_data_dir,
+        )
+    except RuntimeError as exc:
+        print(f"warn: automatic cursor login failed: {exc}")
+        print("warn: continuing without dashboard token (cursor may have no data)")
+        return
+    print("info: saved CURSOR_WEB_SESSION_TOKEN to .env")
+
+
 def _build_aggregates() -> tuple[list, list[str]]:
     _load_runtime_env()
     username = _required_org_username()
@@ -141,7 +249,12 @@ def _build_aggregates() -> tuple[list, list[str]]:
     return rows, warnings
 
 
-def cmd_collect(_: argparse.Namespace) -> int:
+def cmd_collect(args: argparse.Namespace) -> int:
+    _maybe_capture_cursor_token(
+        timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
+        browser=getattr(args, "cursor_login_browser", "default"),
+        user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+    )
     rows, warnings = _build_aggregates()
     if warnings:
         for warning in warnings:
@@ -153,7 +266,12 @@ def cmd_collect(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sync(_: argparse.Namespace) -> int:
+def cmd_sync(args: argparse.Namespace) -> int:
+    _maybe_capture_cursor_token(
+        timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
+        browser=getattr(args, "cursor_login_browser", "default"),
+        user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+    )
     rows, warnings = _build_aggregates()
     if warnings:
         for warning in warnings:
@@ -186,8 +304,44 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="Initialize .env and folders")
     sub.add_parser("doctor", help="Check data sources and required config")
-    sub.add_parser("collect", help="Collect usage locally and output local report")
-    sub.add_parser("sync", help="Collect locally then upsert aggregates to Feishu")
+    collect_parser = sub.add_parser("collect", help="Collect usage locally and output local report")
+    collect_parser.add_argument(
+        "--cursor-login-timeout-sec",
+        type=int,
+        default=600,
+        help="Max wait time when auto-opening browser to capture Cursor session token",
+    )
+    collect_parser.add_argument(
+        "--cursor-login-browser",
+        choices=["default", "chrome", "edge", "safari", "firefox", "chromium", "msedge", "webkit"],
+        default="default",
+        help="Browser used for auto login when capturing Cursor session token",
+    )
+    collect_parser.add_argument(
+        "--cursor-login-user-data-dir",
+        type=str,
+        default="",
+        help="Compatibility option; ignored in system-browser cookie mode",
+    )
+    sync_parser = sub.add_parser("sync", help="Collect locally then upsert aggregates to Feishu")
+    sync_parser.add_argument(
+        "--cursor-login-timeout-sec",
+        type=int,
+        default=600,
+        help="Max wait time when auto-opening browser to capture Cursor session token",
+    )
+    sync_parser.add_argument(
+        "--cursor-login-browser",
+        choices=["default", "chrome", "edge", "safari", "firefox", "chromium", "msedge", "webkit"],
+        default="default",
+        help="Browser used for auto login when capturing Cursor session token",
+    )
+    sync_parser.add_argument(
+        "--cursor-login-user-data-dir",
+        type=str,
+        default="",
+        help="Compatibility option; ignored in system-browser cookie mode",
+    )
     return parser
 
 
