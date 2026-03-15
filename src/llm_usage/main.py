@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from llm_usage.aggregation import aggregate_events
+from llm_usage.bundle import build_bundles
 from llm_usage.collectors import (
     BaseCollector,
     build_claude_collector,
@@ -298,12 +299,35 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0 if result.failed == 0 else 2
 
 
+def cmd_bundle(args: argparse.Namespace) -> int:
+    artifacts = build_bundles(
+        repo_root=_repo_root(),
+        output_dir=Path(args.output_dir),
+        keep_staging=args.keep_staging,
+    )
+    for artifact in artifacts:
+        print(f"{artifact.profile}: {artifact.zip_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Team LLM usage collector and Feishu sync")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="Initialize .env and folders")
     sub.add_parser("doctor", help="Check data sources and required config")
+    bundle_parser = sub.add_parser("bundle", help="Build internal and external distribution zip bundles")
+    bundle_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="dist",
+        help="Directory for generated zip bundles",
+    )
+    bundle_parser.add_argument(
+        "--keep-staging",
+        action="store_true",
+        help="Keep copied staging directories under output-dir for inspection",
+    )
     collect_parser = sub.add_parser("collect", help="Collect usage locally and output local report")
     collect_parser.add_argument(
         "--cursor-login-timeout-sec",
@@ -351,6 +375,7 @@ def main() -> int:
     cmd_map = {
         "init": cmd_init,
         "doctor": cmd_doctor,
+        "bundle": cmd_bundle,
         "collect": cmd_collect,
         "sync": cmd_sync,
     }

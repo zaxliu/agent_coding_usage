@@ -13,6 +13,7 @@ llm-usage init
 llm-usage doctor
 llm-usage collect
 llm-usage sync
+llm-usage bundle
 ```
 
 ## Commands
@@ -21,6 +22,7 @@ llm-usage sync
 - `llm-usage doctor`: check config and source files
 - `llm-usage collect`: local aggregation + terminal report + CSV
 - `llm-usage sync`: local aggregation and upsert to Feishu Bitable
+- `llm-usage bundle`: build internal/external zip bundles for distribution
 
 ## Privacy model
 
@@ -60,6 +62,25 @@ Create fields with exact names:
 - `FEISHU_TABLE_ID`: target table id (optional; if empty, sync auto-selects the first table)
 - `FEISHU_APP_ID` / `FEISHU_APP_SECRET`: app credentials used to fetch `tenant_access_token` at runtime
 - `FEISHU_BOT_TOKEN` (optional): if set, used directly as bearer token and skips runtime token fetch
+
+## Distribution bundles
+
+Use `llm-usage bundle` to generate two zip files in `dist/`:
+
+- `internal`: keeps shared team config for sync, but clears personal identifiers and local machine overrides
+- `external`: ships a fully sanitized `.env` with all internal secrets removed
+
+Sanitization rules:
+
+- both bundles clear `ORG_USERNAME`, `CURSOR_WEB_SESSION_TOKEN`, `CURSOR_WEB_WORKOS_ID`,
+  `CLAUDE_LOG_PATHS`, `CODEX_LOG_PATHS`, and `CURSOR_LOG_PATHS`
+- external bundle also clears `HASH_SALT` and all `FEISHU_*` values
+- dashboard defaults such as `CURSOR_DASHBOARD_BASE_URL` are reset to safe defaults
+
+Useful options:
+
+- `llm-usage bundle --output-dir some/path`
+- `llm-usage bundle --keep-staging`
 
 ## Source path overrides
 
