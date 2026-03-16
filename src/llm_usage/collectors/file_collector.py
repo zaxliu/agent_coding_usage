@@ -9,9 +9,17 @@ from .parsing import read_events_from_file
 
 
 class FileCollector(BaseCollector):
-    def __init__(self, name: str, patterns: list[str]) -> None:
+    def __init__(
+        self,
+        name: str,
+        patterns: list[str],
+        source_name: str = "local",
+        source_host_hash: str = "",
+    ) -> None:
         self.name = name
         self.patterns = patterns
+        self.source_name = source_name
+        self.source_host_hash = source_host_hash
 
     def _matched_files(self) -> list[Path]:
         files: list[Path] = []

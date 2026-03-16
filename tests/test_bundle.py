@@ -53,6 +53,13 @@ def _write_repo_fixture(repo_root: Path) -> None:
                 "CURSOR_DASHBOARD_TEAM_ID=99",
                 "CURSOR_DASHBOARD_PAGE_SIZE=999",
                 "CURSOR_DASHBOARD_TIMEOUT_SEC=77",
+                "",
+                "# Remote",
+                "REMOTE_HOSTS=SERVER_A",
+                "REMOTE_SERVER_A_SSH_HOST=host-a",
+                "REMOTE_SERVER_A_SSH_USER=alice",
+                "REMOTE_SERVER_A_SSH_PORT=2200",
+                "REMOTE_SERVER_A_LABEL=prod-a",
             ]
         )
         + "\n",
@@ -91,6 +98,8 @@ def test_build_bundles_sanitizes_internal_and_external_env(tmp_path):
     assert "CLAUDE_LOG_PATHS=\n" in internal_env
     assert "CURSOR_DASHBOARD_BASE_URL=https://cursor.com\n" in internal_env
     assert "CURSOR_DASHBOARD_PAGE_SIZE=300\n" in internal_env
+    assert "REMOTE_HOSTS=\n" in internal_env
+    assert "REMOTE_SERVER_A_SSH_HOST=\n" in internal_env
 
     assert "ORG_USERNAME=\n" in external_env
     assert "HASH_SALT=\n" in external_env
@@ -100,6 +109,7 @@ def test_build_bundles_sanitizes_internal_and_external_env(tmp_path):
     assert "CURSOR_WEB_SESSION_TOKEN=\n" in external_env
     assert "CURSOR_DASHBOARD_TEAM_ID=0\n" in external_env
     assert "CURSOR_DASHBOARD_TIMEOUT_SEC=15\n" in external_env
+    assert "REMOTE_SERVER_A_LABEL=\n" in external_env
 
 
 def test_build_bundles_excludes_runtime_and_git_artifacts(tmp_path):

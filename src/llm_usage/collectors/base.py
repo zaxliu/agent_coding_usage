@@ -15,6 +15,8 @@ class CollectOutput:
 
 class BaseCollector(ABC):
     name: str
+    source_name: str = "local"
+    source_host_hash: str = ""
 
     @abstractmethod
     def probe(self) -> tuple[bool, str]:
