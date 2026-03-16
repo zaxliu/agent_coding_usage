@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -15,6 +16,35 @@ class SyncResult:
     created: int
     updated: int
     failed: int
+    error_samples: list[str]
+    warning_samples: list[str]
+
+
+class UploadProgress:
+    def __init__(self, total: int, stream=None, enabled: bool = True) -> None:
+        self.total = max(0, total)
+        self.stream = stream or sys.stdout
+        self.enabled = enabled and self.total > 0 and getattr(self.stream, "isatty", lambda: False)()
+        self.current = 0
+
+    def advance(self, created: int, updated: int, failed: int) -> None:
+        if not self.enabled:
+            return
+        self.current += 1
+        width = 24
+        filled = int(width * self.current / max(1, self.total))
+        bar = "#" * filled + "-" * (width - filled)
+        self.stream.write(
+            f"\r飞书上传 [{bar}] {self.current}/{self.total} "
+            f"新增:{created} 更新:{updated} 失败:{failed}"
+        )
+        self.stream.flush()
+
+    def finish(self) -> None:
+        if not self.enabled:
+            return
+        self.stream.write("\n")
+        self.stream.flush()
 
 
 def fetch_tenant_access_token(
@@ -76,6 +106,7 @@ class FeishuBitableClient:
         self.base_url = (
             f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records"
         )
+        self.batch_size = 100
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -184,33 +215,85 @@ class FeishuBitableClient:
                 out[key] = value
         return out
 
+    def _filter_fields_for_table(
+        self,
+        fields: dict[str, object],
+        field_type_map: dict[str, int],
+    ) -> tuple[dict[str, object], list[str]]:
+        filtered = {key: value for key, value in fields.items() if key in field_type_map}
+        missing = [key for key in fields if key not in field_type_map]
+        return filtered, missing
+
+    def _chunks(self, items: list[dict[str, object]]) -> list[list[dict[str, object]]]:
+        return [items[idx : idx + self.batch_size] for idx in range(0, len(items), self.batch_size)]
+
     def upsert(self, rows: list[AggregateRecord]) -> SyncResult:
         existing = self.fetch_existing_row_keys()
         field_type_map = self._fetch_field_type_map()
         created = 0
         updated = 0
         failed = 0
+        error_samples: list[str] = []
+        warning_samples: list[str] = []
+        progress = UploadProgress(total=len(rows))
+        create_records: list[dict[str, object]] = []
+        update_records: list[dict[str, object]] = []
+        warned_missing_fields: set[str] = set()
 
         for row in rows:
             raw_fields = to_feishu_fields(row)
-            fields = self._normalize_fields_for_table(raw_fields, field_type_map)
-            payload = {"fields": fields}
-            try:
-                record_id = existing.get(row.row_key)
-                if record_id:
-                    self._request(
-                        "PUT",
-                        f"{self.base_url}/{record_id}",
-                        json=payload,
-                    )
-                    updated += 1
-                else:
-                    resp = self._request("POST", self.base_url, json=payload)
-                    created += 1
-                    item = resp.get("data", {}).get("record", {})
-                    rid = item.get("record_id")
-                    if isinstance(rid, str):
-                        existing[row.row_key] = rid
-            except Exception:
-                failed += 1
-        return SyncResult(created=created, updated=updated, failed=failed)
+            filtered_fields, missing_fields = self._filter_fields_for_table(raw_fields, field_type_map)
+            fields = self._normalize_fields_for_table(filtered_fields, field_type_map)
+            for field_name in missing_fields:
+                if field_name not in warned_missing_fields and len(warning_samples) < 5:
+                    warning_samples.append(f"飞书表缺少字段，已跳过：{field_name}")
+                warned_missing_fields.add(field_name)
+            record_id = existing.get(row.row_key)
+            if record_id:
+                update_records.append({"record_id": record_id, "fields": fields, "__row_key": row.row_key})
+            else:
+                create_records.append({"fields": fields, "__row_key": row.row_key})
+
+        try:
+            for batch in self._chunks(create_records):
+                try:
+                    payload = {"records": [{"fields": item["fields"]} for item in batch]}
+                    resp = self._request("POST", f"{self.base_url}/batch_create", json=payload)
+                    items = resp.get("data", {}).get("records", [])
+                    created += len(batch)
+                    for source_item, record_item in zip(batch, items):
+                        rid = record_item.get("record_id")
+                        if isinstance(rid, str):
+                            existing[str(source_item["__row_key"])] = rid
+                except Exception as exc:
+                    failed += len(batch)
+                    if len(error_samples) < 5:
+                        error_samples.append(f"批量创建失败 batch={len(batch)}: {exc}")
+                for _ in batch:
+                    progress.advance(created=created, updated=updated, failed=failed)
+
+            for batch in self._chunks(update_records):
+                try:
+                    payload = {
+                        "records": [
+                            {"record_id": item["record_id"], "fields": item["fields"]}
+                            for item in batch
+                        ]
+                    }
+                    self._request("POST", f"{self.base_url}/batch_update", json=payload)
+                    updated += len(batch)
+                except Exception as exc:
+                    failed += len(batch)
+                    if len(error_samples) < 5:
+                        error_samples.append(f"批量更新失败 batch={len(batch)}: {exc}")
+                for _ in batch:
+                    progress.advance(created=created, updated=updated, failed=failed)
+        finally:
+            progress.finish()
+        return SyncResult(
+            created=created,
+            updated=updated,
+            failed=failed,
+            error_samples=error_samples,
+            warning_samples=warning_samples,
+        )
