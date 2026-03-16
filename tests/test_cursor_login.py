@@ -1,7 +1,9 @@
 import argparse
+import builtins
 
 import llm_usage.main as main
 from llm_usage.env import upsert_env_var
+from llm_usage.models import AggregateRecord
 
 
 def test_upsert_env_var_appends_when_missing(tmp_path):
@@ -188,9 +190,10 @@ def test_cmd_collect_triggers_maybe_capture(monkeypatch):
             called.__setitem__("timeout", timeout_sec),
             called.__setitem__("browser", browser),
             called.__setitem__("user_data_dir", user_data_dir),
+            None,
         ),
     )
-    monkeypatch.setattr(main, "_build_aggregates", lambda: ([], []))
+    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
     monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
     monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
     monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
@@ -217,9 +220,10 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
             called.__setitem__("timeout", timeout_sec),
             called.__setitem__("browser", browser),
             called.__setitem__("user_data_dir", user_data_dir),
+            None,
         ),
     )
-    monkeypatch.setattr(main, "_build_aggregates", lambda: ([], []))
+    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
     monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
     monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
     monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
@@ -234,7 +238,11 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
             assert bot_token == "bot"
 
         def upsert(self, rows):  # noqa: ANN001, ANN201
-            return type("Result", (), {"created": 0, "updated": 0, "failed": 0})()
+            return type(
+                "Result",
+                (),
+                {"created": 0, "updated": 0, "failed": 0, "error_samples": [], "warning_samples": []},
+            )()
 
     monkeypatch.setattr(main, "FeishuBitableClient", _Client)
 
@@ -248,3 +256,73 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
     assert exit_code == 0
     assert called["timeout"] == 99
     assert called["browser"] == "chromium"
+
+
+def test_cmd_collect_suppresses_cursor_probe_warning_when_cursor_rows_exist(monkeypatch):
+    printed: list[str] = []
+    monkeypatch.setattr(
+        main,
+        "_maybe_capture_cursor_token",
+        lambda timeout_sec, browser, user_data_dir: "cursor warning",
+    )
+    monkeypatch.setattr(
+        main,
+        "_build_aggregates",
+        lambda args: (
+            [
+                AggregateRecord(
+                    date_local="2026-03-08",
+                    user_hash="u",
+                    source_host_hash="s",
+                    tool="cursor",
+                    model="m",
+                    input_tokens_sum=1,
+                    cache_tokens_sum=0,
+                    output_tokens_sum=1,
+                    row_key="k",
+                    updated_at="2026-03-08T00:00:00+00:00",
+                )
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
+    monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
+    monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
+
+    exit_code = main.cmd_collect(
+        argparse.Namespace(
+            cursor_login_timeout_sec=88,
+            cursor_login_browser="default",
+            cursor_login_user_data_dir="/tmp/p1",
+            ui="none",
+        )
+    )
+    assert exit_code == 0
+    assert not any("cursor warning" in line for line in printed)
+
+
+def test_cmd_collect_keeps_cursor_probe_warning_when_no_cursor_rows(monkeypatch):
+    printed: list[str] = []
+    monkeypatch.setattr(
+        main,
+        "_maybe_capture_cursor_token",
+        lambda timeout_sec, browser, user_data_dir: "cursor warning",
+    )
+    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
+    monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
+    monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
+    monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
+
+    exit_code = main.cmd_collect(
+        argparse.Namespace(
+            cursor_login_timeout_sec=88,
+            cursor_login_browser="default",
+            cursor_login_user_data_dir="/tmp/p1",
+            ui="none",
+        )
+    )
+    assert exit_code == 0
+    assert any("cursor warning" in line for line in printed)
