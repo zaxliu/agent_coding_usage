@@ -129,11 +129,8 @@ directly from `https://cursor.com/dashboard/usage` by setting:
 - `CURSOR_DASHBOARD_PAGE_SIZE` (optional, default `300`)
 - `CURSOR_DASHBOARD_TIMEOUT_SEC` (optional, default `15`)
 
-To auto-capture the cookie from your normal browser (recommended), install once:
-
-```bash
-pip install browser-cookie3
-```
+`browser-cookie3` is installed with this project by default, so `collect` / `sync`
+can auto-capture the cookie from your normal browser without extra setup.
 
 Behavior:
 
