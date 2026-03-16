@@ -6,6 +6,7 @@ from .models import AggregateRecord
 UPLOAD_FIELDS = {
     "date_local",
     "user_hash",
+    "source_host_hash",
     "tool",
     "model",
     "input_tokens_sum",

@@ -14,12 +14,14 @@ class UsageEvent:
     output_tokens: int
     session_fingerprint: str | None = None
     source_ref: str | None = None
+    source_host_hash: str = ""
 
 
 @dataclass(frozen=True)
 class AggregateRecord:
     date_local: str
     user_hash: str
+    source_host_hash: str
     tool: str
     model: str
     input_tokens_sum: int

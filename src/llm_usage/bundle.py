@@ -86,6 +86,17 @@ def _sanitize_env(path: Path, profile: str) -> None:
     for key, value in _RESET_TO_DEFAULTS.items():
         upsert_env_var(path, key, value)
 
+    text = path.read_text(encoding="utf-8")
+    lines = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("REMOTE_") and "=" in stripped:
+            key = stripped.split("=", 1)[0]
+            lines.append(f"{key}=")
+        else:
+            lines.append(raw)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 def _bundle_basename(profile: str, timestamp: str) -> str:
     return f"agent_coding_usage_{profile}_{timestamp}"

@@ -79,7 +79,7 @@ def test_find_valid_token_accepts_first_when_only_network_failures(monkeypatch):
     monkeypatch.setattr(
         cursor_login,
         "_validate_cursor_session_token",
-        lambda token: (False, "request failed: network down"),
+        lambda token, workos_id="": (False, "request failed: network down"),
     )
     assert cursor_login._find_valid_token(["t1", "t2"]) == "t1"
 
@@ -88,7 +88,7 @@ def test_find_valid_token_rejects_on_auth_failure(monkeypatch):
     monkeypatch.setattr(
         cursor_login,
         "_validate_cursor_session_token",
-        lambda token: (False, "authentication failed (session cookie may be expired)"),
+        lambda token, workos_id="": (False, "authentication failed (session cookie may be expired)"),
     )
     assert cursor_login._find_valid_token(["t1", "t2"]) is None
 

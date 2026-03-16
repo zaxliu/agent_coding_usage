@@ -202,14 +202,24 @@ def extract_usage_events_from_node(
     return out
 
 
-def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str | None]:
-    fallback_time = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+def read_events_from_text(
+    text: str,
+    tool: str,
+    source_ref: str,
+    fallback_time: datetime,
+    file_suffix: str,
+    session_fingerprint_source: str | None = None,
+) -> tuple[list[UsageEvent], str | None]:
     events: list[UsageEvent] = []
     codex_model_hint: str | None = None
-    session_fingerprint = _build_session_fingerprint(path, tool)
+    session_fingerprint = (
+        _build_session_fingerprint(Path(session_fingerprint_source), tool)
+        if session_fingerprint_source
+        else None
+    )
     try:
-        if path.suffix.lower() == ".jsonl":
-            for idx, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if file_suffix.lower() == ".jsonl":
+            for idx, raw in enumerate(text.splitlines(), start=1):
                 line = raw.strip()
                 if not line:
                     continue
@@ -226,15 +236,15 @@ def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str 
                         obj,
                         tool=tool,
                         fallback_time=fallback_time,
-                        source_ref=f"{path}:{idx}",
+                        source_ref=f"{source_ref}:{idx}",
                         codex_model_hint=codex_model_hint,
                         session_fingerprint=session_fingerprint,
                     )
                 )
             return events, None
 
-        if path.suffix.lower() == ".json":
-            obj = json.loads(path.read_text(encoding="utf-8"))
+        if file_suffix.lower() == ".json":
+            obj = json.loads(text)
             if tool == "codex":
                 for candidate in walk_json_nodes(obj):
                     turn_model = _extract_codex_turn_model(candidate)
@@ -245,7 +255,7 @@ def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str 
                     obj,
                     tool=tool,
                     fallback_time=fallback_time,
-                    source_ref=str(path),
+                    source_ref=source_ref,
                     codex_model_hint=codex_model_hint,
                     session_fingerprint=session_fingerprint,
                 )
@@ -253,7 +263,21 @@ def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str 
             return events, None
 
         return [], None
+    except json.JSONDecodeError as exc:
+        return [], f"failed decoding {source_ref}: {exc}"
+
+
+def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str | None]:
+    fallback_time = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    try:
+        text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return [], f"failed reading {path}: {exc}"
-    except json.JSONDecodeError as exc:
-        return [], f"failed decoding {path}: {exc}"
+    return read_events_from_text(
+        text=text,
+        tool=tool,
+        source_ref=str(path),
+        fallback_time=fallback_time,
+        file_suffix=path.suffix,
+        session_fingerprint_source=str(path),
+    )

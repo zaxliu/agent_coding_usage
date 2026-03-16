@@ -7,13 +7,14 @@ from .models import AggregateRecord
 
 
 def print_terminal_report(rows: list[AggregateRecord]) -> None:
-    headers = ["date", "tool", "model", "input", "cache", "output"]
-    widths = [10, 10, 28, 10, 10, 10]
+    headers = ["日期", "来源", "工具", "模型", "输入", "缓存", "输出"]
+    widths = [10, 14, 10, 28, 10, 10, 10]
     print(" | ".join(h.ljust(w) for h, w in zip(headers, widths)))
     print("-+-".join("-" * w for w in widths))
     for row in rows:
         data = [
             row.date_local,
+            row.source_host_hash[:14],
             row.tool,
             row.model[:28],
             str(row.input_tokens_sum),
@@ -32,6 +33,7 @@ def write_csv_report(rows: list[AggregateRecord], output_dir: Path) -> Path:
             fieldnames=[
                 "date_local",
                 "user_hash",
+                "source_host_hash",
                 "tool",
                 "model",
                 "input_tokens_sum",

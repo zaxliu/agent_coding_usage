@@ -18,12 +18,14 @@ Event schema:
 - `cache_tokens`
 - `output_tokens`
 - `source_ref` (local-only debugging field)
+- `source_host_hash`
 
 ## Current adapters
 
 - `claude_code`: default local globs under `~/.claude` and `~/.config/claude`
 - `codex`: default local globs under `~/.codex`
 - `cursor`: local globs by default; if `CURSOR_WEB_SESSION_TOKEN` is set, uses Cursor dashboard web API (`/api/dashboard/get-filtered-usage-events`). optional `CURSOR_WEB_WORKOS_ID` is sent as auxiliary auth cookie when present. if token is empty and local cursor logs are unavailable, or local logs have no events in lookback, `collect/sync` auto-open browser login to capture cookies.
+- `remote claude_code/codex`: selected at runtime via TUI or CLI, fetched over SSH from configured `REMOTE_*` hosts, and normalized on the desktop machine
 
 ## Add a new tool
 
@@ -36,3 +38,4 @@ Event schema:
 ## Privacy rule
 
 Do not upload raw prompt/response text. Only aggregate fields are allowed in Feishu payload.
+Use `source_host_hash` for remote/source identity; do not upload raw hostnames or SSH details.

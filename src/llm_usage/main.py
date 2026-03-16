@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,8 +20,11 @@ from llm_usage.cursor_login import (
     fetch_cursor_workos_id_from_local_browsers,
 )
 from llm_usage.env import load_dotenv, upsert_env_var
-from llm_usage.identity import hash_user
+from llm_usage.identity import hash_source_host, hash_user
+from llm_usage.interaction import confirm_save_temporary_remote, select_remotes
+from llm_usage.remotes import append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
+from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
 from llm_usage.sinks.feishu_bitable import (
     FeishuBitableClient,
     fetch_first_table_id,
@@ -35,15 +40,19 @@ def _env_path() -> Path:
     return _repo_root() / ".env"
 
 
+def _runtime_state_path() -> Path:
+    return _repo_root() / "reports" / "runtime_state.json"
+
+
 def _load_runtime_env() -> None:
     load_dotenv(_env_path())
 
 
-def _collectors() -> list[BaseCollector]:
+def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
     return [
-        build_claude_collector(),
-        build_codex_collector(),
-        build_cursor_collector(),
+        build_claude_collector(source_host_hash=local_source_host_hash),
+        build_codex_collector(source_host_hash=local_source_host_hash),
+        build_cursor_collector(source_host_hash=local_source_host_hash),
     ]
 
 
@@ -58,18 +67,38 @@ def _required_org_username() -> str:
     username = os.getenv("ORG_USERNAME", "").strip()
     if username:
         return username
-    raise RuntimeError("missing env var: ORG_USERNAME (required, e.g. san.zhang)")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise RuntimeError("缺少 ORG_USERNAME，请在交互终端中运行并输入")
+
+    print("`.env` 中缺少 ORG_USERNAME，这是必填项。")
+    print("请输入你的组内用户名，例如 san.zhang。直接回车则退出。")
+    username = input("ORG_USERNAME：").strip()
+    if not username:
+        raise RuntimeError("ORG_USERNAME 为必填项")
+
+    env_file = _env_path()
+    if not env_file.exists():
+        cmd_init(argparse.Namespace())
+    upsert_env_var(env_file, "ORG_USERNAME", username)
+    os.environ["ORG_USERNAME"] = username
+    print("info: 已将 ORG_USERNAME 写入 .env")
+    return username
 
 
-def _collect_all(lookback_days: int) -> tuple[list, list[str]]:
+def _collect_all(lookback_days: int, collectors: list[BaseCollector]) -> tuple[list, list[str]]:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=max(1, lookback_days))
 
     events = []
     warnings: list[str] = []
-    for collector in _collectors():
+    for collector in collectors:
         out = collector.collect(start=start, end=end)
-        events.extend(out.events)
+        for event in out.events:
+            events.append(
+                event
+                if event.source_host_hash
+                else replace(event, source_host_hash=getattr(collector, "source_host_hash", ""))
+            )
         warnings.extend(out.warnings)
     return events, warnings
 
@@ -111,6 +140,15 @@ def cmd_init(_: argparse.Namespace) -> int:
                     "CURSOR_DASHBOARD_TEAM_ID=0",
                     "CURSOR_DASHBOARD_PAGE_SIZE=300",
                     "CURSOR_DASHBOARD_TIMEOUT_SEC=15",
+                    "",
+                    "# Optional remote SSH sources",
+                    "REMOTE_HOSTS=",
+                    "REMOTE_SAMPLE_SSH_HOST=",
+                    "REMOTE_SAMPLE_SSH_USER=",
+                    "REMOTE_SAMPLE_SSH_PORT=22",
+                    "REMOTE_SAMPLE_LABEL=",
+                    "REMOTE_SAMPLE_CLAUDE_LOG_PATHS=",
+                    "REMOTE_SAMPLE_CODEX_LOG_PATHS=",
                 ]
             )
             + "\n",
@@ -124,8 +162,8 @@ def cmd_init(_: argparse.Namespace) -> int:
     reports_dir = root / "reports"
     reports_dir.mkdir(exist_ok=True)
 
-    print(f"initialized: {env_file}")
-    print("next: fill env values then run `llm-usage doctor` and `llm-usage sync`")
+    print(f"初始化完成：{env_file}")
+    print("下一步：补全配置后运行 `llm-usage doctor` 和 `llm-usage sync`")
     return 0
 
 
@@ -138,9 +176,19 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         missing = not os.getenv(var, "").strip()
         print(f"{var}: {'MISSING' if missing else 'OK'}")
 
-    for collector in _collectors():
+    local_hash = ""
+    username = os.getenv("ORG_USERNAME", "").strip()
+    salt = os.getenv("HASH_SALT", "").strip()
+    if username and salt:
+        local_hash = hash_source_host(username, "local", salt)
+
+    for collector in _collectors(local_hash):
         ok, msg = collector.probe()
-        print(f"collector {collector.name}: {'OK' if ok else 'WARN'} - {msg}")
+        print(f"collector {collector.name}[{collector.source_name}]: {'OK' if ok else 'WARN'} - {msg}")
+
+    for collector in build_remote_collectors(parse_remote_configs_from_env(), username=username, salt=salt):
+        ok, msg = collector.probe()
+        print(f"collector {collector.name}[{collector.source_name}]: {'OK' if ok else 'WARN'} - {msg}")
     return 0
 
 
@@ -174,13 +222,13 @@ def _clear_saved_cursor_token() -> None:
     os.environ.pop("CURSOR_WEB_WORKOS_ID", None)
 
 
-def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: str) -> None:
+def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: str) -> str | None:
     _load_runtime_env()
     if os.getenv("CURSOR_WEB_SESSION_TOKEN", "").strip():
         cursor_collector = build_cursor_collector()
         ok, msg = cursor_collector.probe()
         if ok:
-            return
+            return None
         if "authentication failed" in msg.lower():
             print(
                 "warn: existing CURSOR_WEB_SESSION_TOKEN appears expired; "
@@ -196,11 +244,10 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
             except RuntimeError as exc:
                 print(f"warn: cursor token refresh failed: {exc}")
                 print("warn: continuing with local cursor sources")
-                return
+                return None
             print("info: refreshed CURSOR_WEB_SESSION_TOKEN and saved to .env")
-            return
-        print(f"warn: cursor dashboard probe failed with existing token: {msg}")
-        return
+            return None
+        return f"cursor dashboard probe failed with existing token: {msg}"
 
     try:
         lookback_days = max(1, int(os.getenv("LOOKBACK_DAYS", "7") or "7"))
@@ -214,7 +261,7 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
     if ok:
         local_out = cursor_collector.collect(start=start, end=end)
         if local_out.events:
-            return
+            return None
         print(
             "info: cursor local logs found but no events in selected lookback; "
             "opening browser login..."
@@ -233,30 +280,68 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
     except RuntimeError as exc:
         print(f"warn: automatic cursor login failed: {exc}")
         print("warn: continuing without dashboard token (cursor may have no data)")
-        return
+        return None
     print("info: saved CURSOR_WEB_SESSION_TOKEN to .env")
+    return None
 
 
-def _build_aggregates() -> tuple[list, list[str]]:
+def _resolve_remote_selection(
+    args: argparse.Namespace,
+    configured_remotes,
+) -> tuple[list[str], list]:
+    state_aliases = load_selected_remote_aliases(_runtime_state_path())
+    configured_aliases = [config.alias for config in configured_remotes]
+    if getattr(args, "ui", "auto") == "none":
+        return state_aliases if state_aliases else [], []
+    if state_aliases:
+        defaults = [alias for alias in state_aliases if alias in configured_aliases]
+    else:
+        defaults = list(configured_aliases)
+    result = select_remotes(configured_remotes, defaults, ui_mode=getattr(args, "ui", "auto"))
+    save_selected_remote_aliases(_runtime_state_path(), result.selected_aliases)
+    return result.selected_aliases, result.temporary_remotes
+
+
+def _save_temporary_remotes(args: argparse.Namespace, remotes: list, configured_aliases: list[str]) -> None:
+    for remote in remotes:
+        if confirm_save_temporary_remote(remote, ui_mode=getattr(args, "ui", "auto")):
+            alias = append_remote_to_env(_env_path(), remote, configured_aliases)
+            configured_aliases.append(alias)
+            print(f"info: 已将临时远端保存到 .env：{alias}")
+
+
+def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str]]:
     _load_runtime_env()
     username = _required_org_username()
     salt = _required_env("HASH_SALT")
     timezone_name = os.getenv("TIMEZONE", "Asia/Shanghai")
     lookback_days = int(os.getenv("LOOKBACK_DAYS", "7"))
+    local_source_host_hash = hash_source_host(username, "local", salt)
 
-    events, warnings = _collect_all(lookback_days)
+    configured_remotes = parse_remote_configs_from_env()
+    selected_aliases, temporary_remotes = _resolve_remote_selection(args, configured_remotes)
+    selected_configs = [config for config in configured_remotes if config.alias in selected_aliases]
+    selected_configs.extend(temporary_remotes)
+
+    collectors = _collectors(local_source_host_hash)
+    collectors.extend(build_remote_collectors(selected_configs, username=username, salt=salt))
+    events, warnings = _collect_all(lookback_days, collectors)
     user_hash = hash_user(username, salt)
     rows = aggregate_events(events, user_hash=user_hash, timezone_name=timezone_name)
+    if temporary_remotes:
+        _save_temporary_remotes(args, temporary_remotes, [config.alias for config in configured_remotes])
     return rows, warnings
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
-    _maybe_capture_cursor_token(
+    cursor_probe_warning = _maybe_capture_cursor_token(
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
         browser=getattr(args, "cursor_login_browser", "default"),
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
     )
-    rows, warnings = _build_aggregates()
+    rows, warnings = _build_aggregates(args)
+    if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
+        warnings = [cursor_probe_warning, *warnings]
     if warnings:
         for warning in warnings:
             print(f"warn: {warning}")
@@ -268,12 +353,14 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
-    _maybe_capture_cursor_token(
+    cursor_probe_warning = _maybe_capture_cursor_token(
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
         browser=getattr(args, "cursor_login_browser", "default"),
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
     )
-    rows, warnings = _build_aggregates()
+    rows, warnings = _build_aggregates(args)
+    if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
+        warnings = [cursor_probe_warning, *warnings]
     if warnings:
         for warning in warnings:
             print(f"warn: {warning}")
@@ -295,7 +382,14 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     client = FeishuBitableClient(app_token=app_token, table_id=table_id, bot_token=bot_token)
     result = client.upsert(rows)
-    print(f"sync created={result.created} updated={result.updated} failed={result.failed}")
+    print(f"飞书同步完成：新增={result.created} 更新={result.updated} 失败={result.failed}")
+    if result.warning_samples:
+        for item in result.warning_samples:
+            print(f"warn: {item}")
+    if result.error_samples:
+        print("飞书失败示例：")
+        for item in result.error_samples:
+            print(f"warn: {item}")
     return 0 if result.failed == 0 else 2
 
 
@@ -347,6 +441,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Compatibility option; ignored in system-browser cookie mode",
     )
+    collect_parser.add_argument(
+        "--ui",
+        choices=["auto", "tui", "cli", "none"],
+        default="auto",
+        help="Remote selection UI mode",
+    )
     sync_parser = sub.add_parser("sync", help="Collect locally then upsert aggregates to Feishu")
     sync_parser.add_argument(
         "--cursor-login-timeout-sec",
@@ -365,6 +465,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="Compatibility option; ignored in system-browser cookie mode",
+    )
+    sync_parser.add_argument(
+        "--ui",
+        choices=["auto", "tui", "cli", "none"],
+        default="auto",
+        help="Remote selection UI mode",
     )
     return parser
 

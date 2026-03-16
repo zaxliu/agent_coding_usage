@@ -9,10 +9,10 @@ from .cursor_dashboard import CursorDashboardCollector
 from .file_collector import FileCollector
 
 
-def build_cursor_collector() -> BaseCollector:
+def build_cursor_collector(source_name: str = "local", source_host_hash: str = "") -> BaseCollector:
     session_token = os.getenv("CURSOR_WEB_SESSION_TOKEN", "").strip()
     if session_token:
-        return CursorDashboardCollector(
+        collector = CursorDashboardCollector(
             session_token=session_token,
             workos_id=os.getenv("CURSOR_WEB_WORKOS_ID", "").strip(),
             team_id=_env_int("CURSOR_DASHBOARD_TEAM_ID", 0),
@@ -21,6 +21,9 @@ def build_cursor_collector() -> BaseCollector:
             or "https://cursor.com",
             timeout_sec=_env_float("CURSOR_DASHBOARD_TIMEOUT_SEC", 15.0),
         )
+        collector.source_name = source_name
+        collector.source_host_hash = source_host_hash
+        return collector
 
     defaults = [
         "~/.cursor/logs/**/*.jsonl",
@@ -30,7 +33,12 @@ def build_cursor_collector() -> BaseCollector:
         "~/Library/Application Support/Cursor/User/workspaceStorage/**/*.json",
         "~/Library/Application Support/Cursor/User/globalStorage/**/*.json",
     ]
-    return FileCollector("cursor", split_csv_env("CURSOR_LOG_PATHS", defaults))
+    return FileCollector(
+        "cursor",
+        split_csv_env("CURSOR_LOG_PATHS", defaults),
+        source_name=source_name,
+        source_host_hash=source_host_hash,
+    )
 
 
 def _env_int(name: str, default: int) -> int:

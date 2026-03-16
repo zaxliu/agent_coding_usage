@@ -6,6 +6,7 @@ def test_privacy_whitelist_only():
     row = AggregateRecord(
         date_local="2026-03-08",
         user_hash="hash",
+        source_host_hash="source-hash",
         tool="codex",
         model="gpt-5",
         input_tokens_sum=10,
@@ -18,6 +19,7 @@ def test_privacy_whitelist_only():
     assert set(fields.keys()) == {
         "date_local",
         "user_hash",
+        "source_host_hash",
         "tool",
         "model",
         "input_tokens_sum",
