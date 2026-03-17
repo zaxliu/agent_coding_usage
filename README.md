@@ -93,6 +93,19 @@ Use comma-separated glob patterns in `.env` if defaults are not enough:
 - `CODEX_LOG_PATHS`
 - `CURSOR_LOG_PATHS`
 
+## OpenCode collector
+
+OpenCode stores token usage in a SQLite database. The collector reads from:
+
+- Default: `~/.local/share/opencode/opencode.db`
+- Override via `OPENCODE_DB_PATH` environment variable
+
+Token data is extracted from `step-finish` events in the `part` table, which contain:
+
+- `input_tokens`: Input token count
+- `output_tokens`: Output token count
+- `cache.read` + `cache.write`: Cache token counts
+
 ## Remote SSH collection
 
 Remote collection only applies to `claude_code` and `codex`. `cursor` remains desktop-only.
