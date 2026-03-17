@@ -14,6 +14,7 @@ from llm_usage.collectors import (
     build_claude_collector,
     build_codex_collector,
     build_cursor_collector,
+    build_opencode_collector,
 )
 from llm_usage.cursor_login import (
     fetch_cursor_session_token_via_browser,
@@ -53,6 +54,7 @@ def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
         build_claude_collector(source_host_hash=local_source_host_hash),
         build_codex_collector(source_host_hash=local_source_host_hash),
         build_cursor_collector(source_host_hash=local_source_host_hash),
+        build_opencode_collector(source_host_hash=local_source_host_hash),
     ]
 
 
