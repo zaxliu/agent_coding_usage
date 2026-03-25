@@ -32,7 +32,10 @@ def _parse_time(raw: Any) -> datetime | None:
     if raw is None:
         return None
     if isinstance(raw, (int, float)):
-        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        ts = float(raw)
+        if ts > 10000000000:
+            ts = ts / 1000.0
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
     if isinstance(raw, str):
         candidate = raw.strip().replace("Z", "+00:00")
         try:
@@ -115,16 +118,22 @@ def _extract_codex_turn_model(node: dict[str, Any]) -> str | None:
 
 
 def _build_session_fingerprint(path: Path, tool: str) -> str | None:
-    if tool != "codex":
-        return None
+    if tool == "codex":
+        matches = re.findall(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            path.stem,
+        )
+        if matches:
+            return f"codex:{matches[-1].lower()}"
+        return f"codex_file:{path.stem}"
 
-    matches = re.findall(
-        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        path.stem,
-    )
-    if matches:
-        return f"codex:{matches[-1].lower()}"
-    return f"codex_file:{path.stem}"
+    if tool == "copilot_cli":
+        session_id = path.parent.name.strip()
+        if session_id:
+            return f"copilot_cli:{session_id}"
+        return f"copilot_cli_file:{path.stem}"
+
+    return None
 
 
 def _extract_model(node: dict[str, Any]) -> str:
@@ -143,6 +152,115 @@ def _extract_time(node: dict[str, Any]) -> datetime | None:
     return None
 
 
+def _extract_copilot_cli_events(
+    node: dict[str, Any],
+    fallback_time: datetime,
+    source_ref: str,
+    session_fingerprint: str | None,
+) -> list[UsageEvent]:
+    if node.get("type") != "session.shutdown":
+        return []
+    data = node.get("data")
+    if not isinstance(data, dict):
+        return []
+    model_metrics = data.get("modelMetrics")
+    if not isinstance(model_metrics, dict):
+        return []
+
+    event_time = _extract_time(node) or _parse_time(data.get("sessionStartTime")) or fallback_time
+    session_prefix = session_fingerprint or "copilot_cli"
+    out: list[UsageEvent] = []
+    for model_name, metrics in model_metrics.items():
+        if not isinstance(model_name, str) or not model_name.strip() or not isinstance(metrics, dict):
+            continue
+        usage = metrics.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        input_tokens = _coerce_int(usage.get("inputTokens"))
+        output_tokens = _coerce_int(usage.get("outputTokens"))
+        cache_tokens = _coerce_int(usage.get("cacheReadTokens")) + _coerce_int(
+            usage.get("cacheWriteTokens")
+        )
+        if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+            continue
+        out.append(
+            UsageEvent(
+                tool="copilot_cli",
+                model=model_name.strip(),
+                event_time=event_time,
+                input_tokens=input_tokens,
+                cache_tokens=cache_tokens,
+                output_tokens=output_tokens,
+                session_fingerprint=f"{session_prefix}:{model_name.strip()}",
+                source_ref=source_ref,
+            )
+        )
+    return out
+
+
+def _extract_copilot_vscode_model(session: dict[str, Any], request: dict[str, Any]) -> str:
+    agent = request.get("agent")
+    if isinstance(agent, dict):
+        model_id = agent.get("modelId")
+        if isinstance(model_id, str) and model_id.strip() and model_id.strip() != "copilot/auto":
+            return model_id.strip()
+
+    result = request.get("result")
+    if isinstance(result, dict):
+        details = result.get("details")
+        if isinstance(details, str) and details.strip():
+            return details.split("•", 1)[0].strip()
+
+    input_state = session.get("inputState")
+    if isinstance(input_state, dict):
+        selected_model = input_state.get("selectedModel")
+        if isinstance(selected_model, dict):
+            metadata = selected_model.get("metadata")
+            if isinstance(metadata, dict):
+                for key in ("version", "name", "id"):
+                    value = metadata.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+
+    return "unknown"
+
+
+def _extract_copilot_vscode_events(
+    node: dict[str, Any],
+    fallback_time: datetime,
+    source_ref: str,
+) -> list[UsageEvent]:
+    session = node.get("v") if node.get("kind") == 0 and isinstance(node.get("v"), dict) else node
+    if not isinstance(session, dict):
+        return []
+    session_id = session.get("sessionId")
+    requests = session.get("requests")
+    if not isinstance(session_id, str) or not session_id.strip() or not isinstance(requests, list):
+        return []
+
+    out: list[UsageEvent] = []
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        request_id = request.get("requestId")
+        if not isinstance(request_id, str) or not request_id.strip():
+            continue
+        event_time = _parse_time(request.get("timestamp")) or fallback_time
+        out.append(
+            UsageEvent(
+                tool="copilot_vscode",
+                model=_extract_copilot_vscode_model(session, request),
+                event_time=event_time,
+                input_tokens=0,
+                cache_tokens=0,
+                output_tokens=0,
+                session_fingerprint=f"copilot_vscode:{session_id.strip()}:{request_id.strip()}",
+                source_ref=source_ref,
+            )
+        )
+    return out
+
+
 def extract_usage_events_from_node(
     node: dict[str, Any],
     tool: str,
@@ -151,6 +269,21 @@ def extract_usage_events_from_node(
     codex_model_hint: str | None = None,
     session_fingerprint: str | None = None,
 ) -> list[UsageEvent]:
+    if tool == "copilot_cli":
+        return _extract_copilot_cli_events(
+            node,
+            fallback_time=fallback_time,
+            source_ref=source_ref,
+            session_fingerprint=session_fingerprint,
+        )
+
+    if tool == "copilot_vscode":
+        return _extract_copilot_vscode_events(
+            node,
+            fallback_time=fallback_time,
+            source_ref=source_ref,
+        )
+
     if tool == "codex":
         usage = _extract_codex_token_count_usage(node)
         if usage is None:

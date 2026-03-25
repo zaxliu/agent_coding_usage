@@ -12,6 +12,8 @@ from llm_usage.bundle import build_bundles
 from llm_usage.collectors import (
     BaseCollector,
     build_claude_collector,
+    build_copilot_cli_collector,
+    build_copilot_vscode_collector,
     build_codex_collector,
     build_cursor_collector,
     build_opencode_collector,
@@ -53,6 +55,8 @@ def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
     return [
         build_claude_collector(source_host_hash=local_source_host_hash),
         build_codex_collector(source_host_hash=local_source_host_hash),
+        build_copilot_cli_collector(source_host_hash=local_source_host_hash),
+        build_copilot_vscode_collector(source_host_hash=local_source_host_hash),
         build_cursor_collector(source_host_hash=local_source_host_hash),
         build_opencode_collector(source_host_hash=local_source_host_hash),
     ]
@@ -130,6 +134,8 @@ def cmd_init(_: argparse.Namespace) -> int:
                     "# Optional source path overrides (comma-separated globs)",
                     "CLAUDE_LOG_PATHS=",
                     "CODEX_LOG_PATHS=",
+                    "COPILOT_CLI_LOG_PATHS=",
+                    "COPILOT_VSCODE_SESSION_PATHS=",
                     "CURSOR_LOG_PATHS=",
                     "",
                     "# Optional: Cursor Pro+ web dashboard collector.",
@@ -151,6 +157,8 @@ def cmd_init(_: argparse.Namespace) -> int:
                     "REMOTE_SAMPLE_LABEL=",
                     "REMOTE_SAMPLE_CLAUDE_LOG_PATHS=",
                     "REMOTE_SAMPLE_CODEX_LOG_PATHS=",
+                    "REMOTE_SAMPLE_COPILOT_CLI_LOG_PATHS=",
+                    "REMOTE_SAMPLE_COPILOT_VSCODE_SESSION_PATHS=",
                 ]
             )
             + "\n",

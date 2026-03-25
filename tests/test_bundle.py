@@ -44,6 +44,8 @@ def _write_repo_fixture(repo_root: Path) -> None:
                 "# Paths",
                 "CLAUDE_LOG_PATHS=/tmp/claude",
                 "CODEX_LOG_PATHS=/tmp/codex",
+                "COPILOT_CLI_LOG_PATHS=/tmp/copilot-cli",
+                "COPILOT_VSCODE_SESSION_PATHS=/tmp/copilot-vscode",
                 "CURSOR_LOG_PATHS=/tmp/cursor",
                 "",
                 "# Cursor",
@@ -96,6 +98,8 @@ def test_build_bundles_sanitizes_internal_and_external_env(tmp_path):
     assert "CURSOR_WEB_SESSION_TOKEN=\n" in internal_env
     assert "CURSOR_WEB_WORKOS_ID=\n" in internal_env
     assert "CLAUDE_LOG_PATHS=\n" in internal_env
+    assert "COPILOT_CLI_LOG_PATHS=\n" in internal_env
+    assert "COPILOT_VSCODE_SESSION_PATHS=\n" in internal_env
     assert "CURSOR_DASHBOARD_BASE_URL=https://cursor.com\n" in internal_env
     assert "CURSOR_DASHBOARD_PAGE_SIZE=300\n" in internal_env
     assert "REMOTE_HOSTS=\n" in internal_env

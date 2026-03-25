@@ -166,16 +166,90 @@ def extract_codex_turn_model(node):
     return nested_model if nested_model != "unknown" else None
 
 def build_session_fingerprint(path, tool_name):
-    if tool_name != "codex":
-        return None
-    matches = re.findall(
-        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        os.path.splitext(os.path.basename(path))[0],
-    )
-    if matches:
-        return "codex:" + matches[-1].lower()
-    stem = os.path.splitext(os.path.basename(path))[0]
-    return "codex_file:" + stem
+    if tool_name == "codex":
+        matches = re.findall(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            os.path.splitext(os.path.basename(path))[0],
+        )
+        if matches:
+            return "codex:" + matches[-1].lower()
+        stem = os.path.splitext(os.path.basename(path))[0]
+        return "codex_file:" + stem
+    if tool_name == "copilot_cli":
+        session_dir = os.path.basename(os.path.dirname(path)).strip()
+        if session_dir:
+            return "copilot_cli:" + session_dir
+        stem = os.path.splitext(os.path.basename(path))[0]
+        return "copilot_cli_file:" + stem
+    return None
+
+def extract_copilot_cli_events(node, fallback_time, session_fingerprint, source_ref):
+    if node.get("type") != "session.shutdown":
+        return []
+    data = node.get("data")
+    if not isinstance(data, dict):
+        return []
+    model_metrics = data.get("modelMetrics")
+    if not isinstance(model_metrics, dict):
+        return []
+    event_time = extract_time(node) or parse_time(data.get("sessionStartTime")) or fallback_time
+    out = []
+    prefix = session_fingerprint or "copilot_cli"
+    for model_name, metrics in model_metrics.items():
+        if not isinstance(model_name, str) or not model_name.strip() or not isinstance(metrics, dict):
+            continue
+        usage = metrics.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        input_tokens = coerce_int(usage.get("inputTokens"))
+        output_tokens = coerce_int(usage.get("outputTokens"))
+        cache_tokens = coerce_int(usage.get("cacheReadTokens")) + coerce_int(usage.get("cacheWriteTokens"))
+        if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+            continue
+        out.append((event_time, model_name.strip(), input_tokens, cache_tokens, output_tokens, prefix + ":" + model_name.strip(), source_ref))
+    return out
+
+def extract_copilot_vscode_model(session, request):
+    agent = request.get("agent")
+    if isinstance(agent, dict):
+        model_id = agent.get("modelId")
+        if isinstance(model_id, str) and model_id.strip() and model_id.strip() != "copilot/auto":
+            return model_id.strip()
+    result = request.get("result")
+    if isinstance(result, dict):
+        details = result.get("details")
+        if isinstance(details, str) and details.strip():
+            return details.split("•", 1)[0].strip()
+    input_state = session.get("inputState")
+    if isinstance(input_state, dict):
+        selected_model = input_state.get("selectedModel")
+        if isinstance(selected_model, dict):
+            metadata = selected_model.get("metadata")
+            if isinstance(metadata, dict):
+                for key in ("version", "name", "id"):
+                    value = metadata.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+    return "unknown"
+
+def extract_copilot_vscode_events(node, fallback_time, source_ref):
+    session = node.get("v") if node.get("kind") == 0 and isinstance(node.get("v"), dict) else node
+    if not isinstance(session, dict):
+        return []
+    session_id = session.get("sessionId")
+    requests = session.get("requests")
+    if not isinstance(session_id, str) or not session_id.strip() or not isinstance(requests, list):
+        return []
+    out = []
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        request_id = request.get("requestId")
+        if not isinstance(request_id, str) or not request_id.strip():
+            continue
+        event_time = parse_time(request.get("timestamp")) or fallback_time
+        out.append((event_time, extract_copilot_vscode_model(session, request), 0, 0, 0, "copilot_vscode:" + session_id.strip() + ":" + request_id.strip(), source_ref))
+    return out
 
 def append_event(out, event_time, model, input_tokens, cache_tokens, output_tokens, session_fingerprint, source_ref):
     if event_time is None:
@@ -256,6 +330,23 @@ for pattern in patterns:
                         try:
                             obj = json.loads(line)
                         except ValueError:
+                            continue
+                        if tool == "copilot_cli":
+                            for item in extract_copilot_cli_events(
+                                obj,
+                                fallback_time,
+                                session_fingerprint,
+                                path + ":" + str(idx),
+                            ):
+                                append_event(events, *item)
+                            continue
+                        if tool == "copilot_vscode":
+                            for item in extract_copilot_vscode_events(
+                                obj,
+                                fallback_time,
+                                path + ":" + str(idx),
+                            ):
+                                append_event(events, *item)
                             continue
                         if tool == "codex":
                             turn_model = extract_codex_turn_model(obj)
@@ -339,6 +430,12 @@ for pattern in patterns:
                                 session_fingerprint,
                                 path,
                             )
+                    elif tool == "copilot_cli":
+                        for item in extract_copilot_cli_events(obj, fallback_time, session_fingerprint, path):
+                            append_event(events, *item)
+                    elif tool == "copilot_vscode":
+                        for item in extract_copilot_vscode_events(obj, fallback_time, path):
+                            append_event(events, *item)
                     else:
                         local_seen = set()
                         for candidate in walk_json_nodes(obj):

@@ -199,3 +199,80 @@ def test_read_codex_jsonl_tracks_model_changes_by_turn(tmp_path):
     assert {event.session_fingerprint for event in events} == {
         "codex:019ceb08-9d8d-7dc3-a63f-123587dd33fe"
     }
+
+
+def test_read_copilot_cli_jsonl_extracts_model_metrics(tmp_path):
+    session_dir = tmp_path / "session-state" / "sess-123"
+    session_dir.mkdir(parents=True)
+    path = session_dir / "events.jsonl"
+    lines = [
+        {
+            "type": "session.start",
+            "timestamp": "2026-03-25T03:45:56Z",
+        },
+        {
+            "type": "session.shutdown",
+            "timestamp": "2026-03-25T03:49:04Z",
+            "data": {
+                "modelMetrics": {
+                    "gpt-5-mini": {
+                        "usage": {
+                            "inputTokens": 12002,
+                            "outputTokens": 319,
+                            "cacheReadTokens": 2,
+                            "cacheWriteTokens": 3,
+                        }
+                    }
+                }
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(v) for v in lines) + "\n", encoding="utf-8")
+
+    events, warning = read_events_from_file(path, tool="copilot_cli")
+
+    assert warning is None
+    assert len(events) == 1
+    assert events[0].tool == "copilot_cli"
+    assert events[0].model == "gpt-5-mini"
+    assert events[0].input_tokens == 12002
+    assert events[0].cache_tokens == 5
+    assert events[0].output_tokens == 319
+    assert events[0].session_fingerprint == "copilot_cli:sess-123:gpt-5-mini"
+
+
+def test_read_copilot_vscode_session_jsonl_extracts_requests(tmp_path):
+    path = tmp_path / "session.jsonl"
+    line = {
+        "kind": 0,
+        "v": {
+            "sessionId": "session-abc",
+            "requests": [
+                {
+                    "requestId": "request-1",
+                    "timestamp": 1774411393113,
+                    "agent": {"modelId": "copilot/auto"},
+                    "result": {"details": "Raptor mini (Preview) • 1x"},
+                }
+            ],
+            "inputState": {
+                "selectedModel": {
+                    "metadata": {
+                        "version": "raptor-mini",
+                        "name": "Auto",
+                    }
+                }
+            },
+        },
+    }
+    path.write_text(json.dumps(line) + "\n", encoding="utf-8")
+
+    events, warning = read_events_from_file(path, tool="copilot_vscode")
+
+    assert warning is None
+    assert len(events) == 1
+    assert events[0].tool == "copilot_vscode"
+    assert events[0].model == "Raptor mini (Preview)"
+    assert events[0].input_tokens == 0
+    assert events[0].output_tokens == 0
+    assert events[0].session_fingerprint == "copilot_vscode:session-abc:request-1"

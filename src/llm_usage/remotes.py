@@ -20,6 +20,13 @@ DEFAULT_REMOTE_CODEX_LOG_PATHS = [
     "~/.codex/**/*.jsonl",
     "~/.codex/**/*.json",
 ]
+DEFAULT_REMOTE_COPILOT_CLI_LOG_PATHS = [
+    "~/.copilot/session-state/**/*.jsonl",
+]
+DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS = [
+    "~/.vscode-server/data/User/globalStorage/emptyWindowChatSessions/*.jsonl",
+    "~/.vscode-server/data/User/workspaceStorage/**/chatEditingSessions/*/state.json",
+]
 
 
 @dataclass(frozen=True)
@@ -31,6 +38,8 @@ class RemoteHostConfig:
     source_label: str
     claude_log_paths: list[str]
     codex_log_paths: list[str]
+    copilot_cli_log_paths: list[str]
+    copilot_vscode_session_paths: list[str]
     is_ephemeral: bool = False
 
 
@@ -54,6 +63,14 @@ def parse_remote_configs_from_env(env: dict[str, str] | None = None) -> list[Rem
             data.get(prefix + "CODEX_LOG_PATHS", ""),
             DEFAULT_REMOTE_CODEX_LOG_PATHS,
         )
+        copilot_cli_log_paths = _split_paths(
+            data.get(prefix + "COPILOT_CLI_LOG_PATHS", ""),
+            DEFAULT_REMOTE_COPILOT_CLI_LOG_PATHS,
+        )
+        copilot_vscode_session_paths = _split_paths(
+            data.get(prefix + "COPILOT_VSCODE_SESSION_PATHS", ""),
+            DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS,
+        )
         out.append(
             RemoteHostConfig(
                 alias=alias,
@@ -63,6 +80,8 @@ def parse_remote_configs_from_env(env: dict[str, str] | None = None) -> list[Rem
                 source_label=source_label,
                 claude_log_paths=claude_log_paths,
                 codex_log_paths=codex_log_paths,
+                copilot_cli_log_paths=copilot_cli_log_paths,
+                copilot_vscode_session_paths=copilot_vscode_session_paths,
             )
         )
     return out
@@ -97,6 +116,26 @@ def build_remote_collectors(
                     source_host_hash=source_host_hash,
                 )
             )
+        if config.copilot_cli_log_paths:
+            collectors.append(
+                RemoteFileCollector(
+                    "copilot_cli",
+                    target=target,
+                    patterns=config.copilot_cli_log_paths,
+                    source_name=config.alias.lower(),
+                    source_host_hash=source_host_hash,
+                )
+            )
+        if config.copilot_vscode_session_paths:
+            collectors.append(
+                RemoteFileCollector(
+                    "copilot_vscode",
+                    target=target,
+                    patterns=config.copilot_vscode_session_paths,
+                    source_name=config.alias.lower(),
+                    source_host_hash=source_host_hash,
+                )
+            )
     return collectors
 
 
@@ -120,6 +159,8 @@ def build_temporary_remote(
         source_label=source_label,
         claude_log_paths=claude_log_paths or list(DEFAULT_REMOTE_CLAUDE_LOG_PATHS),
         codex_log_paths=codex_log_paths or list(DEFAULT_REMOTE_CODEX_LOG_PATHS),
+        copilot_cli_log_paths=list(DEFAULT_REMOTE_COPILOT_CLI_LOG_PATHS),
+        copilot_vscode_session_paths=list(DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS),
         is_ephemeral=True,
     )
 
@@ -134,6 +175,12 @@ def append_remote_to_env(path: Path, config: RemoteHostConfig, existing_aliases:
     upsert_env_var(path, prefix + "LABEL", config.source_label)
     upsert_env_var(path, prefix + "CLAUDE_LOG_PATHS", ",".join(config.claude_log_paths))
     upsert_env_var(path, prefix + "CODEX_LOG_PATHS", ",".join(config.codex_log_paths))
+    upsert_env_var(path, prefix + "COPILOT_CLI_LOG_PATHS", ",".join(config.copilot_cli_log_paths))
+    upsert_env_var(
+        path,
+        prefix + "COPILOT_VSCODE_SESSION_PATHS",
+        ",".join(config.copilot_vscode_session_paths),
+    )
     return alias
 
 

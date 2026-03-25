@@ -15,6 +15,7 @@ def test_parse_remote_configs_from_env():
         "REMOTE_SERVER_A_SSH_HOST": "host-a",
         "REMOTE_SERVER_A_SSH_USER": "alice",
         "REMOTE_SERVER_A_LABEL": "prod-a",
+        "REMOTE_SERVER_A_COPILOT_CLI_LOG_PATHS": "/tmp/copilot-cli.jsonl",
         "REMOTE_SERVER_B_SSH_HOST": "host-b",
         "REMOTE_SERVER_B_SSH_USER": "bob",
     }
@@ -22,6 +23,7 @@ def test_parse_remote_configs_from_env():
     assert [config.alias for config in configs] == ["SERVER_A", "SERVER_B"]
     assert configs[0].ssh_port == 22
     assert configs[0].source_label == "prod-a"
+    assert configs[0].copilot_cli_log_paths == ["/tmp/copilot-cli.jsonl"]
 
 
 def test_parse_remote_configs_from_env_defaults_source_label_to_user_and_host():
@@ -39,6 +41,7 @@ def test_build_remote_collectors_sets_per_user_source_hash():
     collectors_a = build_remote_collectors([config], username="alice", salt="salt")
     collectors_b = build_remote_collectors([config], username="bob", salt="salt")
     assert collectors_a[0].source_host_hash != collectors_b[0].source_host_hash
+    assert {collector.name for collector in collectors_a} >= {"claude_code", "codex", "copilot_cli", "copilot_vscode"}
 
 
 def test_append_remote_to_env_writes_remote_fields(tmp_path):
@@ -52,6 +55,8 @@ def test_append_remote_to_env_writes_remote_fields(tmp_path):
     assert "REMOTE_BOB_HOST_B_SSH_HOST=host-b" in text
     assert "REMOTE_BOB_HOST_B_SSH_PORT=2200" in text
     assert "REMOTE_BOB_HOST_B_LABEL=bob@host-b" in text
+    assert "REMOTE_BOB_HOST_B_COPILOT_CLI_LOG_PATHS=" in text
+    assert "REMOTE_BOB_HOST_B_COPILOT_VSCODE_SESSION_PATHS=" in text
 
 
 def test_alias_helpers_normalize_and_dedupe():
