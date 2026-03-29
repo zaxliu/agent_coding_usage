@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import resources
 import os
+import shlex
 from pathlib import Path
 import shutil
 import sys
@@ -35,10 +36,9 @@ def resolve_runtime_paths(legacy_root: Path | None = None) -> RuntimePaths:
     if cached is not None:
         return cached
 
-    config_dir = _config_dir()
-    data_dir = _data_dir()
-    preferred_env_path = Path(env_override).expanduser() if env_override else config_dir / ".env"
-    preferred_state_path = data_dir / "runtime_state.json"
+    preferred_paths = resolve_active_runtime_paths()
+    preferred_env_path = preferred_paths.env_path
+    preferred_state_path = preferred_paths.runtime_state_path
 
     legacy_env_path = root / ".env"
     legacy_state_path = root / "reports" / "runtime_state.json"
@@ -56,13 +56,28 @@ def resolve_runtime_paths(legacy_root: Path | None = None) -> RuntimePaths:
 
     paths = RuntimePaths(
         env_path=env_path,
-        config_dir=preferred_env_path.parent,
-        data_dir=data_dir,
-        reports_dir=data_dir / "reports",
+        config_dir=preferred_paths.config_dir,
+        data_dir=preferred_paths.data_dir,
+        reports_dir=preferred_paths.reports_dir,
         runtime_state_path=runtime_state_path,
     )
     _RUNTIME_PATHS_CACHE[cache_key] = paths
     return paths
+
+
+def resolve_active_runtime_paths() -> RuntimePaths:
+    config_dir = _config_dir()
+    data_dir = _data_dir()
+    env_override = os.environ.get("LLM_USAGE_ENV_FILE", "").strip()
+    preferred_env_path = Path(env_override).expanduser() if env_override else config_dir / ".env"
+    preferred_state_path = data_dir / "runtime_state.json"
+    return RuntimePaths(
+        env_path=preferred_env_path,
+        config_dir=preferred_env_path.parent,
+        data_dir=data_dir,
+        reports_dir=data_dir / "reports",
+        runtime_state_path=preferred_state_path,
+    )
 
 
 def _config_dir() -> Path:
@@ -104,9 +119,12 @@ def _resolve_file_path(label: str, preferred: Path, legacy: Path) -> Path:
         return preferred
     if not legacy.exists() or preferred == legacy:
         return preferred
+    import_command = _legacy_import_command(legacy)
     if _is_interactive():
         answer = input(
-            f"检测到旧版 {label} 在 {legacy}，是否迁移到 {preferred}？[y/N]: "
+            f"检测到旧版 {label} 在 {legacy}。按 `y` 会把这个旧文件复制到 {preferred}；"
+            f"如果要手动执行一次性迁移，可运行 `{import_command}`。"
+            f"是否复制到 {preferred}？[y/N]: "
         ).strip().lower()
         if answer in _PROMPT_ACCEPT:
             preferred.parent.mkdir(parents=True, exist_ok=True)
@@ -117,13 +135,25 @@ def _resolve_file_path(label: str, preferred: Path, legacy: Path) -> Path:
         return legacy
     print(
         f"warn: found legacy {label} at {legacy}; "
-        f"new default is {preferred}. Using legacy file for this run."
+        f"new default is {preferred}. Run `{import_command}` once to migrate these files. "
+        f"Using legacy file for this run."
     )
     return legacy
 
 
 def _is_interactive() -> bool:
     return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _legacy_import_command(legacy: Path) -> str:
+    legacy_root = legacy.parent if legacy.name == ".env" else legacy.parent.parent
+    legacy_root_str = str(legacy_root)
+    if sys.platform == "win32":
+        legacy_root_str = legacy_root_str.replace('"', '\\"')
+        legacy_root_str = f'"{legacy_root_str}"'
+    else:
+        legacy_root_str = shlex.quote(legacy_root_str)
+    return f"{APP_NAME} import-config --from {legacy_root_str}"
 
 
 def read_bootstrap_env_text() -> str:

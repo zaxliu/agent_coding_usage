@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,7 @@ from llm_usage.cursor_login import (
 from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
 from llm_usage.interaction import confirm_save_temporary_remote, select_remotes
-from llm_usage.paths import read_bootstrap_env_text, resolve_runtime_paths
+from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
 from llm_usage.remotes import append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
 from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
@@ -478,6 +479,66 @@ def cmd_bundle(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_config_plan(source_root: Path, runtime_paths, force: bool) -> tuple[list[tuple[Path, Path, str]], list[str]]:
+    plan: list[tuple[Path, Path, str]] = []
+    messages: list[str] = []
+    source_targets = [
+        (source_root / ".env", runtime_paths.env_path, ".env"),
+        (source_root / "reports" / "runtime_state.json", runtime_paths.runtime_state_path, "runtime state"),
+    ]
+
+    for source_path, target_path, label in source_targets:
+        if not source_path.exists():
+            messages.append(f"missing: {label} source not found at {source_path}")
+            continue
+        if target_path.exists() and source_path.samefile(target_path):
+            messages.append(f"skip: {label} source and target are the same file at {target_path}")
+            continue
+        if target_path.exists() and not force:
+            messages.append(f"skip: {label} target already exists at {target_path}")
+            continue
+        action = "overwrite" if target_path.exists() else "copy"
+        plan.append((source_path, target_path, action))
+    return plan, messages
+
+
+def cmd_import_config(args: argparse.Namespace) -> int:
+    source_root = Path(args.source_root).resolve() if getattr(args, "source_root", None) else _repo_root()
+    runtime_paths = resolve_active_runtime_paths()
+    plan, messages = _import_config_plan(source_root, runtime_paths, force=args.force)
+    source_exists = any(
+        path.exists()
+        for path in (
+            source_root / ".env",
+            source_root / "reports" / "runtime_state.json",
+        )
+    )
+
+    for message in messages:
+        print(message)
+
+    if not plan:
+        if source_exists:
+            print("info: nothing imported")
+            return 0
+        print("error: no importable legacy config files found")
+        return 1
+
+    for source_path, target_path, action in plan:
+        print(f"plan: {action} {source_path} -> {target_path}")
+
+    if args.dry_run:
+        print("dry-run: no files were written")
+        return 0
+
+    for source_path, target_path, _ in plan:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        print(f"imported: {target_path}")
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Team LLM usage collector and Feishu sync")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -495,6 +556,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-staging",
         action="store_true",
         help="Keep copied staging directories under output-dir for inspection",
+    )
+    import_parser = sub.add_parser(
+        "import-config",
+        help="One-time migration of legacy .env and runtime state into runtime paths",
+        description=(
+            "One-time migration helper for moving legacy .env and reports/runtime_state.json "
+            "into the active runtime paths."
+        ),
+    )
+    import_parser.add_argument(
+        "--from",
+        dest="source_root",
+        type=str,
+        default=None,
+        metavar="SOURCE_ROOT",
+        help=(
+            "Legacy repo root to import from, containing .env and reports/runtime_state.json; "
+            "defaults to the current working directory"
+        ),
+    )
+    import_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be copied without writing any files",
+    )
+    import_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing target files in the active runtime paths",
     )
     collect_parser = sub.add_parser("collect", help="Collect usage locally and output local report")
     collect_parser.add_argument(
@@ -556,6 +646,7 @@ def main() -> int:
         "init": cmd_init,
         "doctor": cmd_doctor,
         "bundle": cmd_bundle,
+        "import-config": cmd_import_config,
         "collect": cmd_collect,
         "sync": cmd_sync,
     }

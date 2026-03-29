@@ -67,6 +67,19 @@ LOOKBACK_DAYS=7
 
 远端不建议手工编辑 `REMOTE_*` 配置。推荐直接运行 `llm-usage collect --ui auto` 或 `llm-usage sync --ui auto`，按提示输入 SSH 主机、用户、端口；连通性检查通过后，确认保存即可自动写入 `.env`。
 
+如果你是从旧版仓库迁移，旧配置通常还在仓库根目录的 `.env` 和 `reports/runtime_state.json`。这类配置现在需要一次性迁移到新的运行时路径，推荐在旧仓库根目录执行：
+
+```bash
+llm-usage import-config --from /path/to/old/repo
+```
+
+可选参数：
+
+- `--dry-run`：先预览会复制哪些文件
+- `--force`：覆盖新位置里已存在的目标文件
+
+如果你就在旧仓库根目录执行，也可以省略 `--from`。迁移完成后，后续直接使用 `llm-usage doctor`、`llm-usage collect` 或 `llm-usage sync` 即可。
+
 ## 命令说明
 
 ### `llm-usage init`
@@ -269,7 +282,7 @@ username@username@host_server_ip@host_jumpserver_ip
 运行时行为：
 
 - `--ui auto` 优先使用轻量 TUI，失败时回落到 CLI
-- 上次选择的静态远端会保存到 `reports/runtime_state.json`
+- 上次选择的静态远端会保存到当前运行时数据目录下的 `runtime_state.json`
 - 可以在运行时临时添加远端
 - 推荐通过运行时交互添加远端，临时远端只有确认后才会追加写入 `.env`
 - 临时远端默认来源标签为 `ssh_user@ssh_host`
@@ -335,6 +348,42 @@ username@username@host_server_ip@host_jumpserver_ip
 ```bash
 pip install -e '.[dev]'
 pytest
+```
+
+## 发布到 PyPI
+
+先准备发布工具：
+
+```bash
+python -m pip install -U build twine
+```
+
+每次发布前都要先修改 [pyproject.toml](/Users/lewis/Documents/code/agent_coding_usage/pyproject.toml) 里的 `version`，避免重复上传同一版本。
+
+构建并检查 PyPI 分发文件：
+
+```bash
+./scripts/build_pypi_release.sh
+```
+
+这个脚本会把产物单独输出到 `dist/pypi/`，不会碰现有 `dist/` 目录中的业务压缩包。
+
+如果你想自定义输出目录：
+
+```bash
+./scripts/build_pypi_release.sh /tmp/llm-usage-pypi
+```
+
+上传命令单独执行，不放进脚本里：
+
+```bash
+python -m twine upload dist/pypi/*
+```
+
+如果要先用 TestPyPI 验证：
+
+```bash
+python -m twine upload --repository testpypi dist/pypi/*
 ```
 
 采集器扩展说明见 [docs/ADAPTERS.md](/Users/lewis/Documents/code/agent_coding_usage/docs/ADAPTERS.md)。
