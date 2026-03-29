@@ -1,18 +1,159 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { isInteractive, promptLine, warn } from "./ui.js";
+
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(thisDir, "../../..");
-export const envPath = path.join(repoRoot, ".env");
-export const reportsDir = path.join(repoRoot, "reports");
-export const runtimeStatePath = path.join(reportsDir, "runtime_state.json");
+const bootstrapEnvPath = path.resolve(thisDir, "../../resources/bootstrap.env");
+const APP_NAME = "llm-usage";
+const ACCEPT_ANSWERS = new Set(["y", "yes", "是", "确认"]);
+let runtimePathsCache = new Map();
 
-export function loadDotenv(filePath = envPath) {
-  if (!fs.existsSync(filePath)) {
+function configDir() {
+  const envFile = String(process.env.LLM_USAGE_ENV_FILE || "").trim();
+  if (envFile) {
+    return path.dirname(path.resolve(envFile));
+  }
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", APP_NAME);
+  }
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), APP_NAME);
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), APP_NAME);
+}
+
+function dataDir() {
+  const override = String(process.env.LLM_USAGE_DATA_DIR || "").trim();
+  if (override) {
+    return path.resolve(override);
+  }
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", APP_NAME);
+  }
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), APP_NAME);
+  }
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), APP_NAME);
+}
+
+async function resolveFilePath(label, preferredPath, legacyPath) {
+  if (fs.existsSync(preferredPath)) {
+    return preferredPath;
+  }
+  if (!fs.existsSync(legacyPath) || preferredPath === legacyPath) {
+    return preferredPath;
+  }
+  if (isInteractive()) {
+    const answer = (
+      await promptLine(`检测到旧版 ${label} 在 ${legacyPath}，是否迁移到 ${preferredPath}？[y/N]: `)
+    )
+      .trim()
+      .toLowerCase();
+    if (ACCEPT_ANSWERS.has(answer)) {
+      fs.mkdirSync(path.dirname(preferredPath), { recursive: true });
+      fs.copyFileSync(legacyPath, preferredPath);
+      console.log(`info: migrated ${label} from ${legacyPath} to ${preferredPath}`);
+      return preferredPath;
+    }
+    console.log(warn(`using legacy ${label} for this run: ${legacyPath}`));
+    return legacyPath;
+  }
+  console.log(
+    warn(`found legacy ${label} at ${legacyPath}; new default is ${preferredPath}. Using legacy file for this run.`),
+  );
+  return legacyPath;
+}
+
+export async function prepareRuntimePaths(legacyRoot = repoRoot) {
+  const root = path.resolve(legacyRoot);
+  const cacheKey = [
+    root,
+    String(process.env.LLM_USAGE_ENV_FILE || "").trim(),
+    String(process.env.LLM_USAGE_DATA_DIR || "").trim(),
+  ].join("|");
+  if (runtimePathsCache.has(cacheKey)) {
+    return runtimePathsCache.get(cacheKey);
+  }
+
+  const resolvedConfigDir = configDir();
+  const resolvedDataDir = dataDir();
+  const preferredEnvPath = String(process.env.LLM_USAGE_ENV_FILE || "").trim()
+    ? path.resolve(process.env.LLM_USAGE_ENV_FILE)
+    : path.join(resolvedConfigDir, ".env");
+  const preferredRuntimeStatePath = path.join(resolvedDataDir, "runtime_state.json");
+  const envPath = await resolveFilePath(".env", preferredEnvPath, path.join(root, ".env"));
+  const runtimeStatePath = await resolveFilePath(
+    "runtime state",
+    preferredRuntimeStatePath,
+    path.join(root, "reports", "runtime_state.json"),
+  );
+  const resolved = {
+    configDir: resolvedConfigDir,
+    dataDir: resolvedDataDir,
+    envPath,
+    reportsDir: path.join(resolvedDataDir, "reports"),
+    runtimeStatePath,
+  };
+  runtimePathsCache.set(cacheKey, resolved);
+  return resolved;
+}
+
+export function resetRuntimePathsCache() {
+  runtimePathsCache = new Map();
+}
+
+function defaultRuntimePaths(legacyRoot = repoRoot) {
+  const root = path.resolve(legacyRoot);
+  const resolvedConfigDir = configDir();
+  const resolvedDataDir = dataDir();
+  const envFile = String(process.env.LLM_USAGE_ENV_FILE || "").trim();
+  return {
+    configDir: resolvedConfigDir,
+    dataDir: resolvedDataDir,
+    envPath: envFile ? path.resolve(envFile) : path.join(resolvedConfigDir, ".env"),
+    reportsDir: path.join(resolvedDataDir, "reports"),
+    runtimeStatePath: path.join(resolvedDataDir, "runtime_state.json"),
+    legacyEnvPath: path.join(root, ".env"),
+    legacyRuntimeStatePath: path.join(root, "reports", "runtime_state.json"),
+  };
+}
+
+function currentPaths(legacyRoot = repoRoot) {
+  const prepared = [...runtimePathsCache.values()][0];
+  return prepared || defaultRuntimePaths(legacyRoot);
+}
+
+export function getEnvPath() {
+  return currentPaths().envPath;
+}
+
+export function getReportsDir() {
+  return currentPaths().reportsDir;
+}
+
+export function getRuntimeStatePath() {
+  return currentPaths().runtimeStatePath;
+}
+
+function readBootstrapEnvText() {
+  return fs.readFileSync(bootstrapEnvPath, "utf8");
+}
+
+function ensureEnvFileExists(filePath = getEnvPath()) {
+  if (fs.existsSync(filePath)) {
     return;
   }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, readBootstrapEnvText(), "utf8");
+}
+
+export function loadDotenv(filePath = getEnvPath()) {
+  ensureEnvFileExists(filePath);
   const text = fs.readFileSync(filePath, "utf8");
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -47,7 +188,7 @@ export function intEnv(name, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-export function readEnvFile(filePath = envPath) {
+export function readEnvFile(filePath = getEnvPath()) {
   const out = [];
   if (!fs.existsSync(filePath)) {
     return out;
@@ -64,7 +205,7 @@ export function readEnvFile(filePath = envPath) {
   return out;
 }
 
-export function upsertEnvVar(key, value, filePath = envPath) {
+export function upsertEnvVar(key, value, filePath = getEnvPath()) {
   const normalizedKey = String(key || "").trim();
   if (!normalizedKey) {
     throw new Error("env key cannot be empty");
@@ -72,6 +213,7 @@ export function upsertEnvVar(key, value, filePath = envPath) {
 
   const encoded = `${normalizedKey}=${value}`;
   if (!fs.existsSync(filePath)) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, `${encoded}\n`, "utf8");
     return;
   }

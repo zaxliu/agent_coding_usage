@@ -3,7 +3,17 @@ import process from "node:process";
 import { aggregateEvents } from "../core/aggregation.js";
 import { hashUser } from "../core/identity.js";
 import { toFeishuFields } from "../core/privacy.js";
-import { envPath, getEnv, intEnv, loadDotenv, reportsDir, requiredEnv, runtimeStatePath } from "../runtime/env.js";
+import {
+  getEnv,
+  getEnvPath,
+  getReportsDir,
+  getRuntimeStatePath,
+  intEnv,
+  loadDotenv,
+  prepareRuntimePaths,
+  requiredEnv,
+  repoRoot,
+} from "../runtime/env.js";
 import { FeishuBitableClient, fetchFirstTableId, fetchTenantAccessToken } from "../runtime/feishu.js";
 import { confirmSaveTemporaryRemote, persistTemporaryRemote, selectRemotes } from "../runtime/interaction.js";
 import {
@@ -23,7 +33,7 @@ function printHelp() {
 
 Commands:
   doctor        Probe configured data sources via the Python collector bridge
-  collect       Collect usage, aggregate in Node, and write reports/usage_report.csv
+  collect       Collect usage, aggregate in Node, and write usage_report.csv to the user data dir
   sync          Collect usage, aggregate in Node, and upsert rows to Feishu
 
 Options:
@@ -82,6 +92,8 @@ function printWarnings(warnings) {
 
 async function prepareRemoteSelection(uiMode) {
   const configuredRemotes = parseRemoteConfigsFromEnv();
+  const runtimeStatePath = getRuntimeStatePath();
+  const envPath = getEnvPath();
   const stateAliases = loadSelectedRemoteAliases(runtimeStatePath);
   const configuredAliases = configuredRemotes.map((item) => item.alias);
   const defaultAliases = stateAliases.length
@@ -143,7 +155,7 @@ async function runDoctor(lookbackDays, uiMode) {
     LLM_USAGE_SELECTED_REMOTE_ALIASES: remoteSelection.selectedAliases.join(","),
   };
   const payload = doctorViaPython(lookbackDays, envOverrides);
-  printDoctorReport({ envPath, probes: payload.probes || [], warnings: payload.warnings || [] });
+  printDoctorReport({ envPath: getEnvPath(), probes: payload.probes || [], warnings: payload.warnings || [] });
   return 0;
 }
 
@@ -151,7 +163,7 @@ async function runCollect(lookbackDays, uiMode) {
   const { rows, warnings } = await buildAggregates(lookbackDays, uiMode);
   printWarnings(warnings);
   printTerminalReport(rows);
-  const csvPath = writeCsvReport(rows, reportsDir);
+  const csvPath = writeCsvReport(rows, getReportsDir());
   console.log(info(`csv: ${csvPath}`));
   return 0;
 }
@@ -160,7 +172,7 @@ async function runSync(lookbackDays, uiMode) {
   const { rows, warnings } = await buildAggregates(lookbackDays, uiMode);
   printWarnings(warnings);
   printTerminalReport(rows);
-  const csvPath = writeCsvReport(rows, reportsDir);
+  const csvPath = writeCsvReport(rows, getReportsDir());
   console.log(info(`csv: ${csvPath}`));
 
   const appToken = requiredEnv("FEISHU_APP_TOKEN");
@@ -186,6 +198,7 @@ async function runSync(lookbackDays, uiMode) {
 }
 
 export async function main(argv) {
+  await prepareRuntimePaths(repoRoot);
   loadDotenv();
   const { positional, options } = parseArgs(argv);
   const [command] = positional;

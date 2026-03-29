@@ -25,6 +25,7 @@ from llm_usage.cursor_login import (
 from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
 from llm_usage.interaction import confirm_save_temporary_remote, select_remotes
+from llm_usage.paths import read_bootstrap_env_text, resolve_runtime_paths
 from llm_usage.remotes import append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
 from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
@@ -40,21 +41,32 @@ def _repo_root() -> Path:
 
 
 def _env_path() -> Path:
-    return _repo_root() / ".env"
+    return resolve_runtime_paths(_repo_root()).env_path
 
 
 def _runtime_state_path() -> Path:
-    return _repo_root() / "reports" / "runtime_state.json"
+    return resolve_runtime_paths(_repo_root()).runtime_state_path
+
+
+def _reports_dir() -> Path:
+    return resolve_runtime_paths(_repo_root()).reports_dir
 
 
 def _load_runtime_env() -> None:
+    _ensure_env_file_exists()
     load_dotenv(_env_path())
 
 
-def _save_cursor_web_credentials(token: str, workos_id: str = "") -> None:
+def _ensure_env_file_exists() -> Path:
     env_file = _env_path()
+    env_file.parent.mkdir(parents=True, exist_ok=True)
     if not env_file.exists():
-        cmd_init(argparse.Namespace())
+        env_file.write_text(read_bootstrap_env_text(), encoding="utf-8")
+    return env_file
+
+
+def _save_cursor_web_credentials(token: str, workos_id: str = "") -> None:
+    env_file = _ensure_env_file_exists()
     upsert_env_var(env_file, "CURSOR_WEB_SESSION_TOKEN", token)
     upsert_env_var(env_file, "CURSOR_WEB_WORKOS_ID", workos_id)
     os.environ["CURSOR_WEB_SESSION_TOKEN"] = token
@@ -100,9 +112,7 @@ def _required_org_username() -> str:
     if not username:
         raise RuntimeError("ORG_USERNAME 为必填项")
 
-    env_file = _env_path()
-    if not env_file.exists():
-        cmd_init(argparse.Namespace())
+    env_file = _ensure_env_file_exists()
     upsert_env_var(env_file, "ORG_USERNAME", username)
     os.environ["ORG_USERNAME"] = username
     print("info: 已将 ORG_USERNAME 写入 .env")
@@ -184,20 +194,23 @@ def cmd_init(_: argparse.Namespace) -> int:
             encoding="utf-8",
         )
 
-    env_file = root / ".env"
-    if not env_file.exists():
-        env_file.write_text(env_example.read_text(encoding="utf-8"), encoding="utf-8")
+    env_path = _env_path()
+    reports_dir = _reports_dir()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    if not env_path.exists():
+        env_path.write_text(read_bootstrap_env_text(), encoding="utf-8")
 
-    reports_dir = root / "reports"
-    reports_dir.mkdir(exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"初始化完成：{env_file}")
+    print(f"初始化完成：{env_path}")
+    print(f"报告目录：{reports_dir}")
     print("下一步：补全配置后运行 `llm-usage doctor` 和 `llm-usage sync`")
     return 0
 
 
 def cmd_doctor(_: argparse.Namespace) -> int:
     _load_runtime_env()
+    print(f"env: {_env_path()}")
     missing = not os.getenv("ORG_USERNAME", "").strip()
     print(f"ORG_USERNAME: {'MISSING' if missing else 'OK'}")
 
@@ -399,6 +412,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
     )
     rows, warnings = _build_aggregates(args)
+    print(f"env: {_env_path()}")
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
     if warnings:
@@ -406,7 +420,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             print(f"warn: {warning}")
 
     print_terminal_report(rows)
-    path = write_csv_report(rows, _repo_root() / "reports")
+    path = write_csv_report(rows, _reports_dir())
     print(f"csv: {path}")
     return 0
 
@@ -418,6 +432,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
     )
     rows, warnings = _build_aggregates(args)
+    print(f"env: {_env_path()}")
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
     if warnings:
@@ -425,7 +440,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             print(f"warn: {warning}")
 
     print_terminal_report(rows)
-    csv_path = write_csv_report(rows, _repo_root() / "reports")
+    csv_path = write_csv_report(rows, _reports_dir())
     print(f"csv: {csv_path}")
 
     app_token = _required_env("FEISHU_APP_TOKEN")

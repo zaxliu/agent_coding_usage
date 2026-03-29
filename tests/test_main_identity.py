@@ -46,3 +46,15 @@ def test_required_org_username_empty_input_exits(monkeypatch):
         assert "必填" in str(exc) or "required" in str(exc).lower()
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_load_runtime_env_bootstraps_user_env(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(main, "_env_path", lambda: env_path)
+    monkeypatch.setattr(main, "read_bootstrap_env_text", lambda: "HASH_SALT=team-salt\n")
+    monkeypatch.delenv("HASH_SALT", raising=False)
+
+    main._load_runtime_env()
+
+    assert env_path.read_text(encoding="utf-8") == "HASH_SALT=team-salt\n"
+    assert main.os.environ["HASH_SALT"] == "team-salt"

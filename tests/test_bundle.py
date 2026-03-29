@@ -76,6 +76,13 @@ def _read_bundle_env(zip_path: Path) -> str:
         return zf.read(env_names[0]).decode("utf-8")
 
 
+def _read_bundle_bootstrap(zip_path: Path) -> str:
+    with zipfile.ZipFile(zip_path) as zf:
+        env_names = [name for name in zf.namelist() if name.endswith("/src/llm_usage/resources/bootstrap.env")]
+        assert len(env_names) == 1
+        return zf.read(env_names[0]).decode("utf-8")
+
+
 def test_build_bundles_sanitizes_internal_and_external_env(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -90,6 +97,8 @@ def test_build_bundles_sanitizes_internal_and_external_env(tmp_path):
     artifact_map = {artifact.profile: artifact.zip_path for artifact in artifacts}
     internal_env = _read_bundle_env(artifact_map[INTERNAL_PROFILE])
     external_env = _read_bundle_env(artifact_map[EXTERNAL_PROFILE])
+    internal_bootstrap = _read_bundle_bootstrap(artifact_map[INTERNAL_PROFILE])
+    external_bootstrap = _read_bundle_bootstrap(artifact_map[EXTERNAL_PROFILE])
 
     assert "ORG_USERNAME=\n" in internal_env
     assert "HASH_SALT=team-salt\n" in internal_env
@@ -104,6 +113,7 @@ def test_build_bundles_sanitizes_internal_and_external_env(tmp_path):
     assert "CURSOR_DASHBOARD_PAGE_SIZE=300\n" in internal_env
     assert "REMOTE_HOSTS=\n" in internal_env
     assert "REMOTE_SERVER_A_SSH_HOST=\n" in internal_env
+    assert internal_bootstrap == internal_env
 
     assert "ORG_USERNAME=\n" in external_env
     assert "HASH_SALT=\n" in external_env
@@ -114,6 +124,7 @@ def test_build_bundles_sanitizes_internal_and_external_env(tmp_path):
     assert "CURSOR_DASHBOARD_TEAM_ID=0\n" in external_env
     assert "CURSOR_DASHBOARD_TIMEOUT_SEC=15\n" in external_env
     assert "REMOTE_SERVER_A_LABEL=\n" in external_env
+    assert external_bootstrap == external_env
 
 
 def test_build_bundles_excludes_runtime_and_git_artifacts(tmp_path):

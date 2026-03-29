@@ -8,6 +8,7 @@ import tempfile
 import zipfile
 
 from llm_usage.env import upsert_env_var
+from llm_usage.paths import resolve_runtime_paths
 
 
 INTERNAL_PROFILE = "internal"
@@ -120,7 +121,19 @@ def build_bundles(
             bundle_root = tmp_root / _bundle_basename(profile, stamp)
             bundle_root.mkdir(parents=True, exist_ok=True)
             _copy_repo_tree(repo_root, bundle_root)
-            _sanitize_env(bundle_root / ".env", profile)
+            bundle_env = bundle_root / ".env"
+            runtime_env = resolve_runtime_paths(repo_root).env_path
+            if runtime_env.exists():
+                bundle_env.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(runtime_env, bundle_env)
+            elif not bundle_env.exists():
+                env_example = repo_root / ".env.example"
+                if env_example.exists():
+                    bundle_env.write_text(env_example.read_text(encoding="utf-8"), encoding="utf-8")
+            _sanitize_env(bundle_env, profile)
+            bootstrap_env = bundle_root / "src" / "llm_usage" / "resources" / "bootstrap.env"
+            bootstrap_env.parent.mkdir(parents=True, exist_ok=True)
+            bootstrap_env.write_text(bundle_env.read_text(encoding="utf-8"), encoding="utf-8")
 
             zip_path = output_dir / f"{bundle_root.name}.zip"
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:

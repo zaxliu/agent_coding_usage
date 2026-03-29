@@ -79,6 +79,7 @@ function copyFile(source, target) {
 function writeRuntimeFiles(stagingRoot, profile) {
   copyFile(path.join(repoRoot, "README.md"), path.join(stagingRoot, "README.md"));
   copyFile(path.join(nodeRoot, "package.json"), path.join(stagingRoot, "package.json"));
+  copyFile(path.join(nodeRoot, "resources", "bootstrap.env"), path.join(stagingRoot, "node", "resources", "bootstrap.env"));
 
   for (const relative of [
     "bin/llm-usage-node.js",
@@ -112,7 +113,9 @@ function writeRuntimeFiles(stagingRoot, profile) {
   );
 
   const envExample = fs.readFileSync(path.join(repoRoot, ".env.example"), "utf8");
-  fs.writeFileSync(path.join(stagingRoot, ".env.example"), sanitizeEnv(envExample, profile), "utf8");
+  const sanitizedEnv = sanitizeEnv(envExample, profile);
+  fs.writeFileSync(path.join(stagingRoot, ".env.example"), sanitizedEnv, "utf8");
+  fs.writeFileSync(path.join(stagingRoot, "node", "resources", "bootstrap.env"), sanitizedEnv, "utf8");
   ensureDir(path.join(stagingRoot, "reports"));
 }
 

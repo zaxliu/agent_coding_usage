@@ -26,16 +26,17 @@ from llm_usage.collectors import (  # noqa: E402
 )
 from llm_usage.env import load_dotenv  # noqa: E402
 from llm_usage.identity import hash_source_host  # noqa: E402
+from llm_usage.paths import resolve_runtime_paths  # noqa: E402
 from llm_usage.remotes import build_remote_collectors, parse_remote_configs_from_env  # noqa: E402
 from llm_usage.runtime_state import load_selected_remote_aliases  # noqa: E402
 
 
 def _env_path() -> Path:
-    return REPO_ROOT / ".env"
+    return resolve_runtime_paths(REPO_ROOT).env_path
 
 
 def _runtime_state_path() -> Path:
-    return REPO_ROOT / "reports" / "runtime_state.json"
+    return resolve_runtime_paths(REPO_ROOT).runtime_state_path
 
 
 def _required(name: str) -> str:

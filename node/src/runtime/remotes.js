@@ -1,7 +1,7 @@
 import process from "node:process";
 import { execFileSync } from "node:child_process";
 
-import { envPath, readEnvFile, upsertEnvVar } from "./env.js";
+import { getEnvPath, readEnvFile, upsertEnvVar } from "./env.js";
 
 export const DEFAULT_REMOTE_CLAUDE_LOG_PATHS = [
   "~/.claude/**/*.jsonl",
@@ -109,7 +109,7 @@ export function buildTemporaryRemote(sshHost, sshUser, sshPort = 22) {
   };
 }
 
-export function appendRemoteToEnv(config, existingAliases, filePath = envPath) {
+export function appendRemoteToEnv(config, existingAliases, filePath = getEnvPath()) {
   const alias = uniqueAlias(config.alias, existingAliases);
   upsertEnvVar("REMOTE_HOSTS", [...existingAliases, alias].join(","), filePath);
   const prefix = `REMOTE_${alias}_`;
@@ -182,6 +182,6 @@ export function probeRemoteSsh(config, timeoutSec = 10) {
   }
 }
 
-export function currentEnvMap(filePath = envPath) {
+export function currentEnvMap(filePath = getEnvPath()) {
   return Object.fromEntries(readEnvFile(filePath));
 }
