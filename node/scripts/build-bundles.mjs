@@ -82,6 +82,7 @@ function writeRuntimeFiles(stagingRoot, profile) {
 
   for (const relative of [
     "bin/llm-usage-node.js",
+    "bridge/collector_bridge.py",
     "src/core/hash.js",
     "src/core/identity.js",
     "src/core/models.js",
@@ -89,6 +90,10 @@ function writeRuntimeFiles(stagingRoot, profile) {
     "src/core/aggregation.js",
     "src/core/privacy.js",
     "src/cli/main.js",
+    "src/runtime/env.js",
+    "src/runtime/feishu.js",
+    "src/runtime/python-bridge.js",
+    "src/runtime/reporting.js",
   ]) {
     copyFile(path.join(nodeRoot, relative), path.join(stagingRoot, "node", relative));
   }

@@ -10,7 +10,10 @@
   "scripts": {
     "test": "node --test",
     "parity": "node --test test/parity.test.js",
-    "bundle": "node ./scripts/build-bundles.mjs"
+    "bundle": "node ./scripts/build-bundles.mjs",
+    "doctor": "node ./bin/llm-usage-node.js doctor",
+    "collect": "node ./bin/llm-usage-node.js collect",
+    "sync": "node ./bin/llm-usage-node.js sync"
   },
   "engines": {
     "node": ">=18"
