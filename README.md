@@ -22,7 +22,6 @@
 - `llm-usage sync`：在 `collect` 基础上，将聚合结果同步到飞书多维表格
 - `llm-usage doctor`：检查配置和各采集器可用性
 - `llm-usage init`：生成 `.env`、`.env.example` 和 `reports/`
-- `llm-usage bundle`：生成可分发的内部 / 外部脱敏压缩包
 
 ## 快速开始
 
@@ -94,7 +93,6 @@ llm-usage --help
 - `llm-usage collect --ui auto`
 - `llm-usage sync --ui cli`
 - `llm-usage import-config --from /path/to/legacy/repo`
-- `llm-usage bundle --output-dir dist`
 
 ### `llm-usage init`
 
@@ -176,31 +174,6 @@ llm-usage sync --help
 ```bash
 llm-usage sync --ui auto
 llm-usage sync --ui cli --cursor-login-browser chrome
-```
-
-### `llm-usage bundle`
-
-生成两个压缩包到 `dist/`：
-
-- `internal`：保留团队共享配置，清空个人身份和本机路径
-- `external`：进一步清空飞书密钥与内部敏感配置
-
-常用参数：
-
-- `--output-dir dist`
-- `--keep-staging`
-
-示例：
-
-```bash
-llm-usage bundle
-llm-usage bundle --output-dir dist --keep-staging
-```
-
-查看帮助：
-
-```bash
-llm-usage bundle --help
 ```
 
 ## 输出与隐私
@@ -380,30 +353,6 @@ username@username@host_server_ip@host_jumpserver_ip
 - 飞书应用权限不等于多维表格协作权限
 - 即使应用有写权限，如果表格本身只读，写入仍会失败
 - 应确保应用或其运行身份对目标表保有编辑权限
-
-## 分发包脱敏规则
-
-`llm-usage bundle` 会清理以下内容：
-
-所有分发包都会清空：
-
-- `ORG_USERNAME`
-- `CURSOR_WEB_SESSION_TOKEN`
-- `CURSOR_WEB_WORKOS_ID`
-- 各类本地路径覆盖变量
-- 所有 `REMOTE_*`
-
-外部分发包还会额外清空：
-
-- `HASH_SALT`
-- 所有 `FEISHU_*`
-
-同时会重置安全默认值：
-
-- `CURSOR_DASHBOARD_BASE_URL=https://cursor.com`
-- `CURSOR_DASHBOARD_TEAM_ID=0`
-- `CURSOR_DASHBOARD_PAGE_SIZE=300`
-- `CURSOR_DASHBOARD_TIMEOUT_SEC=15`
 
 ## 开发
 

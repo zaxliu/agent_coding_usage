@@ -17,6 +17,7 @@ def test_top_level_help_shows_examples_and_commands(capsys):
     assert "llm-usage sync --ui cli" in help_text
     assert "collect" in help_text
     assert "sync" in help_text
+    assert "bundle" not in help_text
 
 
 def test_collect_help_describes_terminal_grouping_and_csv_behavior(capsys):
@@ -68,16 +69,15 @@ def test_doctor_help_describes_validation_behavior(capsys):
     assert "remote collectors" in help_text.lower()
 
 
-def test_bundle_help_describes_outputs_and_flags(capsys):
+def test_parser_rejects_removed_bundle_command(capsys):
     parser = main.build_parser()
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["bundle", "--help"])
+        parser.parse_args(["bundle"])
 
-    help_text = capsys.readouterr().out
-    assert "two release bundles" in help_text.lower()
-    assert "--output-dir OUTPUT_DIR" in help_text
-    assert "--keep-staging" in help_text
+    err_text = capsys.readouterr().err
+    assert "invalid choice" in err_text.lower()
+    assert "bundle" in err_text
 
 
 def test_import_config_help_describes_examples_and_force_flag(capsys):

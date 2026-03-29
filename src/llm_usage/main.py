@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from llm_usage.aggregation import aggregate_events
-from llm_usage.bundle import build_bundles
 from llm_usage.collectors import (
     BaseCollector,
     build_claude_collector,
@@ -472,17 +471,6 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0 if result.failed == 0 else 2
 
 
-def cmd_bundle(args: argparse.Namespace) -> int:
-    artifacts = build_bundles(
-        repo_root=_repo_root(),
-        output_dir=Path(args.output_dir),
-        keep_staging=args.keep_staging,
-    )
-    for artifact in artifacts:
-        print(f"{artifact.profile}: {artifact.zip_path}")
-    return 0
-
-
 def _import_config_plan(source_root: Path, runtime_paths, force: bool) -> tuple[list[tuple[Path, Path, str]], list[str]]:
     plan: list[tuple[Path, Path, str]] = []
     messages: list[str] = []
@@ -555,7 +543,6 @@ def build_parser() -> argparse.ArgumentParser:
             "  llm-usage collect --ui auto\n"
             "  llm-usage sync --ui cli\n"
             "  llm-usage import-config --from /path/to/legacy/repo\n"
-            "  llm-usage bundle --output-dir dist\n"
         ),
         formatter_class=_HelpFormatter,
     )
@@ -578,26 +565,6 @@ def build_parser() -> argparse.ArgumentParser:
             "collectors without writing reports or syncing data."
         ),
         formatter_class=_HelpFormatter,
-    )
-    bundle_parser = sub.add_parser(
-        "bundle",
-        help="Build internal and external distribution zip bundles",
-        description=(
-            "Create two release bundles under the selected output directory: one internal bundle "
-            "with team-safe defaults and one external bundle with additional sensitive fields removed."
-        ),
-        formatter_class=_HelpFormatter,
-    )
-    bundle_parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="dist",
-        help="Directory where generated zip bundles are written",
-    )
-    bundle_parser.add_argument(
-        "--keep-staging",
-        action="store_true",
-        help="Keep copied staging directories under --output-dir for inspection after bundling",
     )
     import_parser = sub.add_parser(
         "import-config",
@@ -748,7 +715,6 @@ def main() -> int:
     cmd_map = {
         "init": cmd_init,
         "doctor": cmd_doctor,
-        "bundle": cmd_bundle,
         "import-config": cmd_import_config,
         "collect": cmd_collect,
         "sync": cmd_sync,
