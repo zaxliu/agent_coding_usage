@@ -14,7 +14,7 @@ def _write_repo_fixture(repo_root: Path) -> None:
     (repo_root / "reports").mkdir()
     (repo_root / "dist").mkdir()
     (repo_root / ".pytest_cache").mkdir()
-    (repo_root / "src/llm_usage_sync.egg-info").mkdir(parents=True)
+    (repo_root / "src/llm_usage.egg-info").mkdir(parents=True)
 
     (repo_root / "README.md").write_text("hello\n", encoding="utf-8")
     (repo_root / ".env.example").write_text("ORG_USERNAME=\nHASH_SALT=\n", encoding="utf-8")
@@ -24,7 +24,7 @@ def _write_repo_fixture(repo_root: Path) -> None:
     (repo_root / "reports/data.csv").write_text("x\n", encoding="utf-8")
     (repo_root / "dist/old.zip").write_text("x\n", encoding="utf-8")
     (repo_root / ".pytest_cache/README").write_text("cache\n", encoding="utf-8")
-    (repo_root / "src/llm_usage_sync.egg-info/PKG-INFO").write_text("meta\n", encoding="utf-8")
+    (repo_root / "src/llm_usage.egg-info/PKG-INFO").write_text("meta\n", encoding="utf-8")
     (repo_root / ".env").write_text(
         "\n".join(
             [
@@ -147,7 +147,7 @@ def test_build_bundles_excludes_runtime_and_git_artifacts(tmp_path):
             assert not any("/reports/" in name for name in names)
             assert not any("/dist/" in name for name in names)
             assert not any("/.pytest_cache/" in name for name in names)
-            assert not any("/src/llm_usage_sync.egg-info/" in name for name in names)
+            assert not any("/src/llm_usage.egg-info/" in name for name in names)
 
 
 def test_cmd_bundle_writes_two_timestamped_archives(tmp_path, monkeypatch):

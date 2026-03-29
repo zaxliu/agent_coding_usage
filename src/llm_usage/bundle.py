@@ -20,7 +20,7 @@ DEFAULT_EXCLUDES = {
     ".DS_Store",
     "dist",
     "reports",
-    "src/llm_usage_sync.egg-info",
+    "src/llm_usage.egg-info",
 }
 
 _CLEAR_FOR_ALL = {
