@@ -62,7 +62,12 @@ def _collectors(local_source_host_hash: str):
 
 def _selected_remote_configs():
     configured = parse_remote_configs_from_env()
-    selected_aliases = load_selected_remote_aliases(_runtime_state_path())
+    if "LLM_USAGE_SELECTED_REMOTE_ALIASES" in os.environ:
+        selected_raw = os.environ.get("LLM_USAGE_SELECTED_REMOTE_ALIASES", "").strip()
+        selected_aliases = [item.strip().upper() for item in selected_raw.split(",") if item.strip()]
+        return [config for config in configured if config.alias in selected_aliases]
+    else:
+        selected_aliases = load_selected_remote_aliases(_runtime_state_path())
     if not selected_aliases:
         return configured
     return [config for config in configured if config.alias in selected_aliases]

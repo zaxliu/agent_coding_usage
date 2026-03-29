@@ -92,8 +92,12 @@ function writeRuntimeFiles(stagingRoot, profile) {
     "src/cli/main.js",
     "src/runtime/env.js",
     "src/runtime/feishu.js",
+    "src/runtime/interaction.js",
     "src/runtime/python-bridge.js",
+    "src/runtime/remotes.js",
     "src/runtime/reporting.js",
+    "src/runtime/state.js",
+    "src/runtime/ui.js",
   ]) {
     copyFile(path.join(nodeRoot, relative), path.join(stagingRoot, "node", relative));
   }

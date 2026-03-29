@@ -7,6 +7,7 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(thisDir, "../../..");
 export const envPath = path.join(repoRoot, ".env");
 export const reportsDir = path.join(repoRoot, "reports");
+export const runtimeStatePath = path.join(reportsDir, "runtime_state.json");
 
 export function loadDotenv(filePath = envPath) {
   if (!fs.existsSync(filePath)) {
@@ -44,4 +45,54 @@ export function intEnv(name, fallback) {
   const raw = getEnv(name, String(fallback));
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+export function readEnvFile(filePath = envPath) {
+  const out = [];
+  if (!fs.existsSync(filePath)) {
+    return out;
+  }
+  const text = fs.readFileSync(filePath, "utf8");
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || !line.includes("=")) {
+      continue;
+    }
+    const [rawKey, ...rest] = line.split("=");
+    out.push([rawKey.trim(), rest.join("=").trim().replace(/^['"]|['"]$/g, "")]);
+  }
+  return out;
+}
+
+export function upsertEnvVar(key, value, filePath = envPath) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) {
+    throw new Error("env key cannot be empty");
+  }
+
+  const encoded = `${normalizedKey}=${value}`;
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, `${encoded}\n`, "utf8");
+    return;
+  }
+
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  const output = [];
+  let replaced = false;
+  for (const raw of lines) {
+    if (raw.trim().startsWith(`${normalizedKey}=`)) {
+      output.push(encoded);
+      replaced = true;
+    } else if (raw !== "" || output.length > 0) {
+      output.push(raw);
+    }
+  }
+
+  if (!replaced) {
+    if (output.length > 0 && output[output.length - 1].trim()) {
+      output.push("");
+    }
+    output.push(encoded);
+  }
+  fs.writeFileSync(filePath, `${output.join("\n").replace(/\n+$/u, "")}\n`, "utf8");
 }
