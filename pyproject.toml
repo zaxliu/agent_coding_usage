@@ -6,12 +6,33 @@ build-backend = "setuptools.build_meta"
 name = "llm-usage-sync"
 version = "0.1.0"
 description = "Local LLM coding usage collector and Feishu Bitable sync"
+readme = "README.md"
+license = "MIT"
+authors = [
+  {name = "Lewis"},
+]
 requires-python = ">=3.10"
+license-files = ["LICENSE"]
+keywords = ["llm", "usage", "cli", "feishu"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Utilities",
+]
 dependencies = [
   "requests>=2.31.0",
   "prompt_toolkit>=3.0.39",
   "browser-cookie3>=0.19.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zaxliu/agent_coding_usage"
+Repository = "https://github.com/zaxliu/agent_coding_usage"
 
 [project.optional-dependencies]
 dev = [
