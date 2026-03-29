@@ -1,5 +1,5 @@
 {
-  "name": "llm-usage-node",
+  "name": "@llm-usage-horizon/llm-usage-node",
   "version": "0.1.1",
   "type": "module",
   "description": "Local-first Node.js CLI for collecting LLM coding usage and syncing to Feishu",
