@@ -45,4 +45,4 @@ def test_release_script_builds_only_python_distributions():
 def test_distribution_name_is_llm_usage():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["project"]["name"] == "llm-usage"
+    assert pyproject["project"]["name"] == "llm-usage-horizon"

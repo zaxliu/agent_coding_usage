@@ -1,4 +1,4 @@
-# llm-usage
+# llm-usage-horizon
 
 本地优先的 LLM 编码工具用量采集器，支持聚合以下来源并输出到终端、CSV 或飞书多维表格：
 
