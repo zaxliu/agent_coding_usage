@@ -2,6 +2,7 @@ import process from "node:process";
 
 import { aggregateEvents } from "../core/aggregation.js";
 import { hashUser } from "../core/identity.js";
+import { collectLocalUsage, localCollectorNames, probeLocalUsage } from "../collectors/local.js";
 import { toFeishuFields } from "../core/privacy.js";
 import {
   getEnv,
@@ -84,6 +85,42 @@ function deserializeEvents(payload) {
   }));
 }
 
+function serializeLocalEvents(events) {
+  return events.map((event) => ({
+    tool: event.tool,
+    model: event.model,
+    eventTime: event.eventTime,
+    inputTokens: event.inputTokens,
+    cacheTokens: event.cacheTokens,
+    outputTokens: event.outputTokens,
+    sessionFingerprint: event.sessionFingerprint,
+    sourceRef: event.sourceRef,
+    sourceHostHash: event.sourceHostHash || "",
+  }));
+}
+
+function mergeWarnings(...warningLists) {
+  return warningLists.flat().filter(Boolean);
+}
+
+function pythonWarningBelongsToReplacedTool(message) {
+  const text = String(message || "");
+  return localCollectorNames().some((tool) => {
+    if (!shouldReplacePythonTool(tool)) {
+      return false;
+    }
+    const pythonName = tool === "claude_code" ? "claude_code" : tool;
+    return text.startsWith(`${pythonName}:`) || text.includes(`for ${pythonName}`);
+  });
+}
+
+function shouldReplacePythonTool(tool) {
+  if (tool === "cursor" && getEnv("CURSOR_WEB_SESSION_TOKEN")) {
+    return false;
+  }
+  return localCollectorNames().includes(tool);
+}
+
 function printWarnings(warnings) {
   for (const message of warnings || []) {
     console.log(warn(message));
@@ -136,16 +173,24 @@ async function buildAggregates(lookbackDays, uiMode) {
     ...remoteSelection.envOverrides,
     LLM_USAGE_SELECTED_REMOTE_ALIASES: remoteSelection.selectedAliases.join(","),
   };
+  const localPayload = collectLocalUsage(lookbackDays);
   const bridgePayload = collectEventsViaPython(lookbackDays, envOverrides);
+  const bridgeEvents = deserializeEvents(bridgePayload).filter((event) => !shouldReplacePythonTool(event.tool));
   const username = requiredEnv("ORG_USERNAME");
   const salt = requiredEnv("HASH_SALT");
   const userHash = hashUser(username, salt);
   const timeZone = getEnv("TIMEZONE", "Asia/Shanghai");
-  const rows = aggregateEvents(deserializeEvents(bridgePayload), {
+  const rows = aggregateEvents([...serializeLocalEvents(localPayload.events), ...bridgeEvents], {
     userHash,
     timeZone,
   });
-  return { rows, warnings: bridgePayload.warnings || [] };
+  return {
+    rows,
+    warnings: mergeWarnings(
+      localPayload.warnings,
+      (bridgePayload.warnings || []).filter((warning) => !pythonWarningBelongsToReplacedTool(warning)),
+    ),
+  };
 }
 
 async function runDoctor(lookbackDays, uiMode) {
@@ -155,7 +200,15 @@ async function runDoctor(lookbackDays, uiMode) {
     LLM_USAGE_SELECTED_REMOTE_ALIASES: remoteSelection.selectedAliases.join(","),
   };
   const payload = doctorViaPython(lookbackDays, envOverrides);
-  printDoctorReport({ envPath: getEnvPath(), probes: payload.probes || [], warnings: payload.warnings || [] });
+  const probes = [
+    ...probeLocalUsage(),
+    ...(payload.probes || []).filter((probe) => !shouldReplacePythonTool(probe.name)),
+  ];
+  printDoctorReport({
+    envPath: getEnvPath(),
+    probes,
+    warnings: (payload.warnings || []).filter((warning) => !pythonWarningBelongsToReplacedTool(warning)),
+  });
   return 0;
 }
 
