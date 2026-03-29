@@ -37,6 +37,10 @@ from llm_usage.sinks.feishu_bitable import (
 )
 
 
+class _HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    """Preserve multi-line descriptions while showing argument defaults."""
+
+
 def _repo_root() -> Path:
     return Path.cwd()
 
@@ -540,22 +544,60 @@ def cmd_import_config(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Team LLM usage collector and Feishu sync")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Collect local and selected remote LLM usage, print a terminal summary, "
+            "write reports/usage_report.csv, and optionally sync aggregated rows to Feishu."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  llm-usage doctor\n"
+            "  llm-usage collect --ui auto\n"
+            "  llm-usage sync --ui cli\n"
+            "  llm-usage import-config --from /path/to/legacy/repo\n"
+            "  llm-usage bundle --output-dir dist\n"
+        ),
+        formatter_class=_HelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="Initialize .env and folders")
-    sub.add_parser("doctor", help="Check data sources and required config")
-    bundle_parser = sub.add_parser("bundle", help="Build internal and external distribution zip bundles")
+    sub.add_parser(
+        "init",
+        help="Initialize runtime .env and report folders",
+        description=(
+            "Create the active runtime .env and reports directory if they do not exist yet. "
+            "Use this once when bootstrapping a new checkout."
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    sub.add_parser(
+        "doctor",
+        help="Check required config and available data sources",
+        description=(
+            "Validate identity settings, probe local collectors, and probe configured remote "
+            "collectors without writing reports or syncing data."
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    bundle_parser = sub.add_parser(
+        "bundle",
+        help="Build internal and external distribution zip bundles",
+        description=(
+            "Create two release bundles under the selected output directory: one internal bundle "
+            "with team-safe defaults and one external bundle with additional sensitive fields removed."
+        ),
+        formatter_class=_HelpFormatter,
+    )
     bundle_parser.add_argument(
         "--output-dir",
         type=str,
         default="dist",
-        help="Directory for generated zip bundles",
+        help="Directory where generated zip bundles are written",
     )
     bundle_parser.add_argument(
         "--keep-staging",
         action="store_true",
-        help="Keep copied staging directories under output-dir for inspection",
+        help="Keep copied staging directories under --output-dir for inspection after bundling",
     )
     import_parser = sub.add_parser(
         "import-config",
@@ -564,6 +606,12 @@ def build_parser() -> argparse.ArgumentParser:
             "One-time migration helper for moving legacy .env and reports/runtime_state.json "
             "into the active runtime paths."
         ),
+        epilog=(
+            "Examples:\n"
+            "  llm-usage import-config --from /path/to/legacy/repo\n"
+            "  llm-usage import-config --dry-run\n"
+        ),
+        formatter_class=_HelpFormatter,
     )
     import_parser.add_argument(
         "--from",
@@ -579,62 +627,117 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what would be copied without writing any files",
+        help="Show the import plan without copying any files",
     )
     import_parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite existing target files in the active runtime paths",
+        help="Overwrite existing target files in the active runtime paths instead of stopping",
     )
-    collect_parser = sub.add_parser("collect", help="Collect usage locally and output local report")
+    collect_parser = sub.add_parser(
+        "collect",
+        help="Collect usage, print terminal summary, and write the local CSV report",
+        description=(
+            "Collect usage from local and selected remote sources.\n"
+            "\n"
+            "Terminal output is grouped by date + tool + model for easier reading.\n"
+            "The written reports/usage_report.csv keeps the original aggregated rows."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  llm-usage collect --ui auto\n"
+            "  llm-usage collect --ui cli --cursor-login-browser safari\n"
+        ),
+        formatter_class=_HelpFormatter,
+    )
     collect_parser.add_argument(
         "--cursor-login-timeout-sec",
         type=int,
         default=600,
-        help="Max wait time when opening browser login or capturing Cursor session token",
+        help=(
+            "Maximum wait time when opening browser login or capturing the Cursor session token; "
+            "increase this if you need more time to complete browser login"
+        ),
     )
     collect_parser.add_argument(
         "--cursor-login-browser",
         choices=["default", "chrome", "edge", "safari", "firefox", "chromium", "msedge", "webkit"],
         default="default",
-        help="Browser used for auto login when capturing Cursor session token",
+        help=(
+            "Browser used for Cursor login capture; keep the default unless you need a specific "
+            "installed browser for SSO or cookie access"
+        ),
     )
     collect_parser.add_argument(
         "--cursor-login-user-data-dir",
         type=str,
         default="",
-        help="Compatibility option; ignored when using system-browser login flow",
+        help=(
+            "Compatibility option for older browser-login flows; leave empty for the current "
+            "system-browser flow"
+        ),
     )
     collect_parser.add_argument(
         "--ui",
         choices=["auto", "tui", "cli", "none"],
         default="auto",
-        help="Remote selection UI mode",
+        help=(
+            "Remote selection UI mode: auto picks the best interactive UI, tui forces the terminal "
+            "selector, cli uses prompt-based selection, none skips remote selection"
+        ),
     )
-    sync_parser = sub.add_parser("sync", help="Collect locally then upsert aggregates to Feishu")
+    sync_parser = sub.add_parser(
+        "sync",
+        help="Collect usage and upsert aggregated rows to Feishu",
+        description=(
+            "Collect usage from local and selected remote sources, print a grouped terminal summary, "
+            "write reports/usage_report.csv, then upsert the original aggregated rows to Feishu.\n"
+            "\n"
+            "Terminal output is grouped by date + tool + model for easier reading.\n"
+            "CSV output and Feishu upserts keep the original aggregated rows."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  llm-usage sync --ui auto\n"
+            "  llm-usage sync --ui cli --cursor-login-browser chrome\n"
+        ),
+        formatter_class=_HelpFormatter,
+    )
     sync_parser.add_argument(
         "--cursor-login-timeout-sec",
         type=int,
         default=600,
-        help="Max wait time when opening browser login or capturing Cursor session token",
+        help=(
+            "Maximum wait time when opening browser login or capturing the Cursor session token; "
+            "increase this if you need more time to complete browser login"
+        ),
     )
     sync_parser.add_argument(
         "--cursor-login-browser",
         choices=["default", "chrome", "edge", "safari", "firefox", "chromium", "msedge", "webkit"],
         default="default",
-        help="Browser used for auto login when capturing Cursor session token",
+        help=(
+            "Browser used for Cursor login capture; keep the default unless you need a specific "
+            "installed browser for SSO or cookie access"
+        ),
     )
     sync_parser.add_argument(
         "--cursor-login-user-data-dir",
         type=str,
         default="",
-        help="Compatibility option; ignored when using system-browser login flow",
+        help=(
+            "Compatibility option for older browser-login flows; leave empty for the current "
+            "system-browser flow"
+        ),
     )
     sync_parser.add_argument(
         "--ui",
         choices=["auto", "tui", "cli", "none"],
         default="auto",
-        help="Remote selection UI mode",
+        help=(
+            "Remote selection UI mode: auto picks the best interactive UI, tui forces the terminal "
+            "selector, cli uses prompt-based selection, none skips remote selection"
+        ),
     )
     return parser
 

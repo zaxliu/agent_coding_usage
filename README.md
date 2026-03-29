@@ -82,6 +82,20 @@ llm-usage import-config --from /path/to/old/repo
 
 ## 命令说明
 
+先查看顶层帮助：
+
+```bash
+llm-usage --help
+```
+
+顶层 help 会列出所有子命令，并附带常用示例：
+
+- `llm-usage doctor`
+- `llm-usage collect --ui auto`
+- `llm-usage sync --ui cli`
+- `llm-usage import-config --from /path/to/legacy/repo`
+- `llm-usage bundle --output-dir dist`
+
 ### `llm-usage init`
 
 初始化：
@@ -98,6 +112,12 @@ llm-usage import-config --from /path/to/old/repo
 - 本地采集器是否能找到对应数据源
 - `.env` 中配置的远端采集器是否可探测
 
+查看帮助：
+
+```bash
+llm-usage doctor --help
+```
+
 ### `llm-usage collect`
 
 行为：
@@ -107,11 +127,27 @@ llm-usage import-config --from /path/to/old/repo
 - 输出终端汇总表
 - 写入 `reports/usage_report.csv`
 
+说明：终端表格按 `日期 + 工具 + 模型` 合并展示，不区分单个 session 或来源机器。CSV 仍保留原始聚合结果，不会因为终端显示合并而改变存储内容。
+
+查看帮助：
+
+```bash
+llm-usage collect --help
+```
+
 常用参数：
 
-- `--ui auto|tui|cli|none`：远端选择界面，默认 `auto`
-- `--cursor-login-timeout-sec`：Cursor 浏览器登录捕获超时，默认 `600`
-- `--cursor-login-browser`：指定登录浏览器
+- `--ui auto|tui|cli|none`：远端选择界面。`auto` 自动选最合适的交互方式，`tui` 强制终端选择器，`cli` 使用逐项提示，`none` 跳过远端选择
+- `--cursor-login-timeout-sec`：Cursor 浏览器登录等待时间，默认 `600`
+- `--cursor-login-browser`：指定 Cursor 登录捕获所用浏览器；默认 `default`
+- `--cursor-login-user-data-dir`：兼容旧登录流程的参数；当前系统浏览器流程通常保持为空即可
+
+示例：
+
+```bash
+llm-usage collect --ui auto
+llm-usage collect --ui cli --cursor-login-browser safari
+```
 
 ### `llm-usage sync`
 
@@ -119,6 +155,28 @@ llm-usage import-config --from /path/to/old/repo
 
 - 自动获取飞书访问令牌
 - 在目标多维表格中按 `row_key` 执行插入或更新
+
+说明：`sync` 的终端显示也按 `日期 + 工具 + 模型` 合并，但上传到飞书的记录内容和粒度保持不变。
+
+查看帮助：
+
+```bash
+llm-usage sync --help
+```
+
+常用参数：
+
+- `--ui auto|tui|cli|none`：与 `collect` 相同，用于选择远端来源交互方式
+- `--cursor-login-timeout-sec`：Cursor 浏览器登录等待时间，默认 `600`
+- `--cursor-login-browser`：指定 Cursor 登录捕获所用浏览器；默认 `default`
+- `--cursor-login-user-data-dir`：兼容旧登录流程的参数；当前系统浏览器流程通常保持为空即可
+
+示例：
+
+```bash
+llm-usage sync --ui auto
+llm-usage sync --ui cli --cursor-login-browser chrome
+```
 
 ### `llm-usage bundle`
 
@@ -137,6 +195,12 @@ llm-usage import-config --from /path/to/old/repo
 ```bash
 llm-usage bundle
 llm-usage bundle --output-dir dist --keep-staging
+```
+
+查看帮助：
+
+```bash
+llm-usage bundle --help
 ```
 
 ## 输出与隐私
