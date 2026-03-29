@@ -2,13 +2,12 @@ import process from "node:process";
 
 import { aggregateEvents } from "../core/aggregation.js";
 import { hashUser } from "../core/identity.js";
-import { collectLocalUsage, localCollectorNames, probeLocalUsage } from "../collectors/local.js";
+import { collectLocalUsage, probeLocalUsage } from "../collectors/local.js";
 import { toFeishuFields } from "../core/privacy.js";
 import {
   getEnv,
   getEnvPath,
   getReportsDir,
-  getRuntimeStatePath,
   intEnv,
   loadDotenv,
   prepareRuntimePaths,
@@ -16,26 +15,17 @@ import {
   repoRoot,
 } from "../runtime/env.js";
 import { FeishuBitableClient, fetchFirstTableId, fetchTenantAccessToken } from "../runtime/feishu.js";
-import { confirmSaveTemporaryRemote, persistTemporaryRemote, selectRemotes } from "../runtime/interaction.js";
-import {
-  buildEnvWithTemporaryRemotes,
-  buildTemporaryRemote,
-  parseRemoteConfigsFromEnv,
-  probeRemoteSsh,
-  uniqueAlias,
-} from "../runtime/remotes.js";
+import { parseRemoteConfigsFromEnv } from "../runtime/remotes.js";
 import { printDoctorReport, printSyncSummary, printTerminalReport, writeCsvReport } from "../runtime/reporting.js";
-import { loadSelectedRemoteAliases, saveSelectedRemoteAliases } from "../runtime/state.js";
-import { doctorViaPython, collectEventsViaPython } from "../runtime/python-bridge.js";
 import { info, warn } from "../runtime/ui.js";
 
 function printHelp() {
   console.log(`Usage: llm-usage-node <command> [options]
 
 Commands:
-  doctor        Probe configured data sources via the Python collector bridge
-  collect       Collect usage, aggregate in Node, and write usage_report.csv to the user data dir
-  sync          Collect usage, aggregate in Node, and upsert rows to Feishu
+  doctor        Probe local data sources in Node
+  collect       Collect local usage in Node and write usage_report.csv to the user data dir
+  sync          Collect local usage in Node and upsert rows to Feishu
 
 Options:
   --lookback-days N
@@ -71,20 +61,6 @@ function resolveLookbackDays(parsedValue) {
   return Math.max(1, intEnv("LOOKBACK_DAYS", 7));
 }
 
-function deserializeEvents(payload) {
-  return (payload.events || []).map((event) => ({
-    tool: event.tool,
-    model: event.model,
-    eventTime: event.event_time,
-    inputTokens: event.input_tokens,
-    cacheTokens: event.cache_tokens,
-    outputTokens: event.output_tokens,
-    sessionFingerprint: event.session_fingerprint,
-    sourceRef: event.source_ref,
-    sourceHostHash: event.source_host_hash || "",
-  }));
-}
-
 function serializeLocalEvents(events) {
   return events.map((event) => ({
     tool: event.tool,
@@ -103,111 +79,43 @@ function mergeWarnings(...warningLists) {
   return warningLists.flat().filter(Boolean);
 }
 
-function pythonWarningBelongsToReplacedTool(message) {
-  const text = String(message || "");
-  return localCollectorNames().some((tool) => {
-    if (!shouldReplacePythonTool(tool)) {
-      return false;
-    }
-    const pythonName = tool === "claude_code" ? "claude_code" : tool;
-    return text.startsWith(`${pythonName}:`) || text.includes(`for ${pythonName}`);
-  });
-}
-
-function shouldReplacePythonTool(tool) {
-  if (tool === "cursor" && getEnv("CURSOR_WEB_SESSION_TOKEN")) {
-    return false;
-  }
-  return localCollectorNames().includes(tool);
-}
-
 function printWarnings(warnings) {
   for (const message of warnings || []) {
     console.log(warn(message));
   }
 }
 
-async function prepareRemoteSelection(uiMode) {
+function remoteCollectionWarnings() {
   const configuredRemotes = parseRemoteConfigsFromEnv();
-  const runtimeStatePath = getRuntimeStatePath();
-  const envPath = getEnvPath();
-  const stateAliases = loadSelectedRemoteAliases(runtimeStatePath);
-  const configuredAliases = configuredRemotes.map((item) => item.alias);
-  const defaultAliases = stateAliases.length
-    ? stateAliases.filter((alias) => configuredAliases.includes(alias))
-    : [...configuredAliases];
-
-  const selection = await selectRemotes(configuredRemotes, defaultAliases, {
-    uiMode,
-    remoteValidator: probeRemoteSsh,
-    buildTemporaryRemote,
-  });
-  saveSelectedRemoteAliases(runtimeStatePath, selection.selectedAliases);
-  let selectedAliases = [...selection.selectedAliases];
-
-  if (selection.temporaryRemotes.length) {
-    for (const remote of selection.temporaryRemotes) {
-      remote.alias = uniqueAlias(remote.alias, configuredAliases);
-      if (await confirmSaveTemporaryRemote({ uiMode })) {
-        const alias = persistTemporaryRemote(remote, configuredAliases, envPath);
-        configuredAliases.push(alias);
-        selectedAliases.push(alias);
-        console.log(info(`已将临时远端保存到 .env: ${alias}`));
-      } else {
-        selectedAliases.push(remote.alias);
-      }
-    }
+  if (!configuredRemotes.length) {
+    return [];
   }
-
-  saveSelectedRemoteAliases(runtimeStatePath, selectedAliases);
-  const temporaryBundle = buildEnvWithTemporaryRemotes(process.env, selection.temporaryRemotes);
-  return {
-    selectedAliases,
-    envOverrides: temporaryBundle.env,
-  };
+  return [
+    `remote collection is not supported in llm-usage-node yet; ignoring ${configuredRemotes.length} configured remote(s)`,
+  ];
 }
 
-async function buildAggregates(lookbackDays, uiMode) {
-  const remoteSelection = await prepareRemoteSelection(uiMode);
-  const envOverrides = {
-    ...remoteSelection.envOverrides,
-    LLM_USAGE_SELECTED_REMOTE_ALIASES: remoteSelection.selectedAliases.join(","),
-  };
+async function buildAggregates(lookbackDays) {
   const localPayload = collectLocalUsage(lookbackDays);
-  const bridgePayload = collectEventsViaPython(lookbackDays, envOverrides);
-  const bridgeEvents = deserializeEvents(bridgePayload).filter((event) => !shouldReplacePythonTool(event.tool));
   const username = requiredEnv("ORG_USERNAME");
   const salt = requiredEnv("HASH_SALT");
   const userHash = hashUser(username, salt);
   const timeZone = getEnv("TIMEZONE", "Asia/Shanghai");
-  const rows = aggregateEvents([...serializeLocalEvents(localPayload.events), ...bridgeEvents], {
+  const rows = aggregateEvents(serializeLocalEvents(localPayload.events), {
     userHash,
     timeZone,
   });
   return {
     rows,
-    warnings: mergeWarnings(
-      localPayload.warnings,
-      (bridgePayload.warnings || []).filter((warning) => !pythonWarningBelongsToReplacedTool(warning)),
-    ),
+    warnings: mergeWarnings(remoteCollectionWarnings(), localPayload.warnings),
   };
 }
 
-async function runDoctor(lookbackDays, uiMode) {
-  const remoteSelection = await prepareRemoteSelection(uiMode);
-  const envOverrides = {
-    ...remoteSelection.envOverrides,
-    LLM_USAGE_SELECTED_REMOTE_ALIASES: remoteSelection.selectedAliases.join(","),
-  };
-  const payload = doctorViaPython(lookbackDays, envOverrides);
-  const probes = [
-    ...probeLocalUsage(),
-    ...(payload.probes || []).filter((probe) => !shouldReplacePythonTool(probe.name)),
-  ];
+async function runDoctor(_lookbackDays, _uiMode) {
   printDoctorReport({
     envPath: getEnvPath(),
-    probes,
-    warnings: (payload.warnings || []).filter((warning) => !pythonWarningBelongsToReplacedTool(warning)),
+    probes: probeLocalUsage(),
+    warnings: remoteCollectionWarnings(),
   });
   return 0;
 }

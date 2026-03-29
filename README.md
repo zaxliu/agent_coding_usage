@@ -44,6 +44,25 @@ llm-usage collect --ui auto
 llm-usage sync --ui auto
 ```
 
+## Node 版本
+
+仓库中的 `node/` 目录提供一个 Node.js CLI 实现。
+
+当前 Node 版本特性：
+
+- 本地采集、聚合、报表输出、飞书同步均可直接由 Node 执行
+- 运行本地命令时不再依赖 Python collector bridge
+- 远端 SSH 采集暂未在 Node 版本中实现；检测到远端配置时会提示并忽略
+
+如果你要验证 Node 版本：
+
+```bash
+cd node
+node --test
+node ./bin/llm-usage-node.js doctor
+node ./bin/llm-usage-node.js collect --ui none
+```
+
 ## 最小配置
 
 `.env` 中至少建议配置：

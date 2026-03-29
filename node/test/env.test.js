@@ -96,9 +96,12 @@ test("prepareRuntimePaths respects explicit overrides", async () => {
 
 test("prepareRuntimePaths falls back to legacy env in non-interactive mode", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-usage-legacy-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "llm-usage-legacy-home-"));
   fs.writeFileSync(path.join(root, ".env"), "ORG_USERNAME=alice\n", "utf8");
-  process.env.LLM_USAGE_ENV_FILE = path.join(root, "new", ".env");
-  process.env.LLM_USAGE_DATA_DIR = path.join(root, "data");
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+  delete process.env.LLM_USAGE_ENV_FILE;
+  delete process.env.LLM_USAGE_DATA_DIR;
   resetRuntimePathsCache();
 
   const originalStdin = process.stdin.isTTY;
@@ -110,8 +113,11 @@ test("prepareRuntimePaths falls back to legacy env in non-interactive mode", asy
   process.stdout.isTTY = originalStdout;
 
   assert.equal(resolved.envPath, path.join(root, ".env"));
-  delete process.env.LLM_USAGE_ENV_FILE;
-  delete process.env.LLM_USAGE_DATA_DIR;
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
 });
 
 test("loadDotenv bootstraps missing user env from package template", async () => {
@@ -132,4 +138,26 @@ test("loadDotenv bootstraps missing user env from package template", async () =>
   delete process.env.LLM_USAGE_ENV_FILE;
   delete process.env.LLM_USAGE_DATA_DIR;
   delete process.env.HASH_SALT;
+});
+
+test("explicit env and data overrides do not fall back to legacy repo paths", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-usage-explicit-"));
+  const envFile = path.join(root, "config", ".env");
+  const dataDir = path.join(root, "data");
+  fs.mkdirSync(path.dirname(envFile), { recursive: true });
+  fs.mkdirSync(path.join(root, "reports"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".env"), "ORG_USERNAME=legacy\n", "utf8");
+  fs.writeFileSync(path.join(root, "reports", "runtime_state.json"), "{\"selected_remote_aliases\":[\"LEGACY\"]}\n", "utf8");
+
+  process.env.LLM_USAGE_ENV_FILE = envFile;
+  process.env.LLM_USAGE_DATA_DIR = dataDir;
+  resetRuntimePathsCache();
+
+  await prepareRuntimePaths(root);
+
+  assert.equal(getEnvPath(), envFile);
+  assert.equal(getRuntimeStatePath(), path.join(dataDir, "runtime_state.json"));
+
+  delete process.env.LLM_USAGE_ENV_FILE;
+  delete process.env.LLM_USAGE_DATA_DIR;
 });

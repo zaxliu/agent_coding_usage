@@ -41,11 +41,11 @@ function dataDir() {
   return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), APP_NAME);
 }
 
-async function resolveFilePath(label, preferredPath, legacyPath) {
+async function resolveFilePath(label, preferredPath, legacyPath, { allowLegacy = true } = {}) {
   if (fs.existsSync(preferredPath)) {
     return preferredPath;
   }
-  if (!fs.existsSync(legacyPath) || preferredPath === legacyPath) {
+  if (!allowLegacy || !fs.existsSync(legacyPath) || preferredPath === legacyPath) {
     return preferredPath;
   }
   if (isInteractive()) {
@@ -82,15 +82,18 @@ export async function prepareRuntimePaths(legacyRoot = repoRoot) {
 
   const resolvedConfigDir = configDir();
   const resolvedDataDir = dataDir();
-  const preferredEnvPath = String(process.env.LLM_USAGE_ENV_FILE || "").trim()
-    ? path.resolve(process.env.LLM_USAGE_ENV_FILE)
-    : path.join(resolvedConfigDir, ".env");
+  const explicitEnvPath = String(process.env.LLM_USAGE_ENV_FILE || "").trim();
+  const explicitDataDir = String(process.env.LLM_USAGE_DATA_DIR || "").trim();
+  const preferredEnvPath = explicitEnvPath ? path.resolve(explicitEnvPath) : path.join(resolvedConfigDir, ".env");
   const preferredRuntimeStatePath = path.join(resolvedDataDir, "runtime_state.json");
-  const envPath = await resolveFilePath(".env", preferredEnvPath, path.join(root, ".env"));
+  const envPath = await resolveFilePath(".env", preferredEnvPath, path.join(root, ".env"), {
+    allowLegacy: !explicitEnvPath,
+  });
   const runtimeStatePath = await resolveFilePath(
     "runtime state",
     preferredRuntimeStatePath,
     path.join(root, "reports", "runtime_state.json"),
+    { allowLegacy: !explicitDataDir },
   );
   const resolved = {
     configDir: resolvedConfigDir,
