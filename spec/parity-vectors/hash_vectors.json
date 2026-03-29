@@ -1,0 +1,37 @@
+{
+  "userHashes": [
+    {
+      "username": "san.zhang",
+      "salt": "salt",
+      "expected": "0a700be8d9b4025ab4281667543e20d72c7a9352b74d7e0f8191d30a93d971a4"
+    }
+  ],
+  "sourceHostHashes": [
+    {
+      "username": "san.zhang",
+      "sourceLabel": "local",
+      "salt": "salt",
+      "expected": "6ddfee7194e69ab1c12ecad31a01c3eca30c72dcfe0cc4551914cdd15353b525"
+    }
+  ],
+  "rowKeys": [
+    {
+      "userHash": "u",
+      "sourceHostHash": "source-a",
+      "dateLocal": "2026-03-08",
+      "tool": "codex",
+      "model": "gpt-5.3-codex",
+      "sessionFingerprint": "codex:session-a",
+      "expected": "cd523a264dba14b177e915647d674c333b85f991226b4fcb7cad14591ac941df"
+    },
+    {
+      "userHash": "u",
+      "sourceHostHash": "source-a",
+      "dateLocal": "2026-03-08",
+      "tool": "codex",
+      "model": "gpt-5",
+      "sessionFingerprint": null,
+      "expected": "d4bc3646658e94de1c3ef4baa506a3d5a5e046452e42254f68f2118af9a6d46e"
+    }
+  ]
+}

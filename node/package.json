@@ -1,0 +1,18 @@
+{
+  "name": "llm-usage-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Conservative Node.js implementation for LLM usage core parity",
+  "bin": {
+    "llm-usage-node": "./bin/llm-usage-node.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "parity": "node --test test/parity.test.js",
+    "bundle": "node ./scripts/build-bundles.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "userHash": "u",
+  "timeZone": "UTC",
+  "now": "2026-03-08T02:00:00Z",
+  "events": [
+    {
+      "tool": "codex",
+      "model": "unknown",
+      "eventTime": "2026-03-08T00:10:00Z",
+      "inputTokens": 10,
+      "cacheTokens": 1,
+      "outputTokens": 2,
+      "sessionFingerprint": "codex:session-a",
+      "sourceHostHash": "source-a"
+    },
+    {
+      "tool": "codex",
+      "model": "gpt-5.3-codex",
+      "eventTime": "2026-03-08T01:10:00Z",
+      "inputTokens": 5,
+      "cacheTokens": 2,
+      "outputTokens": 3,
+      "sessionFingerprint": "codex:session-a",
+      "sourceHostHash": "source-a"
+    },
+    {
+      "tool": "codex",
+      "model": "gpt-5",
+      "eventTime": "2026-03-08T01:10:00Z",
+      "inputTokens": 10,
+      "cacheTokens": 1,
+      "outputTokens": 2,
+      "sourceHostHash": "source-b"
+    }
+  ],
+  "expectedRows": [
+    {
+      "date_local": "2026-03-08",
+      "user_hash": "u",
+      "source_host_hash": "source-a",
+      "tool": "codex",
+      "model": "gpt-5.3-codex",
+      "input_tokens_sum": 15,
+      "cache_tokens_sum": 3,
+      "output_tokens_sum": 5,
+      "row_key": "cd523a264dba14b177e915647d674c333b85f991226b4fcb7cad14591ac941df",
+      "updated_at": "2026-03-08T02:00:00+00:00"
+    },
+    {
+      "date_local": "2026-03-08",
+      "user_hash": "u",
+      "source_host_hash": "source-b",
+      "tool": "codex",
+      "model": "gpt-5",
+      "input_tokens_sum": 10,
+      "cache_tokens_sum": 1,
+      "output_tokens_sum": 2,
+      "row_key": "3378fd84035637ab046038f147fce253c627063e579eab6af7e486fca130ae1c",
+      "updated_at": "2026-03-08T02:00:00+00:00"
+    }
+  ]
+}
