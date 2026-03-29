@@ -1,33 +1,134 @@
 # llm-usage-sync
 
-Local-first usage collector for Claude Code, Codex, and Cursor with Feishu Bitable aggregation.
-It can also pull Claude/Codex logs from multiple remote servers over SSH and upload them from the desktop machine.
+本地优先的 LLM 编码工具用量采集器，支持聚合以下来源并输出到终端、CSV 或飞书多维表格：
 
-## Quick start
+- Claude Code
+- Codex
+- Cursor
+- GitHub Copilot CLI
+- GitHub Copilot VS Code Chat
+- OpenCode
+- 通过 SSH 拉取的远端日志
+
+设计目标：
+
+- 默认只在本地读取原始日志
+- 上传时只发送聚合后的白名单字段
+- 支持桌面端统一汇总多台服务器数据
+
+## 功能概览
+
+- `llm-usage collect`：采集并汇总本地 + 已选远端数据，输出终端表格和 `reports/usage_report.csv`
+- `llm-usage sync`：在 `collect` 基础上，将聚合结果同步到飞书多维表格
+- `llm-usage doctor`：检查配置和各采集器可用性
+- `llm-usage init`：生成 `.env`、`.env.example` 和 `reports/`
+- `llm-usage bundle`：生成可分发的内部 / 外部脱敏压缩包
+
+## 快速开始
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
+
 llm-usage init
-# edit .env (ORG_USERNAME is required, e.g. san.zhang)
+# 编辑 .env，至少补全 HASH_SALT
+# ORG_USERNAME 缺失时，命令行运行会提示输入并自动写回 .env
+
 llm-usage doctor
 llm-usage collect --ui auto
-llm-usage sync --ui auto
-llm-usage bundle
 ```
 
-## Commands
+如果你要同步到飞书，再补全飞书相关环境变量后执行：
 
-- `llm-usage init`: create `.env`/`.env.example` and `reports/`
-- `llm-usage doctor`: check config and source files
-- `llm-usage collect`: local + selected remote aggregation + terminal report + CSV
-- `llm-usage sync`: local + selected remote aggregation and upsert to Feishu Bitable
-- `llm-usage bundle`: build internal/external zip bundles for distribution
+```bash
+llm-usage sync --ui auto
+```
 
-## Privacy model
+## 最小配置
 
-Uploaded fields are whitelisted aggregate metrics only:
+`.env` 中至少建议配置：
+
+```env
+ORG_USERNAME=san.zhang
+HASH_SALT=change-me
+TIMEZONE=Asia/Shanghai
+LOOKBACK_DAYS=7
+```
+
+说明：
+
+- `ORG_USERNAME`：必填，用于生成稳定的匿名身份哈希
+- `HASH_SALT`：必填，决定匿名字段的稳定性与不可逆性
+- `TIMEZONE`：聚合时按该时区落到 `date_local`
+- `LOOKBACK_DAYS`：采集窗口，默认 `7`
+
+如果缺少 `ORG_USERNAME`，交互终端下运行时会提示输入并写回 `.env`。
+
+远端不建议手工编辑 `REMOTE_*` 配置。推荐直接运行 `llm-usage collect --ui auto` 或 `llm-usage sync --ui auto`，按提示输入 SSH 主机、用户、端口；连通性检查通过后，确认保存即可自动写入 `.env`。
+
+## 命令说明
+
+### `llm-usage init`
+
+初始化：
+
+- `.env.example`
+- `.env`
+- `reports/`
+
+### `llm-usage doctor`
+
+检查：
+
+- `ORG_USERNAME`、`HASH_SALT`、`TIMEZONE`
+- 本地采集器是否能找到对应数据源
+- `.env` 中配置的远端采集器是否可探测
+
+### `llm-usage collect`
+
+行为：
+
+- 读取本地日志
+- 按需选择远端 SSH 来源
+- 输出终端汇总表
+- 写入 `reports/usage_report.csv`
+
+常用参数：
+
+- `--ui auto|tui|cli|none`：远端选择界面，默认 `auto`
+- `--cursor-login-timeout-sec`：Cursor 浏览器登录捕获超时，默认 `600`
+- `--cursor-login-browser`：指定登录浏览器
+
+### `llm-usage sync`
+
+与 `collect` 相同，但会额外：
+
+- 自动获取飞书访问令牌
+- 在目标多维表格中按 `row_key` 执行插入或更新
+
+### `llm-usage bundle`
+
+生成两个压缩包到 `dist/`：
+
+- `internal`：保留团队共享配置，清空个人身份和本机路径
+- `external`：进一步清空飞书密钥与内部敏感配置
+
+常用参数：
+
+- `--output-dir dist`
+- `--keep-staging`
+
+示例：
+
+```bash
+llm-usage bundle
+llm-usage bundle --output-dir dist --keep-staging
+```
+
+## 输出与隐私
+
+上传到飞书的字段是固定白名单：
 
 - `date_local`
 - `user_hash`
@@ -40,126 +141,200 @@ Uploaded fields are whitelisted aggregate metrics only:
 - `row_key`
 - `updated_at`
 
-No prompt text, session id, path, or command text is uploaded.
+不会上传：
 
-`ORG_USERNAME` is required. Set your group username in `.env` (for example `san.zhang`).
+- 提示词 / 响应原文
+- 会话 ID
+- 本地路径
+- 命令内容
+- 原始主机名或 SSH 连接信息
 
-## Feishu Bitable fields
+其中：
 
-Create fields with exact names:
+- `user_hash` 基于 `ORG_USERNAME + HASH_SALT`
+- `source_host_hash` 基于 `ORG_USERNAME + source_label + HASH_SALT`
 
-- `date_local` (text/date)
-- `user_hash` (text)
-- `source_host_hash` (text)
-- `tool` (text)
-- `model` (text)
-- `input_tokens_sum` (number)
-- `cache_tokens_sum` (number)
-- `output_tokens_sum` (number)
-- `row_key` (text, unique recommended)
-- `updated_at` (text/datetime)
+这意味着同一台共享服务器上的不同用户不会发生来源冲突。
 
-## Feishu auth env
+## 支持的数据源
 
-- `FEISHU_APP_TOKEN`: target bitable app token
-- `FEISHU_TABLE_ID`: target table id (optional; if empty, sync auto-selects the first table)
-- `FEISHU_APP_ID` / `FEISHU_APP_SECRET`: app credentials used to fetch `tenant_access_token` at runtime
-- `FEISHU_BOT_TOKEN` (optional): if set, used directly as bearer token and skips runtime token fetch
+### 本地来源
 
-## Distribution bundles
+默认支持：
 
-Use `llm-usage bundle` to generate two zip files in `dist/`:
+- Claude Code
+- Codex
+- Cursor
+- Copilot CLI
+- Copilot VS Code Chat
+- OpenCode
 
-- `internal`: keeps shared team config for sync, but clears personal identifiers and local machine overrides
-- `external`: ships a fully sanitized `.env` with all internal secrets removed
-
-Sanitization rules:
-
-- both bundles clear `ORG_USERNAME`, `CURSOR_WEB_SESSION_TOKEN`, `CURSOR_WEB_WORKOS_ID`,
-  `CLAUDE_LOG_PATHS`, `CODEX_LOG_PATHS`, `CURSOR_LOG_PATHS`, and all `REMOTE_*` values
-- external bundle also clears `HASH_SALT` and all `FEISHU_*` values
-- dashboard defaults such as `CURSOR_DASHBOARD_BASE_URL` are reset to safe defaults
-
-Useful options:
-
-- `llm-usage bundle --output-dir some/path`
-- `llm-usage bundle --keep-staging`
-
-## Source path overrides
-
-Use comma-separated glob patterns in `.env` if defaults are not enough:
+如默认路径不足，可在 `.env` 中覆盖：
 
 - `CLAUDE_LOG_PATHS`
 - `CODEX_LOG_PATHS`
+- `COPILOT_CLI_LOG_PATHS`
+- `COPILOT_VSCODE_SESSION_PATHS`
 - `CURSOR_LOG_PATHS`
 
-## OpenCode collector
+这些值使用逗号分隔的 glob 匹配模式。
 
-OpenCode stores token usage in a SQLite database. The collector reads from:
+### OpenCode
 
-- Default: `~/.local/share/opencode/opencode.db`
-- Override via `OPENCODE_DB_PATH` environment variable
+OpenCode 采集器从 SQLite 读取 token 使用量：
 
-Token data is extracted from `step-finish` events in the `part` table, which contain:
+- 默认路径：`~/.local/share/opencode/opencode.db`
+- 可通过 `OPENCODE_DB_PATH` 覆盖
 
-- `input_tokens`: Input token count
-- `output_tokens`: Output token count
-- `cache.read` + `cache.write`: Cache token counts
+### Cursor 网页仪表盘（可选）
 
-## Remote SSH collection
+如果本地 Cursor 日志不可用，或当前 lookback 内没有数据，`collect` / `sync` 会尝试使用 Cursor 网页端数据。
 
-Remote collection only applies to `claude_code` and `codex`. `cursor` remains desktop-only.
+相关环境变量：
 
-Configure static remotes in `.env`:
+- `CURSOR_WEB_SESSION_TOKEN`
+- `CURSOR_WEB_WORKOS_ID`
+- `CURSOR_DASHBOARD_BASE_URL`，默认 `https://cursor.com`
+- `CURSOR_DASHBOARD_TEAM_ID`，默认 `0`
+- `CURSOR_DASHBOARD_PAGE_SIZE`，默认 `300`
+- `CURSOR_DASHBOARD_TIMEOUT_SEC`，默认 `15`
 
-- `REMOTE_HOSTS=SERVER_A,SERVER_B`
-- `REMOTE_SERVER_A_SSH_HOST=host-a`
-- `REMOTE_SERVER_A_SSH_USER=alice`
-- `REMOTE_SERVER_A_SSH_PORT=22`
-- `REMOTE_SERVER_A_LABEL=prod-a`
-- `REMOTE_SERVER_A_CLAUDE_LOG_PATHS=/home/alice/.claude/**/*.jsonl`
-- `REMOTE_SERVER_A_CODEX_LOG_PATHS=/home/alice/.codex/**/*.jsonl`
+行为说明：
 
-Behavior:
+- 若 `CURSOR_WEB_SESSION_TOKEN` 已配置，优先使用网页仪表盘接口
+- 若 token 失效，会清空旧 token，并引导重新登录后将新 token 粘贴回命令行
+- 若 token 为空且本地日志不可用，会尝试打开系统浏览器登录页，并提示将 token 粘贴回命令行后自动写回 `.env`
 
-- `collect` / `sync` support `--ui auto|tui|cli|none`
-- `auto` prefers a lightweight TUI when available and falls back to pure CLI
-- the selector remembers the last chosen static remotes in `reports/runtime_state.json`
-- you can add a temporary remote during `collect` / `sync`; it is only saved to `.env` if you confirm it
-- temporary remotes auto-generate their source label as `ssh_user@ssh_host`; you do not need to type a label
-- `source_host_hash` is derived from `ORG_USERNAME + source_label + HASH_SALT`, so different users on one shared server do not collide
-- remote execution only assumes SSH plus a minimal `python3` or `python` on the server
+Windows 下使用 `default` / `chrome` / `chromium` / `edge` / `msedge` 时，不会自动扫描本地 Cursor 浏览器 cookie，而是固定走“弹出网页登录页 + 手动粘贴 token”流程。
 
-## Cursor Pro+ dashboard collection (optional)
+Windows 手动登录步骤：
 
-If you are on Cursor Pro+ (not Teams), you can collect historical token usage
-directly from `https://cursor.com/dashboard/usage` by setting:
+1. 运行 `llm-usage collect` 或 `llm-usage sync`
+2. 程序会自动打开 `https://cursor.com/dashboard/usage`
+3. 在浏览器里完成登录
+4. 打开 DevTools
+5. 在 `Application > Cookies > https://cursor.com` 中复制 `WorkosCursorSessionToken`
+6. 回到命令行，粘贴到 `CURSOR_WEB_SESSION_TOKEN` 提示中
+7. 程序会自动写入 `.env`，后续优先复用
 
-- `CURSOR_WEB_SESSION_TOKEN`: value of `WorkosCursorSessionToken` cookie from `cursor.com`
-- `CURSOR_WEB_WORKOS_ID` (optional): auxiliary `workos_id` cookie; auto-filled by `collect/sync` when available
-- `CURSOR_DASHBOARD_BASE_URL` (optional, default `https://cursor.com`)
-- `CURSOR_DASHBOARD_TEAM_ID` (optional, default `0`)
-- `CURSOR_DASHBOARD_PAGE_SIZE` (optional, default `300`)
-- `CURSOR_DASHBOARD_TIMEOUT_SEC` (optional, default `15`)
+## 远端 SSH 采集
 
-`browser-cookie3` is installed with this project by default, so `collect` / `sync`
-can auto-capture the cookie from your normal browser without extra setup.
+远端采集由桌面机发起，通过 SSH 拉取日志后在本地统一聚合。
 
-Behavior:
+当前远端支持：
 
-- if `CURSOR_WEB_SESSION_TOKEN` is set, cursor collector uses web dashboard API
-  (`POST /api/dashboard/get-filtered-usage-events`)
-- if existing `CURSOR_WEB_SESSION_TOKEN` is expired, collect/sync auto-refreshes it from browser cookies
-- if it is empty and local cursor logs are unavailable, or local logs have no events in lookback,
-  `llm-usage collect` / `llm-usage sync`
-  will reuse existing system-browser cookies; if still missing, it opens the normal browser for login,
-  then auto-detects session cookies from local browser profiles and saves them to `.env`
-- timeout can be adjusted with `--cursor-login-timeout-sec` on `collect` / `sync`
-- browser can be selected with `--cursor-login-browser`
-  (supports `chrome` / `edge` / `safari` / `firefox`, default `default`)
-- `--cursor-login-user-data-dir` is kept for compatibility and ignored in system-browser mode
+- Claude Code
+- Codex
+- Copilot CLI
+- Copilot VS Code Chat
 
-## Scheduling templates
+不支持远端 Cursor，本项目中的 Cursor 仍以桌面端本地 / 网页数据为主。
 
-- Linux cron template: `templates/cron.sample`
-- macOS launchd template: `templates/com.team.llm-usage-sync.plist`
+推荐使用命令行交互添加远端，而不是手工编辑 `.env`：
+
+```bash
+llm-usage collect --ui auto
+```
+
+典型流程：
+
+1. 首次运行时选择 `+` 新增一个临时远端
+2. 按提示输入 `SSH 主机`、`SSH 用户`、`SSH 端口`
+3. 程序会先执行 SSH 连通性检查
+4. 检查通过后继续采集
+5. 退出前会询问是否将该远端保存到 `.env`
+
+如果远端机器在堡垒机 / 跳板机后面，当前也支持将目标机器信息直接嵌入 SSH 登录串，例如：
+
+```bash
+ssh username@username@host_server_ip@host_jumpserver_ip
+```
+
+这种场景下，命令行交互录入时可按下面填写：
+
+- `SSH 主机`：`username@host_server_ip@host_jumpserver_ip`
+- `SSH 用户`：`username`
+- `SSH 端口`：按实际堡垒机端口填写
+
+这样程序最终拼接出的 SSH 目标会是：
+
+```text
+username@username@host_server_ip@host_jumpserver_ip
+```
+
+只要你的堡垒机环境本身支持这种格式，`llm-usage` 当前也可以正常连通并采集。
+
+只有在需要批量预置配置、或做非交互部署时，才建议手工维护 `REMOTE_*`。
+
+运行时行为：
+
+- `--ui auto` 优先使用轻量 TUI，失败时回落到 CLI
+- 上次选择的静态远端会保存到 `reports/runtime_state.json`
+- 可以在运行时临时添加远端
+- 推荐通过运行时交互添加远端，临时远端只有确认后才会追加写入 `.env`
+- 临时远端默认来源标签为 `ssh_user@ssh_host`
+- 远端机器只要求有 `ssh` 和基础 `python3` / `python`
+
+## 飞书多维表格同步
+
+需要的环境变量：
+
+- `FEISHU_APP_TOKEN`
+- `FEISHU_TABLE_ID`，可选；为空时自动选择第一个表
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+- `FEISHU_BOT_TOKEN`，可选；若提供则直接作为 bearer token 使用
+
+建议在目标表中创建以下字段：
+
+- `date_local`
+- `user_hash`
+- `source_host_hash`
+- `tool`
+- `model`
+- `input_tokens_sum`
+- `cache_tokens_sum`
+- `output_tokens_sum`
+- `row_key`
+- `updated_at`
+
+注意：
+
+- 飞书应用权限不等于多维表格协作权限
+- 即使应用有写权限，如果表格本身只读，写入仍会失败
+- 应确保应用或其运行身份对目标表保有编辑权限
+
+## 分发包脱敏规则
+
+`llm-usage bundle` 会清理以下内容：
+
+所有分发包都会清空：
+
+- `ORG_USERNAME`
+- `CURSOR_WEB_SESSION_TOKEN`
+- `CURSOR_WEB_WORKOS_ID`
+- 各类本地路径覆盖变量
+- 所有 `REMOTE_*`
+
+外部分发包还会额外清空：
+
+- `HASH_SALT`
+- 所有 `FEISHU_*`
+
+同时会重置安全默认值：
+
+- `CURSOR_DASHBOARD_BASE_URL=https://cursor.com`
+- `CURSOR_DASHBOARD_TEAM_ID=0`
+- `CURSOR_DASHBOARD_PAGE_SIZE=300`
+- `CURSOR_DASHBOARD_TIMEOUT_SEC=15`
+
+## 开发
+
+安装开发依赖：
+
+```bash
+pip install -e '.[dev]'
+pytest
+```
+
+采集器扩展说明见 [docs/ADAPTERS.md](/Users/lewis/Documents/code/agent_coding_usage/docs/ADAPTERS.md)。

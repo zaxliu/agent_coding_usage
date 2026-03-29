@@ -149,6 +149,133 @@ def test_maybe_capture_triggers_browser_when_needed(monkeypatch):
     assert called["capture"] == 1
 
 
+def test_maybe_capture_windows_chromium_prompts_manual_before_auto(monkeypatch):
+    monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
+    monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(main.os, "name", "nt")
+
+    class _Collector:
+        def probe(self):  # noqa: ANN201
+            return False, "no local cursor files"
+
+    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    capture_called = {"count": 0}
+
+    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+        capture_called["count"] += 1
+        return "browser-token"
+
+    prompt_called = {"count": 0}
+
+    def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
+        prompt_called["count"] += 1
+        assert browser == "chrome"
+        assert automatic_capture_failed is False
+        return "manual-token"
+
+    monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_capture)
+    monkeypatch.setattr(main, "_prompt_for_manual_cursor_token", _fake_prompt)
+
+    assert main._maybe_capture_cursor_token(timeout_sec=77, browser="chrome", user_data_dir="") is None
+    assert prompt_called["count"] == 1
+    assert capture_called["count"] == 0
+
+
+def test_maybe_capture_windows_chromium_does_not_auto_scan_when_manual_skipped(monkeypatch):
+    monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
+    monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(main.os, "name", "nt")
+
+    class _Collector:
+        def probe(self):  # noqa: ANN201
+            return False, "no local cursor files"
+
+    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    capture_called = {"count": 0}
+
+    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+        capture_called["count"] += 1
+        return "browser-token"
+
+    prompt_called = {"count": 0}
+
+    def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
+        prompt_called["count"] += 1
+        assert browser == "edge"
+        assert automatic_capture_failed is False
+        return None
+
+    monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_capture)
+    monkeypatch.setattr(main, "_prompt_for_manual_cursor_token", _fake_prompt)
+
+    assert main._maybe_capture_cursor_token(timeout_sec=77, browser="edge", user_data_dir="") is None
+    assert prompt_called["count"] == 1
+    assert capture_called["count"] == 0
+
+
+def test_maybe_capture_windows_expired_token_prompts_manual_without_auto_scan(monkeypatch):
+    monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "expired")
+    monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(main.os, "name", "nt")
+
+    class _Collector:
+        def probe(self):  # noqa: ANN201
+            return False, "authentication failed (session cookie may be expired)"
+
+    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    state = {"clear": 0, "capture": 0, "prompt": 0}
+
+    def _fake_clear():  # noqa: ANN201
+        state["clear"] += 1
+
+    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+        state["capture"] += 1
+        return "browser-token"
+
+    def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
+        state["prompt"] += 1
+        assert browser == "chrome"
+        assert automatic_capture_failed is False
+        return "manual-token"
+
+    monkeypatch.setattr(main, "_clear_saved_cursor_token", _fake_clear)
+    monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_capture)
+    monkeypatch.setattr(main, "_prompt_for_manual_cursor_token", _fake_prompt)
+
+    assert main._maybe_capture_cursor_token(timeout_sec=61, browser="chrome", user_data_dir="") is None
+    assert state["clear"] == 1
+    assert state["prompt"] == 1
+    assert state["capture"] == 0
+
+
+def test_maybe_capture_uses_manual_token_when_auto_login_fails(monkeypatch):
+    monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
+    monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+
+    class _Collector:
+        def probe(self):  # noqa: ANN201
+            return False, "no local cursor files"
+
+    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr(
+        main,
+        "_capture_and_save_cursor_token",
+        lambda timeout_sec, browser, user_data_dir: (_ for _ in ()).throw(RuntimeError("cookie timeout")),
+    )
+    prompted = {"count": 0}
+
+    def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
+        prompted["count"] += 1
+        assert browser == "chrome"
+        assert automatic_capture_failed is True
+        return "manual-token"
+
+    monkeypatch.setattr(main, "_prompt_for_manual_cursor_token", _fake_prompt)
+
+    assert main._maybe_capture_cursor_token(timeout_sec=77, browser="chrome", user_data_dir="") is None
+    assert prompted["count"] == 1
+
+
 def test_capture_and_save_cursor_token(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     monkeypatch.setattr(main, "_env_path", lambda: env_path)
@@ -166,6 +293,64 @@ def test_capture_and_save_cursor_token(monkeypatch, tmp_path):
     assert token == "token-from-browser"
     text = env_path.read_text(encoding="utf-8")
     assert "CURSOR_WEB_SESSION_TOKEN=token-from-browser" in text
+
+
+def test_prompt_for_manual_cursor_token_saves_value(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    answers = iter(["manual-token"])
+
+    class _Stdout:
+        def isatty(self):  # noqa: ANN201
+            return True
+
+        def write(self, text):  # noqa: ANN001, ANN201
+            return len(text)
+
+        def flush(self):  # noqa: ANN201
+            return None
+
+    class _Stdin:
+        def isatty(self):  # noqa: ANN201
+            return True
+
+    stdout = _Stdout()
+    stdin = _Stdin()
+    monkeypatch.setattr(main, "_env_path", lambda: env_path)
+    monkeypatch.setattr(main, "open_cursor_dashboard_login_page", lambda browser="default": None)
+    monkeypatch.setattr(main.sys, "stdin", stdin)
+    monkeypatch.setattr(main.sys, "stdout", stdout)
+    monkeypatch.setattr(builtins, "input", lambda prompt="": next(answers))
+
+    token = main._prompt_for_manual_cursor_token("chrome", automatic_capture_failed=True)
+    assert token == "manual-token"
+    text = env_path.read_text(encoding="utf-8")
+    assert "CURSOR_WEB_SESSION_TOKEN=manual-token" in text
+
+
+def test_prompt_for_manual_cursor_token_skips_without_tty(monkeypatch):
+    class _Stdout:
+        def isatty(self):  # noqa: ANN201
+            return False
+
+        def write(self, text):  # noqa: ANN001, ANN201
+            return len(text)
+
+        def flush(self):  # noqa: ANN201
+            return None
+
+    class _Stdin:
+        def isatty(self):  # noqa: ANN201
+            return False
+
+    stdout = _Stdout()
+    stdin = _Stdin()
+    monkeypatch.setattr(main.sys, "stdin", stdin)
+    monkeypatch.setattr(main.sys, "stdout", stdout)
+    called = {"input": 0}
+    monkeypatch.setattr(builtins, "input", lambda prompt="": called.__setitem__("input", called["input"] + 1))
+
+    assert main._prompt_for_manual_cursor_token("chrome", automatic_capture_failed=True) is None
+    assert called["input"] == 0
 
 
 def test_clear_saved_cursor_token(monkeypatch, tmp_path):

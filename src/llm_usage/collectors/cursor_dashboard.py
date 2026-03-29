@@ -44,7 +44,12 @@ class CursorDashboardCollector(BaseCollector):
         events = payload.get("usageEventsDisplay")
         if not isinstance(events, list):
             return False, "cursor dashboard API returned unexpected response shape"
-        return True, "cursor dashboard API reachable"
+        mode = self._request_mode or "unknown"
+        total_count = _coerce_int(payload.get("totalUsageEventsCount"))
+        return True, (
+            f"cursor dashboard API reachable, mode={mode}, "
+            f"sample_events={len(events)}, total_usage_events={total_count}"
+        )
 
     def collect(self, start: datetime, end: datetime) -> CollectOutput:
         warnings: list[str] = []

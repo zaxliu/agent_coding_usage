@@ -198,15 +198,134 @@ def _extract_copilot_cli_events(
     return out
 
 
+def _normalize_copilot_model(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    if text.startswith("copilot/"):
+        text = text[len("copilot/") :]
+    return text
+
+
+def _extract_copilot_vscode_usage(result: dict[str, Any]) -> tuple[int, int, int]:
+    usage = result.get("usage") if isinstance(result.get("usage"), dict) else None
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else None
+
+    input_tokens = 0
+    output_tokens = 0
+    cache_tokens = 0
+
+    if usage is not None:
+        input_tokens = _coerce_int(
+            usage.get("promptTokens")
+            or usage.get("inputTokens")
+            or usage.get("prompt_tokens")
+        )
+        output_tokens = _coerce_int(
+            usage.get("completionTokens")
+            or usage.get("outputTokens")
+            or usage.get("output_tokens")
+        )
+        cache_tokens = _coerce_int(
+            usage.get("cachedInputTokens")
+            or usage.get("cacheReadTokens")
+            or usage.get("cached_input_tokens")
+        )
+
+    if input_tokens == 0 and output_tokens == 0:
+        input_tokens = _coerce_int(result.get("promptTokens"))
+        output_tokens = _coerce_int(
+            result.get("outputTokens") or result.get("completionTokens")
+        )
+
+    if input_tokens == 0 and output_tokens == 0 and metadata is not None:
+        input_tokens = _coerce_int(
+            metadata.get("promptTokens") or metadata.get("inputTokens")
+        )
+        output_tokens = _coerce_int(
+            metadata.get("outputTokens") or metadata.get("completionTokens")
+        )
+        if cache_tokens == 0:
+            cache_tokens = _coerce_int(
+                metadata.get("cachedInputTokens") or metadata.get("cacheReadTokens")
+            )
+
+    return input_tokens, cache_tokens, output_tokens
+
+
+def _estimate_tokens_from_text(text: str) -> int:
+    content = text.strip()
+    if not content:
+        return 0
+    ascii_chars = sum(1 for ch in content if ord(ch) < 128)
+    non_ascii_chars = len(content) - ascii_chars
+    return max(1, int((ascii_chars * 0.25) + (non_ascii_chars * 0.6) + 0.999999))
+
+
+def _collect_copilot_text_parts(value: Any) -> list[str]:
+    parts: list[str] = []
+    if isinstance(value, str):
+        if value:
+            parts.append(value)
+        return parts
+    if isinstance(value, list):
+        for item in value:
+            parts.extend(_collect_copilot_text_parts(item))
+        return parts
+    if not isinstance(value, dict):
+        return parts
+
+    direct_text = value.get("text")
+    if isinstance(direct_text, str) and direct_text:
+        parts.append(direct_text)
+
+    direct_value = value.get("value")
+    if isinstance(direct_value, str) and direct_value:
+        parts.append(direct_value)
+
+    content = value.get("content")
+    if isinstance(content, dict):
+        content_value = content.get("value")
+        if isinstance(content_value, str) and content_value:
+            parts.append(content_value)
+
+    if isinstance(value.get("parts"), list):
+        for item in value["parts"]:
+            parts.extend(_collect_copilot_text_parts(item))
+    if isinstance(value.get("response"), list):
+        for item in value["response"]:
+            parts.extend(_collect_copilot_text_parts(item))
+    return parts
+
+
 def _extract_copilot_vscode_model(session: dict[str, Any], request: dict[str, Any]) -> str:
+    for value in (
+        request.get("modelId"),
+        request.get("model"),
+        request.get("selectedModel", {}).get("identifier")
+        if isinstance(request.get("selectedModel"), dict)
+        else None,
+    ):
+        normalized = _normalize_copilot_model(value)
+        if normalized and normalized != "auto":
+            return normalized
+
     agent = request.get("agent")
     if isinstance(agent, dict):
-        model_id = agent.get("modelId")
-        if isinstance(model_id, str) and model_id.strip() and model_id.strip() != "copilot/auto":
-            return model_id.strip()
+        normalized = _normalize_copilot_model(agent.get("modelId"))
+        if normalized and normalized != "auto":
+            return normalized
 
     result = request.get("result")
     if isinstance(result, dict):
+        metadata = result.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("modelId", "model", "id"):
+                normalized = _normalize_copilot_model(metadata.get(key))
+                if normalized and normalized != "auto":
+                    return normalized
         details = result.get("details")
         if isinstance(details, str) and details.strip():
             return details.split("•", 1)[0].strip()
@@ -218,11 +337,58 @@ def _extract_copilot_vscode_model(session: dict[str, Any], request: dict[str, An
             metadata = selected_model.get("metadata")
             if isinstance(metadata, dict):
                 for key in ("version", "name", "id"):
-                    value = metadata.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
+                    normalized = _normalize_copilot_model(metadata.get(key))
+                    if normalized:
+                        return normalized
+            normalized = _normalize_copilot_model(selected_model.get("identifier"))
+            if normalized:
+                return normalized
 
     return "unknown"
+
+
+def _build_copilot_vscode_event(
+    session: dict[str, Any],
+    request: dict[str, Any],
+    fallback_time: datetime,
+    source_ref: str,
+) -> UsageEvent | None:
+    session_id = session.get("sessionId")
+    request_id = request.get("requestId")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    if not isinstance(request_id, str) or not request_id.strip():
+        return None
+
+    result = request.get("result")
+    if not isinstance(result, dict):
+        return None
+    input_tokens, cache_tokens, output_tokens = _extract_copilot_vscode_usage(result)
+    if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+        input_text = "\n".join(_collect_copilot_text_parts(request.get("message")))
+        output_text = "\n".join(_collect_copilot_text_parts(request.get("response")))
+        if not output_text:
+            output_text = "\n".join(_collect_copilot_text_parts(result))
+        input_tokens = _estimate_tokens_from_text(input_text)
+        output_tokens = _estimate_tokens_from_text(output_text)
+        if input_tokens == 0 and output_tokens == 0:
+            return None
+
+    event_time = (
+        _parse_time(request.get("timestamp"))
+        or _extract_time(result)
+        or fallback_time
+    )
+    return UsageEvent(
+        tool="copilot_vscode",
+        model=_extract_copilot_vscode_model(session, request),
+        event_time=event_time,
+        input_tokens=input_tokens,
+        cache_tokens=cache_tokens,
+        output_tokens=output_tokens,
+        session_fingerprint=f"copilot_vscode:{session_id.strip()}:{request_id.strip()}",
+        source_ref=source_ref,
+    )
 
 
 def _extract_copilot_vscode_events(
@@ -242,23 +408,124 @@ def _extract_copilot_vscode_events(
     for request in requests:
         if not isinstance(request, dict):
             continue
-        request_id = request.get("requestId")
-        if not isinstance(request_id, str) or not request_id.strip():
+        event = _build_copilot_vscode_event(session, request, fallback_time, source_ref)
+        if event is not None:
+            out.append(event)
+    return out
+
+
+def _apply_copilot_delta(state: Any, delta: dict[str, Any]) -> Any:
+    kind = delta.get("kind")
+    path = delta.get("k")
+    value = delta.get("v")
+
+    if kind == 0:
+        return value if isinstance(value, (dict, list)) else state
+    if not isinstance(path, list) or not path:
+        return state
+
+    root = state if isinstance(state, (dict, list)) else {}
+    current = root
+    parts = [str(part) for part in path]
+
+    for idx, part in enumerate(parts[:-1]):
+        next_part = parts[idx + 1]
+        wants_list = next_part.isdigit()
+        if isinstance(current, list):
+            if not part.isdigit():
+                return root
+            part_index = int(part)
+            while len(current) <= part_index:
+                current.append([] if wants_list else {})
+            if not isinstance(current[part_index], (dict, list)):
+                current[part_index] = [] if wants_list else {}
+            current = current[part_index]
             continue
-        event_time = _parse_time(request.get("timestamp")) or fallback_time
-        out.append(
-            UsageEvent(
-                tool="copilot_vscode",
-                model=_extract_copilot_vscode_model(session, request),
-                event_time=event_time,
-                input_tokens=0,
-                cache_tokens=0,
-                output_tokens=0,
-                session_fingerprint=f"copilot_vscode:{session_id.strip()}:{request_id.strip()}",
-                source_ref=source_ref,
+
+        if not isinstance(current, dict):
+            return root
+        child = current.get(part)
+        if not isinstance(child, (dict, list)):
+            child = [] if wants_list else {}
+            current[part] = child
+        current = child
+
+    last = parts[-1]
+    if kind == 1:
+        if isinstance(current, list):
+            if not last.isdigit():
+                return root
+            last_index = int(last)
+            while len(current) <= last_index:
+                current.append(None)
+            current[last_index] = value
+            return root
+        if isinstance(current, dict):
+            current[last] = value
+        return root
+
+    if kind == 2:
+        target: Any
+        if isinstance(current, list):
+            if not last.isdigit():
+                return root
+            last_index = int(last)
+            while len(current) <= last_index:
+                current.append([])
+            if not isinstance(current[last_index], list):
+                current[last_index] = []
+            target = current[last_index]
+        elif isinstance(current, dict):
+            if not isinstance(current.get(last), list):
+                current[last] = []
+            target = current[last]
+        else:
+            return root
+
+        if isinstance(value, list):
+            target.extend(value)
+        else:
+            target.append(value)
+    return root
+
+
+def _extract_copilot_vscode_events_from_jsonl_text(
+    text: str,
+    fallback_time: datetime,
+    source_ref: str,
+) -> list[UsageEvent]:
+    state: Any = {}
+    saw_delta = False
+    events: list[UsageEvent] = []
+    for idx, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if isinstance(obj.get("kind"), int):
+            saw_delta = True
+            state = _apply_copilot_delta(state, obj)
+            continue
+        events.extend(
+            _extract_copilot_vscode_events(
+                obj,
+                fallback_time=fallback_time,
+                source_ref=f"{source_ref}:{idx}",
             )
         )
-    return out
+
+    if saw_delta and isinstance(state, dict):
+        return _extract_copilot_vscode_events(
+            state,
+            fallback_time=fallback_time,
+            source_ref=source_ref,
+        )
+    return events
 
 
 def extract_usage_events_from_node(
@@ -351,6 +618,16 @@ def read_events_from_text(
         else None
     )
     try:
+        if tool == "copilot_vscode" and file_suffix.lower() == ".jsonl":
+            return (
+                _extract_copilot_vscode_events_from_jsonl_text(
+                    text=text,
+                    fallback_time=fallback_time,
+                    source_ref=source_ref,
+                ),
+                None,
+            )
+
         if file_suffix.lower() == ".jsonl":
             for idx, raw in enumerate(text.splitlines(), start=1):
                 line = raw.strip()

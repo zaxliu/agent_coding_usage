@@ -252,7 +252,10 @@ def test_read_copilot_vscode_session_jsonl_extracts_requests(tmp_path):
                     "requestId": "request-1",
                     "timestamp": 1774411393113,
                     "agent": {"modelId": "copilot/auto"},
-                    "result": {"details": "Raptor mini (Preview) • 1x"},
+                    "result": {
+                        "details": "Raptor mini (Preview) • 1x",
+                        "metadata": {"promptTokens": 123, "outputTokens": 45},
+                    },
                 }
             ],
             "inputState": {
@@ -273,6 +276,102 @@ def test_read_copilot_vscode_session_jsonl_extracts_requests(tmp_path):
     assert len(events) == 1
     assert events[0].tool == "copilot_vscode"
     assert events[0].model == "Raptor mini (Preview)"
-    assert events[0].input_tokens == 0
-    assert events[0].output_tokens == 0
+    assert events[0].input_tokens == 123
+    assert events[0].output_tokens == 45
     assert events[0].session_fingerprint == "copilot_vscode:session-abc:request-1"
+
+
+def test_read_copilot_vscode_session_json_extracts_usage_variants(tmp_path):
+    path = tmp_path / "session.json"
+    payload = {
+        "sessionId": "session-json",
+        "inputState": {
+            "selectedModel": {
+                "metadata": {"version": "gpt-4.1"}
+            }
+        },
+        "requests": [
+            {
+                "requestId": "request-old",
+                "timestamp": "2026-03-25T03:45:56Z",
+                "result": {"usage": {"promptTokens": 10, "completionTokens": 4}},
+            },
+            {
+                "requestId": "request-new",
+                "timestamp": "2026-03-25T03:49:04Z",
+                "modelId": "copilot/gpt-4.1",
+                "result": {"promptTokens": 20, "outputTokens": 8},
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    events, warning = read_events_from_file(path, tool="copilot_vscode")
+
+    assert warning is None
+    assert len(events) == 2
+    assert [event.model for event in events] == ["gpt-4.1", "gpt-4.1"]
+    assert [event.input_tokens for event in events] == [10, 20]
+    assert [event.output_tokens for event in events] == [4, 8]
+
+
+def test_read_copilot_vscode_delta_jsonl_reconstructs_session(tmp_path):
+    path = tmp_path / "delta-session.jsonl"
+    lines = [
+        {
+            "kind": 0,
+            "v": {
+                "sessionId": "session-delta",
+                "inputState": {"selectedModel": {"metadata": {"version": "gpt-4o"}}},
+                "requests": [],
+            },
+        },
+        {
+            "kind": 2,
+            "k": ["requests"],
+            "v": [
+                {
+                    "requestId": "request-1",
+                    "timestamp": 1774411393113,
+                    "modelId": "copilot/gpt-4o-mini",
+                    "result": {"metadata": {"promptTokens": 33, "outputTokens": 7}},
+                }
+            ],
+        },
+    ]
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+    events, warning = read_events_from_file(path, tool="copilot_vscode")
+
+    assert warning is None
+    assert len(events) == 1
+    assert events[0].model == "gpt-4o-mini"
+    assert events[0].input_tokens == 33
+    assert events[0].output_tokens == 7
+    assert events[0].session_fingerprint == "copilot_vscode:session-delta:request-1"
+
+
+def test_read_copilot_vscode_estimates_tokens_from_text_when_usage_missing(tmp_path):
+    path = tmp_path / "session.json"
+    payload = {
+        "sessionId": "session-estimate",
+        "requests": [
+            {
+                "requestId": "request-1",
+                "timestamp": "2026-03-25T03:49:04Z",
+                "modelId": "copilot/gpt-4.1",
+                "message": {"text": "hello world"},
+                "response": [{"value": "this is a response"}],
+                "result": {"details": "gpt-4.1 • 1x"},
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    events, warning = read_events_from_file(path, tool="copilot_vscode")
+
+    assert warning is None
+    assert len(events) == 1
+    assert events[0].model == "gpt-4.1"
+    assert events[0].input_tokens > 0
+    assert events[0].output_tokens > 0

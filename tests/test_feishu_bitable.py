@@ -31,6 +31,19 @@ class _TTYStringIO(StringIO):
         return True
 
 
+class _Resp:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError("http error")
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def test_upload_progress_renders_on_tty():
     stream = _TTYStringIO()
     progress = UploadProgress(total=2, stream=stream, enabled=True)
@@ -106,3 +119,24 @@ def test_upsert_preserves_result_counts(monkeypatch):
     assert result.warning_samples == []
     assert requests[0][1].endswith("/batch_create")
     assert requests[1][1].endswith("/batch_update")
+
+
+def test_request_prefers_feishu_json_error_over_generic_http_error(monkeypatch):
+    client = FeishuBitableClient(app_token="a", table_id="t", bot_token="x")
+
+    def _fake_request(method, url, headers, timeout, **kwargs):  # noqa: ANN001, ANN201
+        return _Resp(
+            {"code": 91403, "msg": "Forbidden: no permission to write record"},
+            status_code=403,
+        )
+
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.requests.request", _fake_request)
+    try:
+        client._request("POST", "https://example.test")
+    except RuntimeError as exc:
+        text = str(exc)
+        assert "feishu api http error" in text
+        assert "no permission" in text
+        assert "hint=" in text
+    else:
+        raise AssertionError("expected RuntimeError")

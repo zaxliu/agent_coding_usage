@@ -56,3 +56,19 @@ def test_fetch_first_table_id_raises_on_empty_items(monkeypatch):
         assert "table list is empty" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_fetch_first_table_id_permission_error_includes_hint(monkeypatch):
+    def _fake_get(url, headers, params, timeout):  # noqa: ANN001, ANN201
+        return _Resp({"code": 91403, "msg": "Forbidden: no permission to access this table"})
+
+    monkeypatch.setattr(feishu_bitable.requests, "get", _fake_get)
+    try:
+        feishu_bitable.fetch_first_table_id("app", "token")
+    except RuntimeError as exc:
+        text = str(exc)
+        assert "feishu list tables error" in text
+        assert "hint=" in text
+        assert "可编辑权限" in text
+    else:
+        raise AssertionError("expected RuntimeError")

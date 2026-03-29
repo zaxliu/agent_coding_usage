@@ -40,7 +40,20 @@ class FileCollector(BaseCollector):
         files = self._matched_files()
         if not files:
             return False, f"no data files found for {self.name}"
-        return True, f"{len(files)} files detected"
+        parsable_events = 0
+        parse_warnings: list[str] = []
+        for path in files:
+            parsed, warning = read_events_from_file(path, self.name)
+            if warning:
+                parse_warnings.append(warning)
+                continue
+            parsable_events += len(parsed)
+
+        message = f"{len(files)} files detected, {parsable_events} parsable events"
+        if parse_warnings:
+            message += f", {len(parse_warnings)} parse warnings"
+            message += f" (first: {_shorten_warning(parse_warnings[0])})"
+        return parsable_events > 0, message
 
     def collect(self, start: datetime, end: datetime) -> CollectOutput:
         events = []
@@ -68,3 +81,10 @@ def _is_noise_path(path: Path) -> bool:
         "__pycache__",
     }
     return any(part in noise_parts for part in path.parts)
+
+
+def _shorten_warning(warning: str, limit: int = 120) -> str:
+    text = " ".join(warning.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."

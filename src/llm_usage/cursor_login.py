@@ -29,6 +29,10 @@ def fetch_cursor_session_token_via_browser(
     requested_browser = (browser or "default").strip().lower()
     resolved_browser = _resolve_browser_choice(requested_browser)
     strict_browser = requested_browser != "default"
+    initial_candidates = _read_raw_cursor_session_token_candidates_from_local_browsers(
+        resolved_browser,
+        strict=strict_browser,
+    )
 
     # First try to reuse existing session cookies from local browser profiles.
     token = _read_cursor_session_token_from_local_browsers(
@@ -53,12 +57,20 @@ def fetch_cursor_session_token_via_browser(
     printed_marks: set[int] = set()
 
     while time.monotonic() < deadline:
-        token = _read_cursor_session_token_from_local_browsers(
+        raw_candidates = _read_raw_cursor_session_token_candidates_from_local_browsers(
             resolved_browser,
             strict=strict_browser,
         )
+        token = _find_valid_token(raw_candidates)
         if token:
             return token
+        fallback_token = _select_login_fallback_token(raw_candidates, baseline=initial_candidates)
+        if fallback_token:
+            print(
+                "warn: detected a new local Cursor session cookie, but online validation did not pass. "
+                "continuing with the newest browser cookie."
+            )
+            return fallback_token
         elapsed = int(timeout_sec - max(0.0, deadline - time.monotonic()))
         mark = elapsed // 15
         if mark > 0 and mark not in printed_marks:
@@ -69,6 +81,16 @@ def fetch_cursor_session_token_via_browser(
             )
         time.sleep(2)
 
+    final_candidates = _read_raw_cursor_session_token_candidates_from_local_browsers(
+        resolved_browser,
+        strict=strict_browser,
+    )
+    if final_candidates:
+        print(
+            "warn: timed out waiting for online validation, but found a local Cursor session cookie. "
+            "continuing with the newest browser cookie."
+        )
+        return final_candidates[0]
     for line in _cookie_visibility_diagnostics():
         print(line)
     raise RuntimeError(
@@ -88,15 +110,29 @@ def fetch_cursor_workos_id_from_local_browsers(browser: str = "default") -> str 
     )
 
 
+def open_cursor_dashboard_login_page(browser: str = "default") -> None:
+    _open_url_in_system_browser(f"{CURSOR_BASE_URL}/dashboard/usage", browser=browser)
+
+
 def _read_cursor_session_token_from_local_browsers(
     preferred_browser: str,
     strict: bool = False,
 ) -> str | None:
-    candidates = _collect_candidate_tokens_from_local_browsers(
+    candidates = _read_raw_cursor_session_token_candidates_from_local_browsers(
         preferred_browser,
         strict=strict,
     )
     return _find_valid_token(candidates)
+
+
+def _read_raw_cursor_session_token_candidates_from_local_browsers(
+    preferred_browser: str,
+    strict: bool = False,
+) -> list[str]:
+    return _collect_candidate_tokens_from_local_browsers(
+        preferred_browser,
+        strict=strict,
+    )
 
 
 def _read_cookie_value_from_local_browsers(
@@ -206,7 +242,14 @@ def _read_named_cookie_values_with_browser_cookie3(
         out: list[str] = []
         for cookie_file in _chromium_cookie_files(browser):
             try:
-                cookies = loader(cookie_file=cookie_file, domain_name=CURSOR_DOMAIN)
+                load_kwargs: dict[str, Any] = {
+                    "cookie_file": cookie_file,
+                    "domain_name": CURSOR_DOMAIN,
+                }
+                key_file = _chromium_key_file_for_cookie_file(cookie_file)
+                if key_file:
+                    load_kwargs["key_file"] = key_file
+                cookies = loader(**load_kwargs)
             except Exception:  # noqa: BLE001
                 continue
             for value in _extract_cookie_values_from_cookie_iterable(cookies, cookie_name):
@@ -312,6 +355,17 @@ def _find_valid_token(candidates: list[str]) -> str | None:
     # fall back to the freshest local candidate so the caller can proceed.
     if saw_only_request_failures:
         return first_candidate
+    return None
+
+
+def _select_login_fallback_token(candidates: list[str], baseline: list[str]) -> str | None:
+    if not candidates:
+        return None
+    if not baseline:
+        return candidates[0]
+    for token in candidates:
+        if token not in baseline:
+            return token
     return None
 
 
@@ -569,6 +623,24 @@ def _chromium_cookie_files(browser: str) -> list[str]:
                     if os.path.isfile(cookie_file):
                         out.append(cookie_file)
     return out
+
+
+def _chromium_key_file_for_cookie_file(cookie_file: str) -> str | None:
+    path = Path(cookie_file)
+    name = path.name.lower()
+    if name != "cookies":
+        return None
+
+    parent = path.parent
+    if parent.name.lower() == "network":
+        user_data_root = parent.parent.parent
+    else:
+        user_data_root = parent.parent
+
+    key_file = user_data_root / "Local State"
+    if key_file.is_file():
+        return str(key_file)
+    return None
 
 
 def _chromium_user_data_root_patterns(browser: str) -> list[str]:

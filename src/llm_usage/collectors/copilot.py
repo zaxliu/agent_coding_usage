@@ -38,52 +38,65 @@ def _default_copilot_cli_paths() -> list[str]:
     home = os.path.expanduser("~")
     if os.name == "nt":
         return [
+            os.path.join(home, ".copilot", "session-state", "*.json"),
+            os.path.join(home, ".copilot", "session-state", "*.jsonl"),
             os.path.join(home, ".copilot", "session-state", "**", "*.jsonl"),
         ]
-    return ["~/.copilot/session-state/**/*.jsonl"]
+    return [
+        "~/.copilot/session-state/*.json",
+        "~/.copilot/session-state/*.jsonl",
+        "~/.copilot/session-state/**/*.jsonl",
+    ]
 
 
 def _default_copilot_vscode_paths() -> list[str]:
     if os.name == "nt":
-        appdata = os.getenv("APPDATA", "").strip()
-        if appdata:
-            return [
-                os.path.join(appdata, "Code", "User", "globalStorage", "emptyWindowChatSessions", "*.jsonl"),
-                os.path.join(
-                    appdata,
-                    "Code",
-                    "User",
-                    "workspaceStorage",
-                    "**",
-                    "chatEditingSessions",
-                    "*",
-                    "state.json",
-                ),
+        roots = _windows_vscode_user_roots()
+    elif sys.platform == "darwin":
+        roots = [
+            "~/Library/Application Support/Code/User",
+            "~/Library/Application Support/Code - Insiders/User",
+            "~/Library/Application Support/Code - Exploration/User",
+            "~/Library/Application Support/Cursor/User",
+            "~/Library/Application Support/VSCodium/User",
+        ]
+    else:
+        roots = [
+            "~/.config/Code/User",
+            "~/.config/Code - Insiders/User",
+            "~/.config/Code - Exploration/User",
+            "~/.config/Cursor/User",
+            "~/.config/VSCodium/User",
+            "~/.vscode-server/data/User",
+            "~/.vscode-server-insiders/data/User",
+            "~/.vscode-remote/data/User",
+            "/tmp/.vscode-server/data/User",
+            "/workspace/.vscode-server/data/User",
+        ]
+
+    patterns: list[str] = []
+    for root in roots:
+        patterns.extend(
+            [
+                os.path.join(root, "workspaceStorage", "**", "chatSessions", "*.json"),
+                os.path.join(root, "workspaceStorage", "**", "chatSessions", "*.jsonl"),
+                os.path.join(root, "globalStorage", "emptyWindowChatSessions", "*.json"),
+                os.path.join(root, "globalStorage", "emptyWindowChatSessions", "*.jsonl"),
+                os.path.join(root, "globalStorage", "github.copilot-chat", "**", "*.json"),
+                os.path.join(root, "globalStorage", "github.copilot-chat", "**", "*.jsonl"),
             ]
+        )
+    return patterns
+
+
+def _windows_vscode_user_roots() -> list[str]:
+    appdata = os.getenv("APPDATA", "").strip()
+    roots: list[str] = []
+    if appdata:
+        for variant in ("Code", "Code - Insiders", "Code - Exploration", "Cursor", "VSCodium"):
+            roots.append(os.path.join(appdata, variant, "User"))
+    else:
         home = os.path.expanduser("~")
-        return [
-            os.path.join(home, "AppData", "Roaming", "Code", "User", "globalStorage", "emptyWindowChatSessions", "*.jsonl"),
-            os.path.join(
-                home,
-                "AppData",
-                "Roaming",
-                "Code",
-                "User",
-                "workspaceStorage",
-                "**",
-                "chatEditingSessions",
-                "*",
-                "state.json",
-            ),
-        ]
-
-    if sys.platform == "darwin":
-        return [
-            "~/Library/Application Support/Code/User/globalStorage/emptyWindowChatSessions/*.jsonl",
-            "~/Library/Application Support/Code/User/workspaceStorage/**/chatEditingSessions/*/state.json",
-        ]
-
-    return [
-        "~/.config/Code/User/globalStorage/emptyWindowChatSessions/*.jsonl",
-        "~/.config/Code/User/workspaceStorage/**/chatEditingSessions/*/state.json",
-    ]
+        for variant in ("Code", "Code - Insiders", "Code - Exploration", "Cursor", "VSCodium"):
+            roots.append(os.path.join(home, "AppData", "Roaming", variant, "User"))
+    return roots

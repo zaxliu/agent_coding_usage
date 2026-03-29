@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
-import time
+import selectors
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,49 +16,39 @@ from llm_usage.models import UsageEvent
 from .base import BaseCollector, CollectOutput
 
 _PROBE_SCRIPT = """
-import glob, json, os, sys
-with open(sys.argv[1], 'r', encoding='utf-8') as fh:
-    patterns = json.load(fh)
+import base64, glob, json, os, sys
+payload = json.loads(base64.b64decode(PAYLOAD_B64).decode("utf-8"))
 matches = []
-for pattern in patterns:
-    try:
-        for path in glob.glob(os.path.expanduser(pattern), recursive=True):
-            if not os.path.isfile(path):
-                continue
-            lower = path.lower()
-            if not (lower.endswith('.json') or lower.endswith('.jsonl')):
-                continue
-            matches.append(path)
-    except Exception:
-        pass
+for spec in payload.get("jobs", []):
+    for pattern in spec.get("patterns", []):
+        try:
+            for path in glob.glob(os.path.expanduser(pattern), recursive=True):
+                if not os.path.isfile(path):
+                    continue
+                lower = path.lower()
+                if not (lower.endswith('.json') or lower.endswith('.jsonl')):
+                    continue
+                matches.append(path)
+        except Exception:
+            pass
 print(json.dumps({"matches": len(sorted(set(matches)))}))
 """
 
 _COLLECT_SCRIPT = """
-import glob, json, os, re, sys
+import base64, glob, json, os, re, sys
 from datetime import datetime, timezone
 
-with open(sys.argv[1], 'r', encoding='utf-8') as fh:
-    payload = json.load(fh)
-patterns = payload.get("patterns", [])
-tool = payload.get("tool", "unknown")
+payload = json.loads(base64.b64decode(PAYLOAD_B64).decode("utf-8"))
+jobs = payload.get("jobs", [])
 start_ts = float(payload.get("start_ts", 0))
 end_ts = float(payload.get("end_ts", 0))
 max_files = int(payload.get("max_files", 0) or 0)
 max_total_bytes = int(payload.get("max_total_bytes", 0) or 0)
-log_path = payload.get("log_path", "")
-output_path = payload.get("output_path", "")
 
 def log(message):
-    if log_path:
-        try:
-            with open(log_path, "a", encoding="utf-8") as fh:
-                fh.write(message + "\\n")
-        except Exception:
-            pass
     print(message, file=sys.stderr)
 
-log("info: remote script started tool=" + tool + " patterns=" + str(len(patterns)))
+log("info: remote script started jobs=" + str(len(jobs)))
 
 def coerce_int(value):
     try:
@@ -209,14 +201,98 @@ def extract_copilot_cli_events(node, fallback_time, session_fingerprint, source_
         out.append((event_time, model_name.strip(), input_tokens, cache_tokens, output_tokens, prefix + ":" + model_name.strip(), source_ref))
     return out
 
+def normalize_copilot_model(value):
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    if text.startswith("copilot/"):
+        text = text[len("copilot/"):]
+    return text
+
+def extract_copilot_vscode_usage(result):
+    usage = result.get("usage") if isinstance(result.get("usage"), dict) else None
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else None
+    input_tokens = 0
+    output_tokens = 0
+    cache_tokens = 0
+    if usage is not None:
+        input_tokens = coerce_int(usage.get("promptTokens") or usage.get("inputTokens") or usage.get("prompt_tokens"))
+        output_tokens = coerce_int(usage.get("completionTokens") or usage.get("outputTokens") or usage.get("output_tokens"))
+        cache_tokens = coerce_int(usage.get("cachedInputTokens") or usage.get("cacheReadTokens") or usage.get("cached_input_tokens"))
+    if input_tokens == 0 and output_tokens == 0:
+        input_tokens = coerce_int(result.get("promptTokens"))
+        output_tokens = coerce_int(result.get("outputTokens") or result.get("completionTokens"))
+    if input_tokens == 0 and output_tokens == 0 and metadata is not None:
+        input_tokens = coerce_int(metadata.get("promptTokens") or metadata.get("inputTokens"))
+        output_tokens = coerce_int(metadata.get("outputTokens") or metadata.get("completionTokens"))
+        if cache_tokens == 0:
+            cache_tokens = coerce_int(metadata.get("cachedInputTokens") or metadata.get("cacheReadTokens"))
+    return input_tokens, cache_tokens, output_tokens
+
+def estimate_tokens_from_text(text):
+    content = text.strip() if isinstance(text, str) else ""
+    if not content:
+        return 0
+    ascii_chars = sum(1 for ch in content if ord(ch) < 128)
+    non_ascii_chars = len(content) - ascii_chars
+    return max(1, int((ascii_chars * 0.25) + (non_ascii_chars * 0.6) + 0.999999))
+
+def collect_copilot_text_parts(value):
+    parts = []
+    if isinstance(value, str):
+        if value:
+            parts.append(value)
+        return parts
+    if isinstance(value, list):
+        for item in value:
+            parts.extend(collect_copilot_text_parts(item))
+        return parts
+    if not isinstance(value, dict):
+        return parts
+    direct_text = value.get("text")
+    if isinstance(direct_text, str) and direct_text:
+        parts.append(direct_text)
+    direct_value = value.get("value")
+    if isinstance(direct_value, str) and direct_value:
+        parts.append(direct_value)
+    content = value.get("content")
+    if isinstance(content, dict):
+        content_value = content.get("value")
+        if isinstance(content_value, str) and content_value:
+            parts.append(content_value)
+    if isinstance(value.get("parts"), list):
+        for item in value.get("parts"):
+            parts.extend(collect_copilot_text_parts(item))
+    if isinstance(value.get("response"), list):
+        for item in value.get("response"):
+            parts.extend(collect_copilot_text_parts(item))
+    return parts
+
 def extract_copilot_vscode_model(session, request):
+    selected_model = request.get("selectedModel")
+    for value in (
+        request.get("modelId"),
+        request.get("model"),
+        selected_model.get("identifier") if isinstance(selected_model, dict) else None,
+    ):
+        normalized = normalize_copilot_model(value)
+        if normalized and normalized != "auto":
+            return normalized
     agent = request.get("agent")
     if isinstance(agent, dict):
-        model_id = agent.get("modelId")
-        if isinstance(model_id, str) and model_id.strip() and model_id.strip() != "copilot/auto":
-            return model_id.strip()
+        normalized = normalize_copilot_model(agent.get("modelId"))
+        if normalized and normalized != "auto":
+            return normalized
     result = request.get("result")
     if isinstance(result, dict):
+        metadata = result.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("modelId", "model", "id"):
+                normalized = normalize_copilot_model(metadata.get(key))
+                if normalized and normalized != "auto":
+                    return normalized
         details = result.get("details")
         if isinstance(details, str) and details.strip():
             return details.split("•", 1)[0].strip()
@@ -227,10 +303,44 @@ def extract_copilot_vscode_model(session, request):
             metadata = selected_model.get("metadata")
             if isinstance(metadata, dict):
                 for key in ("version", "name", "id"):
-                    value = metadata.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
+                    normalized = normalize_copilot_model(metadata.get(key))
+                    if normalized:
+                        return normalized
+            normalized = normalize_copilot_model(selected_model.get("identifier"))
+            if normalized:
+                return normalized
     return "unknown"
+
+def build_copilot_vscode_event(session, request, fallback_time, source_ref):
+    session_id = session.get("sessionId")
+    request_id = request.get("requestId")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    if not isinstance(request_id, str) or not request_id.strip():
+        return None
+    result = request.get("result")
+    if not isinstance(result, dict):
+        return None
+    input_tokens, cache_tokens, output_tokens = extract_copilot_vscode_usage(result)
+    if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+        input_text = "\\n".join(collect_copilot_text_parts(request.get("message")))
+        output_text = "\\n".join(collect_copilot_text_parts(request.get("response")))
+        if not output_text:
+            output_text = "\\n".join(collect_copilot_text_parts(result))
+        input_tokens = estimate_tokens_from_text(input_text)
+        output_tokens = estimate_tokens_from_text(output_text)
+        if input_tokens == 0 and output_tokens == 0:
+            return None
+    event_time = parse_time(request.get("timestamp")) or extract_time(result) or fallback_time
+    return (
+        event_time,
+        extract_copilot_vscode_model(session, request),
+        input_tokens,
+        cache_tokens,
+        output_tokens,
+        "copilot_vscode:" + session_id.strip() + ":" + request_id.strip(),
+        source_ref,
+    )
 
 def extract_copilot_vscode_events(node, fallback_time, source_ref):
     session = node.get("v") if node.get("kind") == 0 and isinstance(node.get("v"), dict) else node
@@ -244,11 +354,103 @@ def extract_copilot_vscode_events(node, fallback_time, source_ref):
     for request in requests:
         if not isinstance(request, dict):
             continue
-        request_id = request.get("requestId")
-        if not isinstance(request_id, str) or not request_id.strip():
+        item = build_copilot_vscode_event(session, request, fallback_time, source_ref)
+        if item is not None:
+            out.append(item)
+    return out
+
+def apply_copilot_delta(state, delta):
+    kind = delta.get("kind")
+    path = delta.get("k")
+    value = delta.get("v")
+    if kind == 0:
+        if isinstance(value, (dict, list)):
+            return value
+        return state
+    if not isinstance(path, list) or not path:
+        return state
+    root = state if isinstance(state, (dict, list)) else {}
+    current = root
+    parts = [str(part) for part in path]
+    for idx, part in enumerate(parts[:-1]):
+        next_part = parts[idx + 1]
+        wants_list = next_part.isdigit()
+        if isinstance(current, list):
+            if not part.isdigit():
+                return root
+            part_index = int(part)
+            while len(current) <= part_index:
+                current.append([] if wants_list else {})
+            if not isinstance(current[part_index], (dict, list)):
+                current[part_index] = [] if wants_list else {}
+            current = current[part_index]
             continue
-        event_time = parse_time(request.get("timestamp")) or fallback_time
-        out.append((event_time, extract_copilot_vscode_model(session, request), 0, 0, 0, "copilot_vscode:" + session_id.strip() + ":" + request_id.strip(), source_ref))
+        if not isinstance(current, dict):
+            return root
+        child = current.get(part)
+        if not isinstance(child, (dict, list)):
+            child = [] if wants_list else {}
+            current[part] = child
+        current = child
+    last = parts[-1]
+    if kind == 1:
+        if isinstance(current, list):
+            if not last.isdigit():
+                return root
+            last_index = int(last)
+            while len(current) <= last_index:
+                current.append(None)
+            current[last_index] = value
+            return root
+        if isinstance(current, dict):
+            current[last] = value
+        return root
+    if kind == 2:
+        if isinstance(current, list):
+            if not last.isdigit():
+                return root
+            last_index = int(last)
+            while len(current) <= last_index:
+                current.append([])
+            if not isinstance(current[last_index], list):
+                current[last_index] = []
+            target = current[last_index]
+        elif isinstance(current, dict):
+            if not isinstance(current.get(last), list):
+                current[last] = []
+            target = current[last]
+        else:
+            return root
+        if isinstance(value, list):
+            target.extend(value)
+        else:
+            target.append(value)
+    return root
+
+def extract_copilot_vscode_events_from_jsonl_text(text, fallback_time, source_ref):
+    state = {}
+    saw_delta = False
+    out = []
+    idx = 0
+    for raw_line in text.splitlines():
+        idx += 1
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if isinstance(obj.get("kind"), int):
+            saw_delta = True
+            state = apply_copilot_delta(state, obj)
+            continue
+        for item in extract_copilot_vscode_events(obj, fallback_time, source_ref + ":" + str(idx)):
+            out.append(item)
+    if saw_delta and isinstance(state, dict):
+        return extract_copilot_vscode_events(state, fallback_time, source_ref)
     return out
 
 def append_event(out, event_time, model, input_tokens, cache_tokens, output_tokens, session_fingerprint, source_ref):
@@ -259,7 +461,7 @@ def append_event(out, event_time, model, input_tokens, cache_tokens, output_toke
         return
     out.append(
         {
-            "tool": tool,
+            "tool": active_tool,
             "model": model,
             "event_time": event_time.isoformat(),
             "input_tokens": input_tokens,
@@ -275,199 +477,206 @@ warnings = []
 seen = set()
 processed_files = 0
 total_bytes = 0
-for pattern in patterns:
-    try:
-        log("info: expanding pattern " + pattern)
-        for path in glob.glob(os.path.expanduser(pattern), recursive=True):
-            if path in seen or not os.path.isfile(path):
-                continue
-            lower = path.lower()
-            if not (lower.endswith('.json') or lower.endswith('.jsonl')):
-                continue
-            try:
-                stat = os.stat(path)
-            except OSError as exc:
-                warnings.append("failed stating " + path + ": " + str(exc))
-                continue
-            if stat.st_mtime < start_ts:
-                continue
-            if max_files > 0 and processed_files >= max_files:
-                warnings.append("stopped after reaching max_files=" + str(max_files))
-                with open(output_path, "w", encoding="utf-8") as fh:
-                    json.dump({"events": events, "warnings": warnings}, fh)
-                raise SystemExit(0)
-            file_size = int(stat.st_size)
-            if max_total_bytes > 0 and total_bytes + file_size > max_total_bytes:
-                warnings.append("stopped after reaching max_total_bytes=" + str(max_total_bytes))
-                with open(output_path, "w", encoding="utf-8") as fh:
-                    json.dump({"events": events, "warnings": warnings}, fh)
-                raise SystemExit(0)
-            seen.add(path)
-            processed_files += 1
-            total_bytes += file_size
-            if processed_files == 1 or processed_files % 20 == 0:
-                log(
-                    "info: processing file "
-                    + str(processed_files)
-                    + " size="
-                    + str(file_size)
-                    + " path="
-                    + path
-                )
-            try:
-                with open(path, 'r', encoding='utf-8') as fh:
-                    text = fh.read()
-                fallback_time = datetime.fromtimestamp(int(os.path.getmtime(path)), tz=timezone.utc)
-                session_fingerprint = build_session_fingerprint(path, tool)
-                codex_model_hint = None
-                if lower.endswith('.jsonl'):
-                    idx = 0
-                    for raw_line in text.splitlines():
-                        idx += 1
-                        line = raw_line.strip()
-                        if not line:
+for spec in jobs:
+    active_tool = spec.get("tool", "unknown")
+    patterns = spec.get("patterns", [])
+    for pattern in patterns:
+        try:
+            log("info: expanding pattern tool=" + active_tool + " pattern=" + pattern)
+            for path in glob.glob(os.path.expanduser(pattern), recursive=True):
+                dedupe_key = active_tool + "\\0" + path
+                if dedupe_key in seen or not os.path.isfile(path):
+                    continue
+                lower = path.lower()
+                if not (lower.endswith('.json') or lower.endswith('.jsonl')):
+                    continue
+                try:
+                    stat = os.stat(path)
+                except OSError as exc:
+                    warnings.append(active_tool + ": failed stating " + path + ": " + str(exc))
+                    continue
+                if stat.st_mtime < start_ts:
+                    continue
+                if max_files > 0 and processed_files >= max_files:
+                    warnings.append("stopped after reaching max_files=" + str(max_files))
+                    print(json.dumps({"events": events, "warnings": warnings}))
+                    raise SystemExit(0)
+                file_size = int(stat.st_size)
+                if max_total_bytes > 0 and total_bytes + file_size > max_total_bytes:
+                    warnings.append("stopped after reaching max_total_bytes=" + str(max_total_bytes))
+                    print(json.dumps({"events": events, "warnings": warnings}))
+                    raise SystemExit(0)
+                seen.add(dedupe_key)
+                processed_files += 1
+                total_bytes += file_size
+                if processed_files == 1 or processed_files % 20 == 0:
+                    log(
+                        "info: processing file "
+                        + str(processed_files)
+                        + " tool="
+                        + active_tool
+                        + " size="
+                        + str(file_size)
+                        + " path="
+                        + path
+                    )
+                try:
+                    with open(path, 'r', encoding='utf-8') as fh:
+                        text = fh.read()
+                    fallback_time = datetime.fromtimestamp(int(os.path.getmtime(path)), tz=timezone.utc)
+                    session_fingerprint = build_session_fingerprint(path, active_tool)
+                    codex_model_hint = None
+                    if lower.endswith('.jsonl'):
+                        if active_tool == "copilot_vscode":
+                            for item in extract_copilot_vscode_events_from_jsonl_text(text, fallback_time, path):
+                                append_event(events, *item)
                             continue
+                        idx = 0
+                        for raw_line in text.splitlines():
+                            idx += 1
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except ValueError:
+                                continue
+                            if active_tool == "copilot_cli":
+                                for item in extract_copilot_cli_events(
+                                    obj,
+                                    fallback_time,
+                                    session_fingerprint,
+                                    path + ":" + str(idx),
+                                ):
+                                    append_event(events, *item)
+                                continue
+                            if active_tool == "copilot_vscode":
+                                for item in extract_copilot_vscode_events(
+                                    obj,
+                                    fallback_time,
+                                    path + ":" + str(idx),
+                                ):
+                                    append_event(events, *item)
+                                continue
+                            if active_tool == "codex":
+                                turn_model = extract_codex_turn_model(obj)
+                                if turn_model:
+                                    codex_model_hint = turn_model
+                                usage = extract_codex_token_count_usage(obj)
+                                if usage is None:
+                                    continue
+                                input_tokens, cache_tokens, output_tokens = usage
+                                if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+                                    continue
+                                event_time = extract_time(obj) or fallback_time
+                                model = extract_model(obj)
+                                if model == "unknown" and codex_model_hint:
+                                    model = codex_model_hint
+                                append_event(
+                                    events,
+                                    event_time,
+                                    model,
+                                    input_tokens,
+                                    cache_tokens,
+                                    output_tokens,
+                                    session_fingerprint,
+                                    path + ":" + str(idx),
+                                )
+                                continue
+                            local_seen = set()
+                            for candidate in walk_json_nodes(obj):
+                                input_tokens, cache_tokens, output_tokens = extract_usage(candidate)
+                                if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+                                    continue
+                                event_time = extract_time(candidate) or fallback_time
+                                dedupe_key = (
+                                    input_tokens,
+                                    cache_tokens,
+                                    output_tokens,
+                                    event_time.isoformat(),
+                                )
+                                if dedupe_key in local_seen:
+                                    continue
+                                local_seen.add(dedupe_key)
+                                append_event(
+                                    events,
+                                    event_time,
+                                    extract_model(candidate),
+                                    input_tokens,
+                                    cache_tokens,
+                                    output_tokens,
+                                    session_fingerprint,
+                                    path + ":" + str(idx),
+                                )
+                    elif lower.endswith('.json'):
                         try:
-                            obj = json.loads(line)
+                            obj = json.loads(text)
                         except ValueError:
+                            warnings.append(active_tool + ": failed decoding " + path)
                             continue
-                        if tool == "copilot_cli":
-                            for item in extract_copilot_cli_events(
-                                obj,
-                                fallback_time,
-                                session_fingerprint,
-                                path + ":" + str(idx),
-                            ):
+                        if active_tool == "codex":
+                            for candidate in walk_json_nodes(obj):
+                                turn_model = extract_codex_turn_model(candidate)
+                                if turn_model:
+                                    codex_model_hint = turn_model
+                            for candidate in walk_json_nodes(obj):
+                                usage = extract_codex_token_count_usage(candidate)
+                                if usage is None:
+                                    continue
+                                input_tokens, cache_tokens, output_tokens = usage
+                                if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+                                    continue
+                                event_time = extract_time(candidate) or fallback_time
+                                model = extract_model(candidate)
+                                if model == "unknown" and codex_model_hint:
+                                    model = codex_model_hint
+                                append_event(
+                                    events,
+                                    event_time,
+                                    model,
+                                    input_tokens,
+                                    cache_tokens,
+                                    output_tokens,
+                                    session_fingerprint,
+                                    path,
+                                )
+                        elif active_tool == "copilot_cli":
+                            for item in extract_copilot_cli_events(obj, fallback_time, session_fingerprint, path):
                                 append_event(events, *item)
-                            continue
-                        if tool == "copilot_vscode":
-                            for item in extract_copilot_vscode_events(
-                                obj,
-                                fallback_time,
-                                path + ":" + str(idx),
-                            ):
+                        elif active_tool == "copilot_vscode":
+                            for item in extract_copilot_vscode_events(obj, fallback_time, path):
                                 append_event(events, *item)
-                            continue
-                        if tool == "codex":
-                            turn_model = extract_codex_turn_model(obj)
-                            if turn_model:
-                                codex_model_hint = turn_model
-                            usage = extract_codex_token_count_usage(obj)
-                            if usage is None:
-                                continue
-                            input_tokens, cache_tokens, output_tokens = usage
-                            if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
-                                continue
-                            event_time = extract_time(obj) or fallback_time
-                            model = extract_model(obj)
-                            if model == "unknown" and codex_model_hint:
-                                model = codex_model_hint
-                            append_event(
-                                events,
-                                event_time,
-                                model,
-                                input_tokens,
-                                cache_tokens,
-                                output_tokens,
-                                session_fingerprint,
-                                path + ":" + str(idx),
-                            )
-                            continue
-                        local_seen = set()
-                        for candidate in walk_json_nodes(obj):
-                            input_tokens, cache_tokens, output_tokens = extract_usage(candidate)
-                            if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
-                                continue
-                            event_time = extract_time(candidate) or fallback_time
-                            dedupe_key = (
-                                input_tokens,
-                                cache_tokens,
-                                output_tokens,
-                                event_time.isoformat(),
-                            )
-                            if dedupe_key in local_seen:
-                                continue
-                            local_seen.add(dedupe_key)
-                            append_event(
-                                events,
-                                event_time,
-                                extract_model(candidate),
-                                input_tokens,
-                                cache_tokens,
-                                output_tokens,
-                                session_fingerprint,
-                                path + ":" + str(idx),
-                            )
-                elif lower.endswith('.json'):
-                    try:
-                        obj = json.loads(text)
-                    except ValueError:
-                        warnings.append("failed decoding " + path)
-                        continue
-                    if tool == "codex":
-                        for candidate in walk_json_nodes(obj):
-                            turn_model = extract_codex_turn_model(candidate)
-                            if turn_model:
-                                codex_model_hint = turn_model
-                        for candidate in walk_json_nodes(obj):
-                            usage = extract_codex_token_count_usage(candidate)
-                            if usage is None:
-                                continue
-                            input_tokens, cache_tokens, output_tokens = usage
-                            if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
-                                continue
-                            event_time = extract_time(candidate) or fallback_time
-                            model = extract_model(candidate)
-                            if model == "unknown" and codex_model_hint:
-                                model = codex_model_hint
-                            append_event(
-                                events,
-                                event_time,
-                                model,
-                                input_tokens,
-                                cache_tokens,
-                                output_tokens,
-                                session_fingerprint,
-                                path,
-                            )
-                    elif tool == "copilot_cli":
-                        for item in extract_copilot_cli_events(obj, fallback_time, session_fingerprint, path):
-                            append_event(events, *item)
-                    elif tool == "copilot_vscode":
-                        for item in extract_copilot_vscode_events(obj, fallback_time, path):
-                            append_event(events, *item)
-                    else:
-                        local_seen = set()
-                        for candidate in walk_json_nodes(obj):
-                            input_tokens, cache_tokens, output_tokens = extract_usage(candidate)
-                            if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
-                                continue
-                            event_time = extract_time(candidate) or fallback_time
-                            dedupe_key = (
-                                input_tokens,
-                                cache_tokens,
-                                output_tokens,
-                                event_time.isoformat(),
-                            )
-                            if dedupe_key in local_seen:
-                                continue
-                            local_seen.add(dedupe_key)
-                            append_event(
-                                events,
-                                event_time,
-                                extract_model(candidate),
-                                input_tokens,
-                                cache_tokens,
-                                output_tokens,
-                                session_fingerprint,
-                                path,
-                            )
-            except Exception as exc:
-                warnings.append("failed reading " + path + ": " + str(exc))
-    except Exception:
-        pass
-with open(output_path, "w", encoding="utf-8") as fh:
-    json.dump({"events": events, "warnings": warnings}, fh)
+                        else:
+                            local_seen = set()
+                            for candidate in walk_json_nodes(obj):
+                                input_tokens, cache_tokens, output_tokens = extract_usage(candidate)
+                                if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+                                    continue
+                                event_time = extract_time(candidate) or fallback_time
+                                dedupe_key = (
+                                    input_tokens,
+                                    cache_tokens,
+                                    output_tokens,
+                                    event_time.isoformat(),
+                                )
+                                if dedupe_key in local_seen:
+                                    continue
+                                local_seen.add(dedupe_key)
+                                append_event(
+                                    events,
+                                    event_time,
+                                    extract_model(candidate),
+                                    input_tokens,
+                                    cache_tokens,
+                                    output_tokens,
+                                    session_fingerprint,
+                                    path,
+                                )
+                except Exception as exc:
+                    warnings.append(active_tool + ": failed reading " + path + ": " + str(exc))
+        except Exception:
+            pass
+print(json.dumps({"events": events, "warnings": warnings}))
 """
 
 
@@ -482,23 +691,35 @@ class SshTarget:
         return f"{self.user}@{self.host}"
 
 
+@dataclass(frozen=True)
+class RemoteCollectJob:
+    tool: str
+    patterns: list[str]
+
+
 class RemoteFileCollector(BaseCollector):
+    _STDOUT_PROGRESS_STEP_BYTES = 256 * 1024
+
     def __init__(
         self,
         name: str,
         target: SshTarget,
-        patterns: list[str],
         source_name: str,
         source_host_hash: str,
+        patterns: list[str] | None = None,
         max_files: int = 400,
         max_total_bytes: int = 64 * 1024 * 1024,
         timeout_sec: int = 120,
         runner=None,
         popen_factory=None,
+        jobs: list[RemoteCollectJob] | None = None,
     ) -> None:
         self.name = name
         self.target = target
-        self.patterns = patterns
+        if jobs is not None:
+            self.jobs = [job for job in jobs if job.patterns]
+        else:
+            self.jobs = [RemoteCollectJob(tool=name, patterns=list(patterns or []))]
         self.source_name = source_name
         self.source_host_hash = source_host_hash
         self.max_files = max(1, max_files)
@@ -506,6 +727,8 @@ class RemoteFileCollector(BaseCollector):
         self.timeout_sec = max(10, timeout_sec)
         self._runner = runner or subprocess.run
         self._popen_factory = popen_factory or (subprocess.Popen if runner is None else None)
+        self._use_connection_sharing = True
+        self._logged_connection_sharing_fallback = False
 
     def probe(self) -> tuple[bool, str]:
         self._log_progress("探测：查找远端 Python")
@@ -525,8 +748,8 @@ class RemoteFileCollector(BaseCollector):
 
     def collect(self, start: datetime, end: datetime) -> CollectOutput:
         warnings: list[str] = []
-        self.__active_start = start
-        self.__active_end = end
+        self._active_start_value = start
+        self._active_end_value = end
         self._log_progress("采集：查找远端 Python")
         python_cmd = self._discover_python()
         if not python_cmd:
@@ -582,283 +805,377 @@ class RemoteFileCollector(BaseCollector):
         return CollectOutput(events=events, warnings=warnings)
 
     def _discover_python(self) -> str | None:
-        try:
-            completed = self._runner(
-                [
-                    "ssh",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-p",
-                    str(self.target.port),
-                    self.target.destination,
-                    "sh",
-                    "-lc",
-                    "command -v python3 >/dev/null 2>&1 && printf python3 || "
-                    "(command -v python >/dev/null 2>&1 && printf python || true)",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-        except subprocess.TimeoutExpired:
+        completed = self._run_ssh_with_optional_fallback(
+            [
+                "sh",
+                "-lc",
+                "command -v python3 >/dev/null 2>&1 && printf python3 || "
+                "(command -v python >/dev/null 2>&1 && printf python || true)",
+            ],
+            timeout=15,
+        )
+        if completed is None:
             return None
         if completed.returncode != 0:
             return None
-        python_cmd = completed.stdout.strip()
-        return python_cmd or None
+        return _extract_python_command(completed.stdout)
 
     def _run_python_script(self, python_cmd: str, script: str) -> tuple[dict, str | None]:
-        local_script = None
-        local_patterns = None
-        local_output = None
-        remote_script = None
-        remote_patterns = None
-        remote_output = None
-        remote_log = None
-        try:
-            local_script = self._write_temp_file(".py", script)
-            remote_base = f"/tmp/llm_usage_{os.getpid()}_{next(tempfile._get_candidate_names())}"
-            remote_script = f"{remote_base}.py"
-            remote_patterns = f"{remote_base}_patterns.json"
-            remote_output = f"{remote_base}_output.json"
-            remote_log = f"{remote_base}.log"
-            local_patterns = self._write_temp_file(
-                ".json",
-                json.dumps(
-                    {
-                        "patterns": self.patterns,
-                        "tool": self.name,
-                        "start_ts": self._active_start.timestamp(),
-                        "end_ts": self._active_end.timestamp(),
-                        "max_files": self.max_files,
-                        "max_total_bytes": self.max_total_bytes,
-                        "log_path": remote_log,
-                        "output_path": remote_output,
-                    }
-                ),
-            )
-            local_output = self._temp_path(".json")
+        command, script_input = self._python_stdin_command(python_cmd, script)
+        self._log_progress("执行远端脚本（单次 SSH）")
+        completed, error = self._ssh_run_python_command(command, input_text=script_input)
+        if error:
+            return {}, error
+        payload, discarded = _extract_json_payload(completed.stdout)
+        if discarded:
+            for line in discarded.splitlines():
+                text = line.strip()
+                if text:
+                    self._log_progress(f"remote stdout noise: {text}")
+        if payload is None:
+            if self._should_fallback_to_uploaded_script(completed.stdout):
+                self._log_progress("检测到远端网关会吞掉 stdin 脚本，回退为上传临时脚本执行")
+                return self._run_python_script_via_uploaded_file(python_cmd, script)
+            self._log_non_json_debug(completed.stdout, completed.stderr)
+            return {}, "remote command returned non-JSON output"
+        if not isinstance(payload, dict):
+            return {}, "remote command returned invalid JSON payload"
+        return payload, None
 
-            self._log_progress(f"上传脚本 -> {remote_script}")
-            error = self._scp_to_remote(local_script, remote_script)
+    def _build_remote_payload(self) -> dict[str, object]:
+        return {
+            "jobs": [{"tool": job.tool, "patterns": job.patterns} for job in self.jobs],
+            "start_ts": self._active_start.timestamp(),
+            "end_ts": self._active_end.timestamp(),
+            "max_files": self.max_files,
+            "max_total_bytes": self.max_total_bytes,
+        }
+
+    def _python_stdin_command(self, python_cmd: str, script: str) -> tuple[list[str], str]:
+        payload = base64.b64encode(json.dumps(self._build_remote_payload()).encode("utf-8")).decode("ascii")
+        bootstrap = (
+            "import sys;"
+            "PAYLOAD_B64=sys.stdin.readline().rstrip('\\n');"
+            "exec(sys.stdin.read(), {'__name__': '__main__', 'PAYLOAD_B64': PAYLOAD_B64})"
+        )
+        remote_command = f"{_shell_quote(python_cmd)} -c {_shell_quote(bootstrap)}"
+        return ["sh", "-lc", remote_command], payload + "\n" + script
+
+    def _run_python_script_via_uploaded_file(self, python_cmd: str, script: str) -> tuple[dict, str | None]:
+        remote_base = f".llm_usage_{os.getpid()}_{next(tempfile._get_candidate_names())}"
+        remote_script = f"{remote_base}.py"
+        remote_output = f"{remote_base}_output.json"
+        combined_script = self._build_uploaded_remote_script(script, remote_output)
+        self._log_progress(f"上传远端脚本 -> {remote_script}")
+        error = self._ssh_write_text(remote_script, combined_script)
+        if error:
+            return {}, error
+        try:
+            command = ["sh", "-lc", f"{_shell_quote(python_cmd)} {_shell_quote(remote_script)}"]
+            completed, error = self._ssh_run_python_command(command, input_text="")
             if error:
                 return {}, error
-            self._log_progress(f"上传输入 -> {remote_patterns}")
-            error = self._scp_to_remote(local_patterns, remote_patterns)
+            if completed.stderr.strip():
+                for line in completed.stderr.strip().splitlines():
+                    self._log_progress(f"remote stderr: {line}")
+            output_text, error = self._ssh_read_text(remote_output)
             if error:
+                self._log_non_json_debug(completed.stdout, completed.stderr)
                 return {}, error
-            self._log_progress(f"执行远端脚本 -> {remote_output}")
-            self._log_progress(f"远端日志保留在 {remote_log}")
-            error = self._ssh_run_script([python_cmd, remote_script, remote_patterns])
-            if error:
-                return {}, error
-            self._log_progress(f"下载结果 <- {remote_output}")
-            error = self._scp_from_remote(remote_output, local_output)
-            if error:
-                return {}, error
-            try:
-                payload = json.loads(local_output.read_text(encoding="utf-8"))
-            except ValueError:
+            payload, discarded = _extract_json_payload(output_text)
+            if discarded:
+                for line in discarded.splitlines():
+                    text = line.strip()
+                    if text:
+                        self._log_progress(f"remote stdout noise: {text}")
+            if payload is None:
+                self._log_non_json_debug(output_text, completed.stderr)
                 return {}, "remote command returned non-JSON output"
             if not isinstance(payload, dict):
                 return {}, "remote command returned invalid JSON payload"
             return payload, None
         finally:
-            for path in (local_script, local_patterns, local_output):
-                if path and path.exists():
-                    path.unlink(missing_ok=True)
-            if remote_script and remote_patterns and remote_output:
-                self._log_progress("清理远端临时文件")
-                self._cleanup_remote_files([remote_script, remote_patterns, remote_output])
+            self._ssh_remove_file(remote_script)
+            self._ssh_remove_file(remote_output)
 
-    def _write_temp_file(self, suffix: str, content: str):
-        handle = tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8")
-        try:
-            handle.write(content)
-            return_value = handle.name
-        finally:
-            handle.close()
-        return Path(return_value)
+    def _build_uploaded_remote_script(self, script: str, remote_output: str) -> str:
+        payload = base64.b64encode(json.dumps(self._build_remote_payload()).encode("utf-8")).decode("ascii")
+        wrapper = [
+            f"PAYLOAD_B64 = {payload!r}",
+            f"OUTPUT_PATH = {remote_output!r}",
+            "import atexit",
+            "import io",
+            "import sys",
+            "_CAPTURED_STDOUT = io.StringIO()",
+            "_ORIGINAL_STDOUT = sys.stdout",
+            "sys.stdout = _CAPTURED_STDOUT",
+            "def _flush_output():",
+            "    text = _CAPTURED_STDOUT.getvalue()",
+            "    with open(OUTPUT_PATH, 'w', encoding='utf-8') as fh:",
+            "        fh.write(text)",
+            "atexit.register(_flush_output)",
+            "",
+        ]
+        return "\n".join(wrapper) + script.lstrip()
 
-    def _temp_path(self, suffix: str):
-        fd, path = tempfile.mkstemp(suffix=suffix)
-        os.close(fd)
-        return Path(path)
-
-    def _scp_to_remote(self, local_path, remote_path: str) -> str | None:
-        try:
-            completed = self._runner(
-                [
-                    "scp",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-P",
-                    str(self.target.port),
-                    str(local_path),
-                    f"{self.target.destination}:{remote_path}",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_sec,
-            )
-        except subprocess.TimeoutExpired:
-            return "scp upload timed out"
+    def _ssh_write_text(self, remote_path: str, content: str) -> str | None:
+        completed = self._run_ssh_with_optional_fallback(
+            ["sh", "-lc", f"cat > {_shell_quote(remote_path)}"],
+            input_text=content,
+            timeout=self.timeout_sec,
+        )
+        if completed is None:
+            return "ssh upload timed out"
         if completed.returncode != 0:
-            return completed.stderr.strip() or completed.stdout.strip() or "scp upload failed"
+            return completed.stderr.strip() or completed.stdout.strip() or "ssh upload failed"
         return None
 
-    def _scp_from_remote(self, remote_path: str, local_path) -> str | None:
+    def _ssh_remove_file(self, remote_path: str) -> None:
         try:
-            completed = self._runner(
-                [
-                    "scp",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-P",
-                    str(self.target.port),
-                    f"{self.target.destination}:{remote_path}",
-                    str(local_path),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_sec,
+            self._run_ssh_with_optional_fallback(
+                ["sh", "-lc", f"rm -f {_shell_quote(remote_path)}"],
+                timeout=15,
             )
-        except subprocess.TimeoutExpired:
-            return "scp download timed out"
-        if completed.returncode != 0:
-            return completed.stderr.strip() or completed.stdout.strip() or "scp download failed"
-        return None
+        except Exception:
+            return
 
-    def _ssh_run_script(self, args: list[str]) -> str | None:
+    def _ssh_read_text(self, remote_path: str) -> tuple[str, str | None]:
+        completed = self._run_ssh_with_optional_fallback(
+            ["sh", "-lc", f"cat {_shell_quote(remote_path)}"],
+            timeout=self.timeout_sec,
+        )
+        if completed is None:
+            return "", "ssh download timed out"
+        if completed.returncode != 0:
+            return "", completed.stderr.strip() or completed.stdout.strip() or "ssh download failed"
+        return completed.stdout, None
+
+    def _should_fallback_to_uploaded_script(self, stdout_text: str) -> bool:
+        lowered = stdout_text.lower()
+        return 'file "<stdin>", line 1' in lowered and (
+            "nameerror:" in lowered or "syntaxerror:" in lowered or "traceback" in lowered
+        )
+
+    def _ssh_run_python_command(
+        self,
+        args: list[str],
+        *,
+        input_text: str,
+    ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+        return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=True)
+
+    def _ssh_run_python_command_once(
+        self,
+        args: list[str],
+        input_text: str,
+        allow_retry: bool,
+    ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
         if self._popen_factory is None:
-            try:
-                completed = self._runner(
-                    [
-                        "ssh",
-                        "-o",
-                        "BatchMode=yes",
-                        "-o",
-                        "ConnectTimeout=10",
-                        "-p",
-                        str(self.target.port),
-                        self.target.destination,
-                        *args,
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_sec,
-                )
-            except subprocess.TimeoutExpired:
-                return "remote command timed out"
+            completed = self._run_ssh_with_optional_fallback(
+                args,
+                input_text=input_text,
+                timeout=self.timeout_sec,
+            )
+            if completed is None:
+                return None, "remote command timed out"
             if completed.returncode != 0:
-                return completed.stderr.strip() or completed.stdout.strip() or "remote command failed"
+                if allow_retry and self._maybe_disable_connection_sharing_from_output(completed):
+                    return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
+                return None, completed.stderr.strip() or completed.stdout.strip() or "remote command failed"
             if completed.stderr.strip():
                 for line in completed.stderr.strip().splitlines():
                     self._log_progress(f"remote stderr: {line}")
-            return None
+            return completed, None
 
+        stdout_handle = tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False, encoding="utf-8")
         try:
             process = self._popen_factory(
-                [
-                    "ssh",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-p",
-                    str(self.target.port),
-                    self.target.destination,
-                    *args,
-                ],
-                stdout=subprocess.DEVNULL,
+                self._ssh_command(args),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=False,
             )
         except OSError as exc:
-            return f"remote command failed to start: {exc}"
+            stdout_handle.close()
+            Path(stdout_handle.name).unlink(missing_ok=True)
+            return None, f"remote command failed to start: {exc}"
 
-        deadline = time.monotonic() + self.timeout_sec
         stderr_lines: list[str] = []
+        stderr_buffer = b""
+        stdout_bytes = 0
+        next_progress = self._STDOUT_PROGRESS_STEP_BYTES
+        deadline = time.monotonic() + self.timeout_sec
+        selector = selectors.DefaultSelector()
+        if process.stdout is not None:
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        if process.stderr is not None:
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        if process.stdin is not None:
+            stdin_bytes = input_text.encode("utf-8")
+            process.stdin.write(stdin_bytes)
+            process.stdin.close()
         try:
-            while True:
-                if process.stderr is not None:
-                    line = process.stderr.readline()
-                else:
-                    line = ""
-                if line:
-                    text = line.rstrip()
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, self.timeout_sec)
+                ready = selector.select(timeout=min(0.2, remaining))
+                if not ready:
+                    continue
+                for key, _mask in ready:
+                    stream = key.fileobj
+                    data = os.read(stream.fileno(), 65536)
+                    if not data:
+                        selector.unregister(stream)
+                        continue
+                    if key.data == "stdout":
+                        stdout_handle.buffer.write(data)
+                        stdout_bytes += len(data)
+                        if stdout_bytes >= next_progress:
+                            self._log_progress(f"remote stdout received {stdout_bytes} bytes")
+                            next_progress += self._STDOUT_PROGRESS_STEP_BYTES
+                        continue
+                    stderr_buffer += data
+                    while b"\n" in stderr_buffer:
+                        raw_line, stderr_buffer = stderr_buffer.split(b"\n", 1)
+                        text = raw_line.decode("utf-8", errors="replace").rstrip()
+                        if text:
+                            stderr_lines.append(text)
+                            self._log_progress(f"remote stderr: {text}")
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                raise subprocess.TimeoutExpired(args, self.timeout_sec)
+            if stderr_buffer.strip():
+                text = stderr_buffer.decode("utf-8", errors="replace").rstrip()
+                if text:
                     stderr_lines.append(text)
                     self._log_progress(f"remote stderr: {text}")
-                    continue
-                if process.poll() is not None:
-                    break
-                if time.monotonic() > deadline:
-                    process.kill()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    return "remote command timed out"
-                time.sleep(0.1)
-            remaining = ""
-            if process.stderr is not None:
-                remaining = process.stderr.read() or ""
-            if remaining.strip():
-                for line in remaining.strip().splitlines():
-                    stderr_lines.append(line)
-                    self._log_progress(f"remote stderr: {line}")
-            if process.returncode != 0:
-                return "\n".join(stderr_lines).strip() or "remote command failed"
+        except subprocess.TimeoutExpired:
+            selector.close()
+            process.kill()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            if allow_retry and self._disable_connection_sharing("ssh session timed out while using connection sharing"):
+                return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
+            return None, "remote command timed out"
         finally:
+            selector.close()
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
             if process.stderr is not None:
                 process.stderr.close()
-        return None
-
-    def _cleanup_remote_files(self, remote_paths: list[str]) -> None:
-        command = "rm -f " + " ".join(_shell_quote(path) for path in remote_paths)
         try:
-            self._runner(
-                [
-                    "ssh",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-p",
-                    str(self.target.port),
-                    self.target.destination,
-                    "sh",
-                    "-lc",
-                    command,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-        except subprocess.TimeoutExpired:
-            return
+            if process.returncode != 0:
+                stderr_text = "\n".join(stderr_lines)
+                if allow_retry and self._maybe_disable_connection_sharing_from_text(stderr_text):
+                    return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
+                return None, stderr_text.strip() or "remote command failed"
+            stdout_handle.flush()
+            if stdout_bytes:
+                self._log_progress(f"remote stdout complete {stdout_bytes} bytes")
+            stdout_text = Path(stdout_handle.name).read_text(encoding="utf-8")
+            return subprocess.CompletedProcess(self._ssh_command(args), process.returncode, stdout_text, "\n".join(stderr_lines)), None
+        finally:
+            stdout_handle.close()
+            Path(stdout_handle.name).unlink(missing_ok=True)
+        return None, "remote command failed"
+
+    def _ssh_command(self, remote_args: list[str]) -> list[str]:
+        return _ssh_base_command(
+            self.target.destination,
+            self.target.port,
+            use_connection_sharing=self._use_connection_sharing,
+        ) + remote_args
 
     def _log_progress(self, message: str) -> None:
         print(f"info: remote[{self.source_name}/{self.name}] {message}")
 
+    def _log_non_json_debug(self, stdout_text: str, stderr_text: str) -> None:
+        self._log_progress(
+            f"remote stdout debug: {len(stdout_text.encode('utf-8', errors='replace'))} bytes"
+        )
+        preview = _preview_text(stdout_text)
+        if preview:
+            self._log_progress(f"remote stdout preview: {preview}")
+        if stderr_text.strip():
+            self._log_progress(
+                f"remote stderr debug: {len(stderr_text.encode('utf-8', errors='replace'))} bytes"
+            )
+            self._log_progress(f"remote stderr preview: {_preview_text(stderr_text)}")
+
+    def _run_ssh_with_optional_fallback(
+        self,
+        remote_args: list[str],
+        *,
+        input_text: str | None = None,
+        timeout: int,
+    ):
+        try:
+            return self._runner(
+                self._ssh_command(remote_args),
+                check=False,
+                capture_output=True,
+                text=True,
+                input=input_text,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            if self._disable_connection_sharing("ssh timed out while using connection sharing"):
+                try:
+                    return self._runner(
+                        self._ssh_command(remote_args),
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        input=input_text,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    return None
+            return None
+
+    def _maybe_disable_connection_sharing_from_output(self, completed) -> bool:
+        return self._maybe_disable_connection_sharing_from_text(
+            "\n".join(part for part in (completed.stderr, completed.stdout) if isinstance(part, str) and part.strip())
+        )
+
+    def _maybe_disable_connection_sharing_from_text(self, text: str) -> bool:
+        lowered = text.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "mux_client_",
+                "control socket",
+                "master is dead",
+                "broken pipe",
+                "connection reset",
+            )
+        ):
+            return self._disable_connection_sharing("ssh connection sharing is not supported by the remote gateway")
+        return False
+
+    def _disable_connection_sharing(self, reason: str) -> bool:
+        if not self._use_connection_sharing:
+            return False
+        self._use_connection_sharing = False
+        if not self._logged_connection_sharing_fallback:
+            self._logged_connection_sharing_fallback = True
+            self._log_progress(f"检测到 SSH 复用不稳定，切换为普通 SSH 重试: {reason}")
+        return True
+
     @property
     def _active_start(self) -> datetime:
-        return getattr(self, "__active_start", datetime.fromtimestamp(0, tz=timezone.utc))
+        return getattr(self, "_active_start_value", datetime.fromtimestamp(0, tz=timezone.utc))
 
     @property
     def _active_end(self) -> datetime:
-        return getattr(self, "__active_end", datetime.now(timezone.utc))
+        return getattr(self, "_active_end_value", datetime.now(timezone.utc))
 
 
 def _suffix(path: str) -> str:
@@ -874,6 +1191,27 @@ def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+def _ssh_base_command(destination: str, port: int, use_connection_sharing: bool = True) -> list[str]:
+    command = [
+        "ssh",
+        "-o",
+        "ConnectTimeout=10",
+        "-p",
+        str(port),
+        destination,
+    ]
+    if use_connection_sharing:
+        command[3:3] = [
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            "ControlPersist=5m",
+            "-o",
+            "ControlPath=/tmp/llm-usage-ssh-%C",
+        ]
+    return command
+
+
 def _coerce_int(value: object) -> int:
     try:
         if value is None:
@@ -887,3 +1225,42 @@ def _optional_str(value: object) -> str | None:
     if isinstance(value, str) and value.strip():
         return value
     return None
+
+
+def _extract_python_command(stdout: str) -> str | None:
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if line in {"python3", "python"}:
+            return line
+    for token in stdout.split():
+        if token in {"python3", "python"}:
+            return token
+    return None
+
+
+def _extract_json_payload(stdout: str) -> tuple[dict | list | None, str]:
+    text = stdout.strip()
+    if not text:
+        return None, ""
+    try:
+        return json.loads(text), ""
+    except ValueError:
+        pass
+    decoder = json.JSONDecoder()
+    for start, ch in enumerate(stdout):
+        if ch not in "{[":
+            continue
+        try:
+            payload, end = decoder.raw_decode(stdout[start:])
+        except ValueError:
+            continue
+        discarded = (stdout[:start] + stdout[start + end :]).strip()
+        return payload, discarded
+    return None, stdout
+
+
+def _preview_text(text: str, limit: int = 400) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit] + "..."

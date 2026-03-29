@@ -18,6 +18,8 @@ def _config(alias: str) -> RemoteHostConfig:
         source_label=alias.lower(),
         claude_log_paths=["~/.claude/**/*.jsonl"],
         codex_log_paths=["~/.codex/**/*.jsonl"],
+        copilot_cli_log_paths=["~/.copilot/session-state/**/*.jsonl"],
+        copilot_vscode_session_paths=["~/.vscode-server/data/User/globalStorage/emptyWindowChatSessions/*.jsonl"],
     )
 
 

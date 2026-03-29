@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from llm_usage.collectors.base import BaseCollector
-from llm_usage.collectors.remote_file import RemoteFileCollector, SshTarget
+from llm_usage.collectors.remote_file import RemoteCollectJob, RemoteFileCollector, SshTarget, _ssh_base_command
 from llm_usage.env import upsert_env_var
 from llm_usage.identity import hash_source_host
 
@@ -96,44 +96,23 @@ def build_remote_collectors(
     for config in configs:
         source_host_hash = hash_source_host(username, config.source_label, salt)
         target = SshTarget(host=config.ssh_host, user=config.ssh_user, port=config.ssh_port)
+        jobs = []
         if config.claude_log_paths:
-            collectors.append(
-                RemoteFileCollector(
-                    "claude_code",
-                    target=target,
-                    patterns=config.claude_log_paths,
-                    source_name=config.alias.lower(),
-                    source_host_hash=source_host_hash,
-                )
-            )
+            jobs.append(RemoteCollectJob(tool="claude_code", patterns=config.claude_log_paths))
         if config.codex_log_paths:
-            collectors.append(
-                RemoteFileCollector(
-                    "codex",
-                    target=target,
-                    patterns=config.codex_log_paths,
-                    source_name=config.alias.lower(),
-                    source_host_hash=source_host_hash,
-                )
-            )
+            jobs.append(RemoteCollectJob(tool="codex", patterns=config.codex_log_paths))
         if config.copilot_cli_log_paths:
-            collectors.append(
-                RemoteFileCollector(
-                    "copilot_cli",
-                    target=target,
-                    patterns=config.copilot_cli_log_paths,
-                    source_name=config.alias.lower(),
-                    source_host_hash=source_host_hash,
-                )
-            )
+            jobs.append(RemoteCollectJob(tool="copilot_cli", patterns=config.copilot_cli_log_paths))
         if config.copilot_vscode_session_paths:
+            jobs.append(RemoteCollectJob(tool="copilot_vscode", patterns=config.copilot_vscode_session_paths))
+        if jobs:
             collectors.append(
                 RemoteFileCollector(
-                    "copilot_vscode",
+                    "remote",
                     target=target,
-                    patterns=config.copilot_vscode_session_paths,
                     source_name=config.alias.lower(),
                     source_host_hash=source_host_hash,
+                    jobs=jobs,
                 )
             )
     return collectors
@@ -187,17 +166,7 @@ def append_remote_to_env(path: Path, config: RemoteHostConfig, existing_aliases:
 def probe_remote_ssh(config: RemoteHostConfig, timeout_sec: int = 10) -> tuple[bool, str]:
     try:
         completed = subprocess.run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=10",
-                "-p",
-                str(config.ssh_port),
-                f"{config.ssh_user}@{config.ssh_host}",
-                "true",
-            ],
+            _ssh_base_command(f"{config.ssh_user}@{config.ssh_host}", config.ssh_port) + ["true"],
             check=False,
             capture_output=True,
             text=True,

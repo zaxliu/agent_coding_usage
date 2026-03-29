@@ -1,3 +1,5 @@
+import subprocess
+
 from llm_usage.remotes import (
     append_remote_to_env,
     build_remote_collectors,
@@ -5,6 +7,7 @@ from llm_usage.remotes import (
     default_source_label,
     normalize_alias,
     parse_remote_configs_from_env,
+    probe_remote_ssh,
     unique_alias,
 )
 
@@ -41,7 +44,8 @@ def test_build_remote_collectors_sets_per_user_source_hash():
     collectors_a = build_remote_collectors([config], username="alice", salt="salt")
     collectors_b = build_remote_collectors([config], username="bob", salt="salt")
     assert collectors_a[0].source_host_hash != collectors_b[0].source_host_hash
-    assert {collector.name for collector in collectors_a} >= {"claude_code", "codex", "copilot_cli", "copilot_vscode"}
+    assert len(collectors_a) == 1
+    assert collectors_a[0].name == "remote"
 
 
 def test_append_remote_to_env_writes_remote_fields(tmp_path):
@@ -66,3 +70,22 @@ def test_alias_helpers_normalize_and_dedupe():
 
 def test_default_source_label_uses_user_and_host():
     assert default_source_label("alice", "10.0.0.8") == "alice@10.0.0.8"
+
+
+def test_probe_remote_ssh_uses_connection_sharing(monkeypatch):
+    captured = {}
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001, ANN201
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("llm_usage.remotes.subprocess.run", _fake_run)
+
+    ok, msg = probe_remote_ssh(build_temporary_remote("host-a", "alice", 2200))
+
+    assert ok
+    assert msg == "SSH 连接正常"
+    assert captured["cmd"][0] == "ssh"
+    assert "ControlMaster=auto" in captured["cmd"]
+    assert "ControlPersist=5m" in captured["cmd"]
+    assert "ControlPath=/tmp/llm-usage-ssh-%C" in captured["cmd"]

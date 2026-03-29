@@ -20,7 +20,7 @@ from llm_usage.collectors import (
 )
 from llm_usage.cursor_login import (
     fetch_cursor_session_token_via_browser,
-    fetch_cursor_workos_id_from_local_browsers,
+    open_cursor_dashboard_login_page,
 )
 from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
@@ -49,6 +49,24 @@ def _runtime_state_path() -> Path:
 
 def _load_runtime_env() -> None:
     load_dotenv(_env_path())
+
+
+def _save_cursor_web_credentials(token: str, workos_id: str = "") -> None:
+    env_file = _env_path()
+    if not env_file.exists():
+        cmd_init(argparse.Namespace())
+    upsert_env_var(env_file, "CURSOR_WEB_SESSION_TOKEN", token)
+    upsert_env_var(env_file, "CURSOR_WEB_WORKOS_ID", workos_id)
+    os.environ["CURSOR_WEB_SESSION_TOKEN"] = token
+    if workos_id:
+        os.environ["CURSOR_WEB_WORKOS_ID"] = workos_id
+    else:
+        os.environ.pop("CURSOR_WEB_WORKOS_ID", None)
+
+
+def _should_require_manual_cursor_token_prompt(browser: str) -> bool:
+    normalized = (browser or "").strip().lower()
+    return os.name == "nt" and normalized in {"default", "chrome", "chromium", "edge", "msedge"}
 
 
 def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
@@ -141,7 +159,8 @@ def cmd_init(_: argparse.Namespace) -> int:
                     "# Optional: Cursor Pro+ web dashboard collector.",
                     "# If CURSOR_WEB_SESSION_TOKEN is set, cursor collector uses dashboard API",
                     "# instead of local log files.",
-                    "# collect/sync auto-open browser login when token is empty and local logs are unavailable.",
+                    "# If token is empty and local logs are unavailable, collect/sync may open the",
+                    "# login page. On Windows Chromium browsers, it will prompt for manual token paste.",
                     "CURSOR_WEB_SESSION_TOKEN=",
                     "CURSOR_WEB_WORKOS_ID=",
                     "CURSOR_DASHBOARD_BASE_URL=https://cursor.com",
@@ -203,23 +222,35 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
 
 def _capture_and_save_cursor_token(timeout_sec: int, browser: str, user_data_dir: str) -> str:
-    env_file = _env_path()
-    if not env_file.exists():
-        cmd_init(argparse.Namespace())
-
     token = fetch_cursor_session_token_via_browser(
         timeout_sec=timeout_sec,
         browser=browser,
         user_data_dir=user_data_dir,
     )
-    workos_id = fetch_cursor_workos_id_from_local_browsers(browser=browser) or ""
-    upsert_env_var(env_file, "CURSOR_WEB_SESSION_TOKEN", token)
-    upsert_env_var(env_file, "CURSOR_WEB_WORKOS_ID", workos_id)
-    os.environ["CURSOR_WEB_SESSION_TOKEN"] = token
-    if workos_id:
-        os.environ["CURSOR_WEB_WORKOS_ID"] = workos_id
-    else:
-        os.environ.pop("CURSOR_WEB_WORKOS_ID", None)
+    _save_cursor_web_credentials(token)
+    return token
+
+
+def _prompt_for_manual_cursor_token(browser: str, *, automatic_capture_failed: bool) -> str | None:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+
+    if automatic_capture_failed:
+        print("warn: automatic Cursor token capture failed.")
+    if _should_require_manual_cursor_token_prompt(browser):
+        print("info: Windows detected; automatic Cursor browser cookie scanning is disabled.")
+    try:
+        open_cursor_dashboard_login_page(browser=browser)
+        print("info: opened https://cursor.com/dashboard/usage in your browser.")
+    except RuntimeError as exc:
+        print(f"warn: failed to open browser automatically: {exc}")
+        print("info: open https://cursor.com/dashboard/usage in your signed-in browser.")
+    print("info: after login, open DevTools > Application > Cookies and copy WorkosCursorSessionToken.")
+    token = input("CURSOR_WEB_SESSION_TOKEN (press Enter to skip): ").strip()
+    if not token:
+        return None
+    _save_cursor_web_credentials(token)
+    print("info: saved CURSOR_WEB_SESSION_TOKEN to .env")
     return token
 
 
@@ -242,9 +273,14 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
         if "authentication failed" in msg.lower():
             print(
                 "warn: existing CURSOR_WEB_SESSION_TOKEN appears expired; "
-                "attempting refresh from system browser cookies..."
+                "clearing saved token and requesting a fresh login..."
             )
             _clear_saved_cursor_token()
+            if _should_require_manual_cursor_token_prompt(browser):
+                if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=False):
+                    return None
+                print("warn: continuing with local cursor sources")
+                return None
             try:
                 _capture_and_save_cursor_token(
                     timeout_sec=timeout_sec,
@@ -253,6 +289,8 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
                 )
             except RuntimeError as exc:
                 print(f"warn: cursor token refresh failed: {exc}")
+                if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=True):
+                    return None
                 print("warn: continuing with local cursor sources")
                 return None
             print("info: refreshed CURSOR_WEB_SESSION_TOKEN and saved to .env")
@@ -281,6 +319,15 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
             "info: CURSOR_WEB_SESSION_TOKEN is empty and local cursor logs are unavailable; "
             "opening browser login..."
         )
+    if _should_require_manual_cursor_token_prompt(browser):
+        print(
+            "info: Windows detected with a Chromium-based browser. "
+            "Automatic Cursor cookie scanning is disabled; manual token input is required."
+        )
+        if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=False):
+            return None
+        print("warn: continuing without dashboard token (cursor may have no data)")
+        return None
     try:
         _capture_and_save_cursor_token(
             timeout_sec=timeout_sec,
@@ -289,6 +336,8 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
         )
     except RuntimeError as exc:
         print(f"warn: automatic cursor login failed: {exc}")
+        if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=True):
+            return None
         print("warn: continuing without dashboard token (cursor may have no data)")
         return None
     print("info: saved CURSOR_WEB_SESSION_TOKEN to .env")
@@ -437,7 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--cursor-login-timeout-sec",
         type=int,
         default=600,
-        help="Max wait time when auto-opening browser to capture Cursor session token",
+        help="Max wait time when opening browser login or capturing Cursor session token",
     )
     collect_parser.add_argument(
         "--cursor-login-browser",
@@ -449,7 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--cursor-login-user-data-dir",
         type=str,
         default="",
-        help="Compatibility option; ignored in system-browser cookie mode",
+        help="Compatibility option; ignored when using system-browser login flow",
     )
     collect_parser.add_argument(
         "--ui",
@@ -462,7 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--cursor-login-timeout-sec",
         type=int,
         default=600,
-        help="Max wait time when auto-opening browser to capture Cursor session token",
+        help="Max wait time when opening browser login or capturing Cursor session token",
     )
     sync_parser.add_argument(
         "--cursor-login-browser",
@@ -474,7 +523,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--cursor-login-user-data-dir",
         type=str,
         default="",
-        help="Compatibility option; ignored in system-browser cookie mode",
+        help="Compatibility option; ignored when using system-browser login flow",
     )
     sync_parser.add_argument(
         "--ui",

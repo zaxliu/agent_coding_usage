@@ -11,6 +11,42 @@ from llm_usage.models import AggregateRecord
 from llm_usage.privacy import to_feishu_fields
 
 
+def _format_feishu_api_error(payload: dict, *, context: str) -> str:
+    parts = [context, f"code={payload.get('code')}"]
+    for key in ("msg", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(f"{key}={value.strip()}")
+    error = payload.get("error")
+    if isinstance(error, dict):
+        for key in ("message", "msg"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(f"error.{key}={value.strip()}")
+                break
+
+    text = " | ".join(parts)
+    lowered = text.lower()
+    if any(
+        token in lowered
+        for token in ("permission", "forbidden", "无权限", "没有权限", "access denied", "auth scope")
+    ):
+        text += (
+            " | hint=飞书开放平台的应用接口权限不能替代表格协作权限；"
+            "请确认该应用或其运行身份对目标多维表格/数据表仍有可编辑权限。"
+            "仅将分享权限改为“组织内可阅读”通常不足以写入。"
+        )
+    return text
+
+
+def _maybe_json(resp: requests.Response) -> dict | None:
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 @dataclass
 class SyncResult:
     created: int
@@ -57,10 +93,16 @@ def fetch_tenant_access_token(
         json={"app_id": app_id, "app_secret": app_secret},
         timeout=request_timeout_sec,
     )
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = _maybe_json(resp)
+    if resp.status_code >= 400:
+        if payload is not None:
+            raise RuntimeError(_format_feishu_api_error(payload, context="feishu auth http error"))
+        resp.raise_for_status()
+    if payload is None:
+        resp.raise_for_status()
+        raise RuntimeError("feishu auth response is not json")
     if payload.get("code", 0) != 0:
-        raise RuntimeError(f"feishu auth error: {payload}")
+        raise RuntimeError(_format_feishu_api_error(payload, context="feishu auth error"))
     token = payload.get("tenant_access_token")
     if not isinstance(token, str) or not token.strip():
         raise RuntimeError(f"feishu auth token missing: {payload}")
@@ -78,10 +120,16 @@ def fetch_first_table_id(
         params={"page_size": 1},
         timeout=request_timeout_sec,
     )
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = _maybe_json(resp)
+    if resp.status_code >= 400:
+        if payload is not None:
+            raise RuntimeError(_format_feishu_api_error(payload, context="feishu list tables http error"))
+        resp.raise_for_status()
+    if payload is None:
+        resp.raise_for_status()
+        raise RuntimeError("feishu list tables response is not json")
     if payload.get("code", 0) != 0:
-        raise RuntimeError(f"feishu list tables error: {payload}")
+        raise RuntimeError(_format_feishu_api_error(payload, context="feishu list tables error"))
     items = payload.get("data", {}).get("items", [])
     if not items:
         raise RuntimeError("feishu table list is empty")
@@ -128,10 +176,21 @@ class FeishuBitableClient:
                 time.sleep(backoff)
                 backoff *= 2
                 continue
-            resp.raise_for_status()
-            payload = resp.json()
+            payload = _maybe_json(resp)
+            if resp.status_code >= 400:
+                if payload is not None:
+                    raise RuntimeError(
+                        _format_feishu_api_error(
+                            payload,
+                            context=f"feishu api http error: {method} {url}",
+                        )
+                    )
+                resp.raise_for_status()
+            if payload is None:
+                resp.raise_for_status()
+                raise RuntimeError(f"feishu api response is not json: {method} {url}")
             if payload.get("code", 0) != 0:
-                raise RuntimeError(f"feishu api error: {payload}")
+                raise RuntimeError(_format_feishu_api_error(payload, context=f"feishu api error: {method} {url}"))
             return payload
         raise RuntimeError("feishu api retry exhausted")
 
