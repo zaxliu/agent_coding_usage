@@ -16,6 +16,6 @@
     "sync": "node ./bin/llm-usage-node.js sync"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }
