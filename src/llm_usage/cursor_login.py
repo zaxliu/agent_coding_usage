@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import requests
@@ -23,7 +23,17 @@ def fetch_cursor_session_token_via_browser(
     timeout_sec: int = 600,
     browser: str = "default",
     user_data_dir: str | None = None,
+    login_mode: str = "auto",
 ) -> str:
+    resolved_mode = (login_mode or "auto").strip().lower() or "auto"
+    if resolved_mode == "managed-profile":
+        return _fetch_cursor_session_token_via_managed_profile(
+            usage_url=usage_url,
+            timeout_sec=timeout_sec,
+            browser=browser,
+            user_data_dir=user_data_dir,
+        )
+
     timeout_sec = max(30, timeout_sec)
     deadline = time.monotonic() + timeout_sec
     requested_browser = (browser or "default").strip().lower()
@@ -112,6 +122,54 @@ def fetch_cursor_workos_id_from_local_browsers(browser: str = "default") -> str 
 
 def open_cursor_dashboard_login_page(browser: str = "default") -> None:
     _open_url_in_system_browser(f"{CURSOR_BASE_URL}/dashboard/usage", browser=browser)
+
+
+def _default_managed_profile_dir(browser: str) -> str:
+    normalized = _normalize_browser_name(browser)
+    slug = "edge-profile" if normalized == "msedge" else "chrome-profile"
+    local_appdata = os.getenv("LOCALAPPDATA", "").strip()
+    if os.name == "nt":
+        root = (
+            PureWindowsPath(local_appdata)
+            if local_appdata
+            else PureWindowsPath(str(Path.home())) / "AppData" / "Local"
+        )
+        return str(root / "llm-usage" / "cursor-login" / slug)
+    return str((Path.home() / ".llm-usage" / "cursor-login" / slug).resolve())
+
+
+def _fetch_cursor_session_token_via_managed_profile(
+    usage_url: str,
+    timeout_sec: int,
+    browser: str,
+    user_data_dir: str | None,
+) -> str:
+    managed_dir = (user_data_dir or "").strip() or _default_managed_profile_dir(browser)
+    Path(managed_dir).mkdir(parents=True, exist_ok=True)
+    _open_url_in_system_browser(usage_url, browser=browser, user_data_dir=managed_dir)
+
+    deadline = time.monotonic() + max(30, timeout_sec)
+    while time.monotonic() < deadline:
+        candidates = _read_raw_cursor_session_token_candidates_from_managed_profile(
+            browser=browser,
+            user_data_dir=managed_dir,
+        )
+        token = _find_valid_token(candidates)
+        if token:
+            return token
+        time.sleep(2)
+    raise RuntimeError("timed out waiting for Cursor session cookie in managed browser profile")
+
+
+def _read_raw_cursor_session_token_candidates_from_managed_profile(
+    browser: str,
+    user_data_dir: str,
+) -> list[str]:
+    return _collect_candidate_tokens_from_chromium_profile(
+        browser=browser,
+        user_data_dir=user_data_dir,
+        cookie_name=TOKEN_COOKIE_NAME,
+    )
 
 
 def _read_cursor_session_token_from_local_browsers(
@@ -216,6 +274,41 @@ def _collect_named_cookie_values_from_local_browsers(
             if value in out:
                 continue
             out.append(value)
+    return out
+
+
+def _collect_candidate_tokens_from_chromium_profile(
+    browser: str,
+    user_data_dir: str,
+    cookie_name: str,
+) -> list[str]:
+    try:
+        import browser_cookie3  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "browser-cookie3 is not installed. run: pip install browser-cookie3"
+        ) from exc
+
+    loader = _cookie_loader(browser_cookie3, _normalize_browser_name(browser))
+    if loader is None:
+        return []
+
+    out: list[str] = []
+    for cookie_file in _chromium_cookie_files_from_user_data_dir(user_data_dir):
+        try:
+            load_kwargs: dict[str, Any] = {
+                "cookie_file": cookie_file,
+                "domain_name": CURSOR_DOMAIN,
+            }
+            key_file = _chromium_key_file_for_cookie_file(cookie_file)
+            if key_file:
+                load_kwargs["key_file"] = key_file
+            cookies = loader(**load_kwargs)
+        except Exception:  # noqa: BLE001
+            continue
+        for value in _extract_cookie_values_from_cookie_iterable(cookies, cookie_name):
+            if value not in out:
+                out.append(value)
     return out
 
 
@@ -451,7 +544,7 @@ def _validate_cursor_session_token(token: str, workos_id: str | None = None) -> 
     return False, "authentication failed"
 
 
-def _open_url_in_system_browser(url: str, browser: str = "default") -> None:
+def _open_url_in_system_browser(url: str, browser: str = "default", user_data_dir: str | None = None) -> None:
     browser = _normalize_browser_name(browser)
     try:
         if sys.platform == "darwin":
@@ -462,9 +555,20 @@ def _open_url_in_system_browser(url: str, browser: str = "default") -> None:
             subprocess.Popen(["open", url])
             return
         if os.name == "nt":
-            cmd_name = _windows_browser_command(browser)
-            if cmd_name:
-                subprocess.Popen(["cmd", "/c", "start", "", cmd_name, url])
+            command = _windows_browser_command(browser)
+            if user_data_dir and browser in {"chrome", "chromium", "msedge"} and command:
+                subprocess.Popen(
+                    [
+                        *command,
+                        f"--user-data-dir={user_data_dir}",
+                        "--no-first-run",
+                        "--new-window",
+                        url,
+                    ]
+                )
+                return
+            if command:
+                subprocess.Popen([*command, url])
                 return
             os.startfile(url)  # type: ignore[attr-defined]
             return
@@ -576,14 +680,28 @@ def _macos_app_name_for_browser(browser: str) -> str | None:
     return mapping.get(browser)
 
 
-def _windows_browser_command(browser: str) -> str | None:
-    mapping = {
-        "chrome": "chrome",
-        "msedge": "msedge",
-        "firefox": "firefox",
-        "chromium": "chromium",
+def _windows_browser_command(browser: str) -> list[str] | None:
+    candidates = {
+        "chrome": [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        ],
+        "msedge": [
+            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+        ],
+        "chromium": [
+            os.path.expandvars(r"%ProgramFiles%\Chromium\Application\chrome.exe"),
+        ],
+        "firefox": [
+            os.path.expandvars(r"%ProgramFiles%\Mozilla Firefox\firefox.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe"),
+        ],
     }
-    return mapping.get(browser)
+    for candidate in candidates.get(_normalize_browser_name(browser), []):
+        if candidate and os.path.isfile(candidate):
+            return [candidate]
+    return None
 
 
 def _linux_browser_command(browser: str) -> str | None:
@@ -622,6 +740,29 @@ def _chromium_cookie_files(browser: str) -> list[str]:
                         continue
                     if os.path.isfile(cookie_file):
                         out.append(cookie_file)
+    return out
+
+
+def _chromium_cookie_files_from_user_data_dir(user_data_dir: str) -> list[str]:
+    profile_patterns = [
+        "Default/Cookies",
+        "Default/Network/Cookies",
+        "Profile */Cookies",
+        "Profile */Network/Cookies",
+        "Guest Profile/Cookies",
+        "Guest Profile/Network/Cookies",
+        "System Profile/Cookies",
+        "System Profile/Network/Cookies",
+    ]
+
+    root = os.path.expandvars(os.path.expanduser(user_data_dir))
+    out: list[str] = []
+    for rel in profile_patterns:
+        for cookie_file in sorted(glob.glob(os.path.join(root, rel))):
+            if cookie_file in out:
+                continue
+            if os.path.isfile(cookie_file):
+                out.append(cookie_file)
     return out
 
 

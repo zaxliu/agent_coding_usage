@@ -26,7 +26,7 @@ Event schema:
 - `codex`: default local globs under `~/.codex`
 - `copilot_cli`: local session logs under `~/.copilot/session-state` (Windows uses `%APPDATA%` / user-profile equivalents when available)
 - `copilot_vscode`: local VS Code chat session files under VS Code user storage (`Code/User/globalStorage/emptyWindowChatSessions`)
-- `cursor`: local globs by default; if `CURSOR_WEB_SESSION_TOKEN` is set, uses Cursor dashboard web API (`/api/dashboard/get-filtered-usage-events`). optional `CURSOR_WEB_WORKOS_ID` is sent as auxiliary auth cookie when present. if token is empty and local cursor logs are unavailable, or local logs have no events in lookback, `collect/sync` opens the login page. on Windows Chromium browsers, it does not auto-scan local cookies and instead prompts the user to paste the session token into the CLI.
+- `cursor`: local globs by default; if `CURSOR_WEB_SESSION_TOKEN` is set, uses Cursor dashboard web API (`/api/dashboard/get-filtered-usage-events`). optional `CURSOR_WEB_WORKOS_ID` is sent as auxiliary auth cookie when present. if token is empty and local cursor logs are unavailable, or local logs have no events in lookback, `collect/sync` opens the login page. on Windows Chromium browsers, `collect/sync` prefers a tool-managed browser profile login flow instead of scanning the user's default browser cookies; manual token paste remains the fallback.
 - `remote claude_code/codex/copilot_cli/copilot_vscode`: selected at runtime via TUI or CLI, fetched over SSH from configured `REMOTE_*` hosts, and normalized on the desktop machine
 
 ## Add a new tool

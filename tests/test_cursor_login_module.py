@@ -118,6 +118,59 @@ def test_fetch_returns_latest_raw_candidate_after_timeout(monkeypatch):
     assert token == "token-timeout"
 
 
+def test_fetch_cursor_session_token_via_browser_managed_profile_reads_explicit_profile(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        cursor_login,
+        "_open_url_in_system_browser",
+        lambda url, browser="default", user_data_dir=None: calls.append(
+            {"url": url, "browser": browser, "user_data_dir": user_data_dir}
+        ),
+    )
+    monkeypatch.setattr(
+        cursor_login,
+        "_read_raw_cursor_session_token_candidates_from_managed_profile",
+        lambda browser, user_data_dir: ["token-abc"],
+    )
+    monkeypatch.setattr(cursor_login, "_find_valid_token", lambda candidates: candidates[0])
+
+    token = cursor_login.fetch_cursor_session_token_via_browser(
+        timeout_sec=30,
+        browser="chrome",
+        user_data_dir="C:/tmp/cursor-profile",
+        login_mode="managed-profile",
+    )
+
+    assert token == "token-abc"
+    assert calls == [
+        {
+            "url": "https://cursor.com/dashboard/usage",
+            "browser": "chrome",
+            "user_data_dir": "C:/tmp/cursor-profile",
+        }
+    ]
+
+
+def test_default_managed_profile_dir_uses_localappdata(monkeypatch):
+    monkeypatch.setattr(
+        cursor_login,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            getenv=cursor_login.os.getenv,
+            expandvars=cursor_login.os.path.expandvars,
+            path=cursor_login.os.path,
+            pathsep=cursor_login.os.pathsep,
+        ),
+    )
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
+
+    path = cursor_login._default_managed_profile_dir("chrome")
+
+    assert path.endswith(r"llm-usage\cursor-login\chrome-profile")
+
+
 def test_open_url_uses_selected_macos_browser(monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr(cursor_login.sys, "platform", "darwin")
@@ -126,6 +179,39 @@ def test_open_url_uses_selected_macos_browser(monkeypatch):
     cursor_login._open_url_in_system_browser("https://cursor.com/dashboard/usage", browser="chrome")
     assert calls
     assert calls[0][:3] == ["open", "-a", "Google Chrome"]
+
+
+def test_open_url_in_system_browser_windows_chrome_managed_profile(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cursor_login,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            getenv=cursor_login.os.getenv,
+            expandvars=cursor_login.os.path.expandvars,
+            path=cursor_login.os.path,
+            pathsep=cursor_login.os.pathsep,
+            startfile=getattr(cursor_login.os, "startfile", None),
+        ),
+    )
+    monkeypatch.setattr(cursor_login.sys, "platform", "win32")
+    monkeypatch.setattr(cursor_login, "_windows_browser_command", lambda browser: [r"C:\Chrome\chrome.exe"])
+    monkeypatch.setattr(cursor_login.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    cursor_login._open_url_in_system_browser(
+        "https://cursor.com/dashboard/usage",
+        browser="chrome",
+        user_data_dir=r"C:\tmp\cursor-profile",
+    )
+
+    assert calls == [[
+        r"C:\Chrome\chrome.exe",
+        "--user-data-dir=C:\\tmp\\cursor-profile",
+        "--no-first-run",
+        "--new-window",
+        "https://cursor.com/dashboard/usage",
+    ]]
 
 
 def test_candidate_browser_order_strict():
