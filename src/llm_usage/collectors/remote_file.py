@@ -814,23 +814,30 @@ class RemoteFileCollector(BaseCollector):
         return CollectOutput(events=events, warnings=warnings)
 
     def _discover_python(self) -> tuple[Optional[str], Optional[str]]:
-        try:
-            completed = self._run_ssh_with_optional_fallback(
-                [
-                    "sh",
-                    "-lc",
-                    "command -v python3 >/dev/null 2>&1 && printf python3 || "
-                    "(command -v python >/dev/null 2>&1 && printf python || true)",
-                ],
-                timeout=15,
-            )
-        except ValueError as exc:
-            return None, str(exc)
-        if completed is None:
-            return None, None
-        if completed.returncode != 0:
-            return None, None
-        return _extract_python_command(completed.stdout), None
+        for remote_args in _python_discovery_commands():
+            try:
+                completed = self._run_ssh_with_optional_fallback(remote_args, timeout=15)
+            except ValueError as exc:
+                return None, str(exc)
+            label = " ".join(remote_args[:2])
+            if completed is None:
+                self._log_progress(f"探测失败：{label} timed out")
+                continue
+            if completed.returncode != 0:
+                stderr_preview = _preview_text(completed.stderr)
+                if stderr_preview:
+                    self._log_progress(f"探测失败：{label} rc={completed.returncode} stderr={stderr_preview}")
+                else:
+                    stdout_preview = _preview_text(completed.stdout)
+                    self._log_progress(f"探测失败：{label} rc={completed.returncode} stdout={stdout_preview}")
+                continue
+            python_cmd = _extract_python_command(completed.stdout)
+            if python_cmd:
+                return python_cmd, None
+            preview = _preview_text(completed.stdout)
+            if preview:
+                self._log_progress(f"探测未命中：{label} stdout={preview}")
+        return None, None
 
     def _run_python_script(self, python_cmd: str, script: str) -> tuple[dict, Optional[str]]:
         command, script_input = self._python_stdin_command(python_cmd, script)
@@ -845,7 +852,7 @@ class RemoteFileCollector(BaseCollector):
                 if text:
                     self._log_progress(f"remote stdout noise: {text}")
         if payload is None:
-            if self._should_fallback_to_uploaded_script(completed.stdout):
+            if self._should_fallback_to_uploaded_script(completed.stdout, completed.stderr):
                 self._log_progress("检测到远端网关会吞掉 stdin 脚本，回退为上传临时脚本执行")
                 return self._run_python_script_via_uploaded_file(python_cmd, script)
             self._log_non_json_debug(completed.stdout, completed.stderr)
@@ -874,61 +881,47 @@ class RemoteFileCollector(BaseCollector):
         return ["sh", "-lc", remote_command], payload + "\n" + script
 
     def _run_python_script_via_uploaded_file(self, python_cmd: str, script: str) -> tuple[dict, Optional[str]]:
-        remote_base = f".llm_usage_{os.getpid()}_{next(tempfile._get_candidate_names())}"
+        remote_base = f"/tmp/llm_usage_{os.getpid()}_{next(tempfile._get_candidate_names())}"
         remote_script = f"{remote_base}.py"
-        remote_output = f"{remote_base}_output.json"
-        combined_script = self._build_uploaded_remote_script(script, remote_output)
+        combined_script = self._build_uploaded_remote_script(script)
         self._log_progress(f"上传远端脚本 -> {remote_script}")
-        error = self._ssh_write_text(remote_script, combined_script)
-        if error:
-            return {}, error
+        previous_connection_sharing = self._use_connection_sharing
+        self._use_connection_sharing = False
         try:
-            command = ["sh", "-lc", f"{_shell_quote(python_cmd)} {_shell_quote(remote_script)}"]
-            completed, error = self._ssh_run_python_command(command, input_text="")
+            error = self._ssh_write_text(remote_script, combined_script)
             if error:
                 return {}, error
+            command = ["sh", "-lc", f"{_shell_quote(python_cmd)} {_shell_quote(remote_script)}"]
+            try:
+                completed = self._run_ssh_with_optional_fallback(command, input_text="", timeout=self.timeout_sec)
+            except ValueError as exc:
+                return {}, str(exc)
+            if completed is None:
+                return {}, "remote command timed out"
+            if completed.returncode != 0:
+                return {}, completed.stderr.strip() or completed.stdout.strip() or "remote command failed"
             if completed.stderr.strip():
                 for line in completed.stderr.strip().splitlines():
                     self._log_progress(f"remote stderr: {line}")
-            output_text, error = self._ssh_read_text(remote_output)
-            if error:
-                self._log_non_json_debug(completed.stdout, completed.stderr)
-                return {}, error
-            payload, discarded = _extract_json_payload(output_text)
+            payload, discarded = _extract_json_payload(completed.stdout)
             if discarded:
                 for line in discarded.splitlines():
                     text = line.strip()
                     if text:
                         self._log_progress(f"remote stdout noise: {text}")
             if payload is None:
-                self._log_non_json_debug(output_text, completed.stderr)
+                self._log_non_json_debug(completed.stdout, completed.stderr)
                 return {}, "remote command returned non-JSON output"
             if not isinstance(payload, dict):
                 return {}, "remote command returned invalid JSON payload"
             return payload, None
         finally:
             self._ssh_remove_file(remote_script)
-            self._ssh_remove_file(remote_output)
+            self._use_connection_sharing = previous_connection_sharing
 
-    def _build_uploaded_remote_script(self, script: str, remote_output: str) -> str:
+    def _build_uploaded_remote_script(self, script: str) -> str:
         payload = base64.b64encode(json.dumps(self._build_remote_payload()).encode("utf-8")).decode("ascii")
-        wrapper = [
-            f"PAYLOAD_B64 = {payload!r}",
-            f"OUTPUT_PATH = {remote_output!r}",
-            "import atexit",
-            "import io",
-            "import sys",
-            "_CAPTURED_STDOUT = io.StringIO()",
-            "_ORIGINAL_STDOUT = sys.stdout",
-            "sys.stdout = _CAPTURED_STDOUT",
-            "def _flush_output():",
-            "    text = _CAPTURED_STDOUT.getvalue()",
-            "    with open(OUTPUT_PATH, 'w', encoding='utf-8') as fh:",
-            "        fh.write(text)",
-            "atexit.register(_flush_output)",
-            "",
-        ]
-        return "\n".join(wrapper) + script.lstrip()
+        return f"PAYLOAD_B64 = {payload!r}\n" + script.lstrip()
 
     def _ssh_write_text(self, remote_path: str, content: str) -> Optional[str]:
         try:
@@ -968,8 +961,8 @@ class RemoteFileCollector(BaseCollector):
             return "", completed.stderr.strip() or completed.stdout.strip() or "ssh download failed"
         return completed.stdout, None
 
-    def _should_fallback_to_uploaded_script(self, stdout_text: str) -> bool:
-        lowered = stdout_text.lower()
+    def _should_fallback_to_uploaded_script(self, stdout_text: str, stderr_text: str = "") -> bool:
+        lowered = "\n".join(part for part in (stdout_text, stderr_text) if part).lower()
         return 'file "<stdin>", line 1' in lowered and (
             "nameerror:" in lowered or "syntaxerror:" in lowered or "traceback" in lowered
         )
@@ -1006,6 +999,8 @@ class RemoteFileCollector(BaseCollector):
             if completed.returncode != 0:
                 if allow_retry and self._maybe_disable_connection_sharing_from_output(completed):
                     return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
+                if self._should_fallback_to_uploaded_script(completed.stdout, completed.stderr):
+                    return completed, None
                 return None, completed.stderr.strip() or completed.stdout.strip() or "remote command failed"
             if completed.stderr.strip():
                 for line in completed.stderr.strip().splitlines():
@@ -1102,6 +1097,8 @@ class RemoteFileCollector(BaseCollector):
                 stderr_text = "\n".join(stderr_lines)
                 if allow_retry and self._maybe_disable_connection_sharing_from_text(stderr_text):
                     return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
+                if self._should_fallback_to_uploaded_script("", stderr_text):
+                    return subprocess.CompletedProcess(command, process.returncode, "", stderr_text), None
                 return None, stderr_text.strip() or "remote command failed"
             stdout_handle.flush()
             if stdout_bytes:
@@ -1263,7 +1260,8 @@ def _ssh_command_and_env(
     use_sshpass: bool = False,
     ssh_password: Optional[str] = None,
 ) -> tuple[list[str], Optional[dict[str, str]]]:
-    command = _ssh_base_command(destination, port, use_connection_sharing=use_connection_sharing) + remote_args
+    remote_command = " ".join(_shell_quote(arg) for arg in remote_args)
+    command = _ssh_base_command(destination, port, use_connection_sharing=use_connection_sharing) + [remote_command]
     if not use_sshpass:
         return command, None
     password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
@@ -1292,12 +1290,38 @@ def _optional_str(value: object) -> Optional[str]:
 def _extract_python_command(stdout: str) -> Optional[str]:
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
-        if line in {"python3", "python"}:
+        if _is_python_command(line):
             return line
     for token in stdout.split():
-        if token in {"python3", "python"}:
+        if _is_python_command(token):
             return token
     return None
+
+
+def _python_discovery_commands() -> list[list[str]]:
+    discover = (
+        "command -v python3 >/dev/null 2>&1 && command -v python3 || "
+        "(command -v python >/dev/null 2>&1 && command -v python || true)"
+    )
+    discover_common_paths = (
+        "for candidate in /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3 "
+        "/bin/python3 /usr/bin/python /usr/local/bin/python; do "
+        "[ -x \"$candidate\" ] && printf '%s\\n' \"$candidate\" && exit 0; "
+        "done; true"
+    )
+    return [
+        ["sh", "-lc", discover],
+        ["bash", "-lc", discover],
+        ["zsh", "-lc", discover],
+        ["sh", "-lc", discover_common_paths],
+    ]
+
+
+def _is_python_command(value: str) -> bool:
+    if value in {"python3", "python"}:
+        return True
+    basename = os.path.basename(value)
+    return basename in {"python3", "python"}
 
 
 def _extract_json_payload(stdout: str) -> tuple[Optional[Union[dict, list]], str]:

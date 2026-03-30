@@ -17,14 +17,22 @@ def _extract_stdin_payload(input_text: str) -> dict:
     return json.loads(__import__("base64").b64decode(payload_line).decode("utf-8"))
 
 
+def _is_ssh_command(cmd: list[str]) -> bool:
+    return cmd[:1] == ["ssh"] or cmd[:3] == ["sshpass", "-e", "ssh"]
+
+
+def _remote_command(cmd: list[str]) -> str:
+    return cmd[-1] if _is_ssh_command(cmd) else ""
+
+
 def test_remote_file_collector_supports_python_fallback(tmp_path):
     calls = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         calls.append(cmd)
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             return _Completed(stdout=json.dumps({"matches": 1}))
         return _Completed()
@@ -40,7 +48,7 @@ def test_remote_file_collector_supports_python_fallback(tmp_path):
     ok, msg = collector.probe()
     assert ok
     assert "remote files detected" in msg
-    assert calls[0][-1].startswith("command -v python3")
+    assert "command -v python3" in _remote_command(calls[0])
     assert calls[1][0] == "ssh"
     assert "ControlMaster=auto" in calls[1]
     assert "ControlPersist=5m" in calls[1]
@@ -54,9 +62,9 @@ def test_remote_file_collector_uses_sshpass_env_for_collect(tmp_path):
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
         captured.append((cmd, env))
-        if cmd[:3] == ["sshpass", "-e", "ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:3] == ["sshpass", "-e", "ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:3] == ["sshpass", "-e", "ssh"] and cmd[-3:-1] == ["sh", "-lc"]:
+        if cmd[:3] == ["sshpass", "-e", "ssh"] and input is not None:
             assert env is not None
             return _Completed(stdout=json.dumps({"events": [], "warnings": []}))
         return _Completed()
@@ -77,9 +85,9 @@ def test_remote_file_collector_uses_sshpass_env_for_collect(tmp_path):
         end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
     )
 
-    probe_call = next((item for item in captured if item[0][-1].startswith("command -v python3")), None)
+    probe_call = next((item for item in captured if "command -v python3" in _remote_command(item[0])), None)
     collect_call = next(
-        (item for item in captured if item[0][-3:-1] == ["sh", "-lc"] and not item[0][-1].startswith("command -v ")),
+        (item for item in captured if item[1] is not None and "command -v python3" not in _remote_command(item[0])),
         None,
     )
 
@@ -121,9 +129,9 @@ def test_remote_file_collector_requires_password_for_sshpass(tmp_path, monkeypat
 
 def test_remote_file_collector_filters_bastion_noise_from_python_probe(tmp_path):
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="match asset failed: 未发现匹配的资产 %s\npython3\n")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             return _Completed(stdout=json.dumps({"matches": 1}))
         return _Completed()
@@ -143,11 +151,76 @@ def test_remote_file_collector_filters_bastion_noise_from_python_probe(tmp_path)
     assert "remote files detected" in msg
 
 
+def test_remote_file_collector_falls_back_to_login_shell_python_discovery(tmp_path):
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        calls.append(cmd)
+        if cmd[:1] == ["ssh"] and _remote_command(cmd) == "'sh' '-lc' 'command -v python3 >/dev/null 2>&1 && command -v python3 || (command -v python >/dev/null 2>&1 && command -v python || true)'":
+            return _Completed(stdout="")
+        if cmd[:1] == ["ssh"] and _remote_command(cmd) == "'bash' '-lc' 'command -v python3 >/dev/null 2>&1 && command -v python3 || (command -v python >/dev/null 2>&1 && command -v python || true)'":
+            return _Completed(stdout="/opt/homebrew/bin/python3\n")
+        if cmd[:1] == ["ssh"] and input is not None:
+            assert input is not None
+            return _Completed(stdout=json.dumps({"matches": 1}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    ok, msg = collector.probe()
+
+    assert ok
+    assert "remote files detected" in msg
+    assert calls[0][-1].startswith("'sh' '-lc'")
+    assert calls[1][-1].startswith("'bash' '-lc'")
+
+
+def test_remote_file_collector_falls_back_to_common_python_paths(tmp_path):
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        calls.append(cmd)
+        if cmd[:1] == ["ssh"] and _remote_command(cmd) == "'sh' '-lc' 'command -v python3 >/dev/null 2>&1 && command -v python3 || (command -v python >/dev/null 2>&1 && command -v python || true)'":
+            return _Completed(stdout="")
+        if cmd[:1] == ["ssh"] and _remote_command(cmd) == "'bash' '-lc' 'command -v python3 >/dev/null 2>&1 && command -v python3 || (command -v python >/dev/null 2>&1 && command -v python || true)'":
+            return _Completed(returncode=127, stderr="bash: not found")
+        if cmd[:1] == ["ssh"] and _remote_command(cmd) == "'zsh' '-lc' 'command -v python3 >/dev/null 2>&1 && command -v python3 || (command -v python >/dev/null 2>&1 && command -v python || true)'":
+            return _Completed(returncode=127, stderr="zsh: not found")
+        if cmd[:1] == ["ssh"] and "for candidate in /usr/bin/python3" in _remote_command(cmd):
+            return _Completed(stdout="/usr/bin/python3\n")
+        if cmd[:1] == ["ssh"] and input is not None:
+            assert input is not None
+            return _Completed(stdout=json.dumps({"matches": 1}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    ok, msg = collector.probe()
+
+    assert ok
+    assert "remote files detected" in msg
+    assert any("for candidate in /usr/bin/python3" in _remote_command(cmd) for cmd in calls)
+
+
 def test_remote_file_collector_collects_events_with_source_hash(tmp_path):
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             return _Completed(
                 stdout=json.dumps(
@@ -191,9 +264,9 @@ def test_remote_file_collector_tolerates_stdout_noise_around_json(tmp_path, monk
     printed: list[str] = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             return _Completed(
                 stdout=(
@@ -228,9 +301,9 @@ def test_remote_file_collector_tolerates_inline_stdout_noise_around_json(tmp_pat
     printed: list[str] = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             return _Completed(
                 stdout="audit prefix >>> " + json.dumps({"events": [], "warnings": []}) + " <<< audit suffix"
@@ -261,9 +334,9 @@ def test_remote_file_collector_logs_debug_preview_for_non_json_output(tmp_path, 
     printed: list[str] = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             return _Completed(stdout="bad output", stderr="stderr note")
         return _Completed()
@@ -296,9 +369,9 @@ def test_remote_file_collector_writes_collect_payload_with_limits(tmp_path):
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         commands.append(cmd)
         inputs.append(input)
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             assert "import base64" in input
             return _Completed(stdout=json.dumps({"matches": 1}))
@@ -330,9 +403,9 @@ def test_remote_file_collector_collect_writes_requested_time_window(tmp_path):
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         commands.append(cmd)
         inputs.append(input)
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             return _Completed(stdout=json.dumps({"events": [], "warnings": []}))
         return _Completed()
 
@@ -358,9 +431,9 @@ def test_remote_file_collector_logs_remote_stderr_progress(tmp_path, monkeypatch
     printed: list[str] = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             return _Completed(
                 stdout=json.dumps({"events": [], "warnings": []}),
                 stderr="info: processing file 1 size=123 path=/tmp/a.jsonl",
@@ -391,11 +464,11 @@ def test_remote_file_collector_retries_without_connection_sharing_after_timeout(
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         calls.append(cmd)
         has_sharing = "ControlMaster=auto" in cmd
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v ") and has_sharing:
+        if cmd[:1] == ["ssh"] and input is not None and has_sharing:
             raise subprocess.TimeoutExpired(cmd, timeout)
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             return _Completed(stdout=json.dumps({"events": [], "warnings": []}))
         return _Completed()
 
@@ -414,7 +487,7 @@ def test_remote_file_collector_retries_without_connection_sharing_after_timeout(
     )
 
     assert out.warnings == ["server_a/codex: no usage events in selected time range"]
-    execution_calls = [cmd for cmd in calls if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v ")]
+    execution_calls = [cmd for cmd in calls if cmd[:1] == ["ssh"] and " -c " in _remote_command(cmd)]
     assert len(execution_calls) >= 2
     assert "ControlMaster=auto" in execution_calls[0]
     assert any("ControlMaster=auto" not in cmd for cmd in execution_calls[1:])
@@ -425,9 +498,9 @@ def test_remote_file_collector_combines_multiple_jobs_into_single_remote_call(tm
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         commands.append(cmd)
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v "):
+        if cmd[:1] == ["ssh"] and input is not None:
             return _Completed(
                 stdout=json.dumps(
                     {
@@ -473,7 +546,7 @@ def test_remote_file_collector_combines_multiple_jobs_into_single_remote_call(tm
     )
 
     assert [event.tool for event in out.events] == ["codex", "claude_code"]
-    execution_calls = [cmd for cmd in commands if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and not cmd[-1].startswith("command -v ")]
+    execution_calls = [cmd for cmd in commands if cmd[:1] == ["ssh"] and "command -v python3" not in _remote_command(cmd)]
     assert len(execution_calls) == 1
 
 
@@ -482,16 +555,14 @@ def test_remote_file_collector_falls_back_to_uploaded_script_when_stdin_is_consu
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         calls.append((cmd, input))
-        if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and cmd[-1].startswith("cat > "):
+        if cmd[:1] == ["ssh"] and "cat > " in _remote_command(cmd):
             assert input is not None and input.startswith("PAYLOAD_B64 = ")
             return _Completed()
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and cmd[-1].startswith("cat ") and cmd[-1].endswith("_output.json'"):
-            return _Completed(stdout=json.dumps({"events": [], "warnings": []}))
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"] and cmd[-1].startswith("rm -f "):
+        if cmd[:1] == ["ssh"] and "rm -f " in _remote_command(cmd):
             return _Completed()
-        if cmd[:1] == ["ssh"] and cmd[-3:-1] == ["sh", "-lc"]:
+        if cmd[:1] == ["ssh"]:
             if input:
                 return _Completed(
                     stdout=(
@@ -518,8 +589,92 @@ def test_remote_file_collector_falls_back_to_uploaded_script_when_stdin_is_consu
     )
 
     assert out.warnings == ["server_a/codex: no usage events in selected time range"]
-    assert any(cmd[-1].startswith("cat > ") for cmd, _input in calls if cmd[:1] == ["ssh"])
-    assert any(cmd[-1].startswith("cat ") and cmd[-1].endswith("_output.json'") for cmd, _input in calls if cmd[:1] == ["ssh"])
+    assert any("cat > " in _remote_command(cmd) for cmd, _input in calls if cmd[:1] == ["ssh"])
+
+
+def test_remote_file_collector_falls_back_to_uploaded_script_when_stdin_traceback_is_on_stderr(tmp_path):
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        calls.append((cmd, input))
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and "cat > " in _remote_command(cmd):
+            assert input is not None and input.startswith("PAYLOAD_B64 = ")
+            return _Completed()
+        if cmd[:1] == ["ssh"] and "rm -f " in _remote_command(cmd):
+            return _Completed()
+        if cmd[:1] == ["ssh"]:
+            if input:
+                return _Completed(
+                    stderr=(
+                        "Traceback (most recent call last):\n"
+                        '  File "<stdin>", line 1, in <module>\n'
+                        "NameError: name 'eyJ...' is not defined\n"
+                    )
+                )
+            return _Completed(stdout=json.dumps({"events": [], "warnings": []}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.warnings == ["server_a/codex: no usage events in selected time range"]
+    assert any("cat > " in _remote_command(cmd) for cmd, _input in calls if cmd[:1] == ["ssh"])
+
+
+def test_remote_file_collector_falls_back_to_uploaded_script_when_stdin_traceback_returns_nonzero(tmp_path):
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        calls.append((cmd, input))
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and "cat > " in _remote_command(cmd):
+            assert input is not None and input.startswith("PAYLOAD_B64 = ")
+            return _Completed()
+        if cmd[:1] == ["ssh"] and "rm -f " in _remote_command(cmd):
+            return _Completed()
+        if cmd[:1] == ["ssh"]:
+            if input:
+                return _Completed(
+                    returncode=1,
+                    stderr=(
+                        "Traceback (most recent call last):\n"
+                        '  File "<stdin>", line 1, in <module>\n'
+                        "NameError: name 'eyJ...' is not defined\n"
+                    ),
+                )
+            return _Completed(stdout=json.dumps({"events": [], "warnings": []}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.warnings == ["server_a/codex: no usage events in selected time range"]
+    assert any("cat > " in _remote_command(cmd) for cmd, _input in calls if cmd[:1] == ["ssh"])
 
 
 def test_remote_file_collector_logs_stdout_receive_progress_with_popen(monkeypatch):
@@ -558,3 +713,46 @@ def test_remote_file_collector_logs_stdout_receive_progress_with_popen(monkeypat
     assert any("remote stderr: info: starting" in line for line in printed)
     assert any("remote stdout received" in line for line in printed)
     assert any("remote stdout complete" in line for line in printed)
+
+
+def test_remote_file_collector_falls_back_to_uploaded_script_for_stdin_traceback_with_popen(monkeypatch):
+    collector = RemoteFileCollector(
+        "remote",
+        target=SshTarget(host="host", user="alice", port=22),
+        source_name="server_a",
+        source_host_hash="hash",
+        jobs=[RemoteCollectJob(tool="codex", patterns=["~/.codex/**/*.jsonl"])],
+        runner=lambda *args, **kwargs: _Completed(stdout="python3"),
+        popen_factory=subprocess.Popen,
+    )
+    collector._ssh_command_and_env = lambda _args: (  # type: ignore[method-assign]
+        [
+            "python3",
+            "-c",
+            (
+                "import sys;"
+                "sys.stderr.write('Traceback (most recent call last):\\n');"
+                "sys.stderr.write('  File \"<stdin>\", line 1, in <module>\\n');"
+                "sys.stderr.write(\"NameError: name 'eyJ...' is not defined\\n\");"
+                "sys.stderr.flush();"
+                "raise SystemExit(1)"
+            ),
+        ],
+        None,
+    )
+
+    called = {"fallback": False}
+
+    def _fallback(python_cmd, script):  # noqa: ANN001, ANN201
+        called["fallback"] = True
+        return {"events": [], "warnings": []}, None
+
+    collector._run_python_script_via_uploaded_file = _fallback  # type: ignore[method-assign]
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert called["fallback"] is True
+    assert out.warnings == ["server_a/remote: no usage events in selected time range"]
