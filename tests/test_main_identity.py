@@ -123,6 +123,28 @@ def test_build_aggregates_passes_runtime_passwords_to_remote_collectors(monkeypa
     assert captured["runtime_passwords"] == {config.alias: "run-secret"}
 
 
+def test_resolve_remote_selection_ui_none_ignores_persisted_runtime_state(monkeypatch, tmp_path):
+    config = main.parse_remote_configs_from_env(
+        {
+            "REMOTE_HOSTS": "server_a",
+            "REMOTE_SERVER_A_SSH_HOST": "host-a",
+            "REMOTE_SERVER_A_SSH_USER": "alice",
+        }
+    )[0]
+    runtime_state_path = tmp_path / "runtime_state.json"
+    runtime_state_path.write_text('{"selected_remote_aliases":["SERVER_A"]}\n', encoding="utf-8")
+    monkeypatch.setattr(main, "_runtime_state_path", lambda: runtime_state_path)
+
+    selected_aliases, temporary_remotes, runtime_passwords = main._resolve_remote_selection(
+        Namespace(ui="none"),
+        [config],
+    )
+
+    assert selected_aliases == []
+    assert temporary_remotes == []
+    assert runtime_passwords == {}
+
+
 def test_build_aggregates_prefers_cli_lookback_over_env(monkeypatch):
     captured = {}
 

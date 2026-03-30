@@ -19,6 +19,7 @@ def test_top_level_help_shows_examples_and_commands(capsys):
     assert "collect" in help_text
     assert "sync" in help_text
     assert "whoami" in help_text
+    assert "config" in help_text
     assert "bundle" not in help_text
 
 
@@ -34,6 +35,7 @@ def test_collect_help_describes_terminal_grouping_and_csv_behavior(capsys):
     assert "original aggregated rows" in help_text.lower()
     assert "--ui {auto,tui,cli,none}" in help_text
     assert "--lookback-days LOOKBACK_DAYS" in help_text
+    assert "none disables remotes" in help_text.lower()
 
 
 def test_sync_help_describes_terminal_grouping_and_feishu_behavior(capsys):
@@ -48,6 +50,7 @@ def test_sync_help_describes_terminal_grouping_and_feishu_behavior(capsys):
     assert "feishu" in help_text.lower()
     assert "original aggregated rows" in help_text.lower()
     assert "--lookback-days LOOKBACK_DAYS" in help_text
+    assert "none disables remotes" in help_text.lower()
 
 
 def test_init_help_describes_bootstrap_behavior(capsys):
@@ -108,3 +111,15 @@ def test_import_config_help_describes_examples_and_force_flag(capsys):
     assert "one-time migration helper" in help_text.lower()
     assert "llm-usage import-config --from /path/to/legacy/repo" in help_text
     assert "--force" in help_text
+
+
+def test_config_help_describes_menu_based_runtime_env_editing(capsys):
+    parser = main.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["config", "--help"])
+
+    help_text = capsys.readouterr().out
+    assert "interactive menu editor" in help_text.lower()
+    assert "active runtime .env" in help_text.lower()
+    assert "preferred" in help_text.lower()

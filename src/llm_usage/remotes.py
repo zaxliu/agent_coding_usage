@@ -14,7 +14,7 @@ from llm_usage.collectors.remote_file import (
     SshTarget,
     _ssh_command_and_env,
 )
-from llm_usage.env import upsert_env_var
+from llm_usage.env import EnvDocument, upsert_env_var
 from llm_usage.identity import hash_source_host
 
 DEFAULT_REMOTE_CLAUDE_LOG_PATHS = [
@@ -50,11 +50,25 @@ class RemoteHostConfig:
     use_sshpass: bool = False
 
 
+@dataclass
+class RemoteDraft:
+    alias: str
+    ssh_host: str
+    ssh_user: str
+    ssh_port: int
+    source_label: str
+    claude_log_paths: list[str]
+    codex_log_paths: list[str]
+    copilot_cli_log_paths: list[str]
+    copilot_vscode_session_paths: list[str]
+    use_sshpass: bool = False
+
+
 RemoteValidator = Callable[[RemoteHostConfig, Optional[str]], tuple[bool, str]]
 
 
 def parse_remote_configs_from_env(env: Optional[dict[str, str]] = None) -> list[RemoteHostConfig]:
-    data = env or os.environ
+    data = os.environ if env is None else env
     aliases = _split_aliases(data.get("REMOTE_HOSTS", ""))
     out: list[RemoteHostConfig] = []
     for alias in aliases:
@@ -96,6 +110,62 @@ def parse_remote_configs_from_env(env: Optional[dict[str, str]] = None) -> list[
             )
         )
     return out
+
+
+def drafts_from_env_document(document: EnvDocument) -> list[RemoteDraft]:
+    env: dict[str, str] = {}
+    for line in document.lines:
+        if line.kind != "entry" or line.key is None or line.value is None:
+            continue
+        env[line.key] = line.value
+    configs = parse_remote_configs_from_env(env)
+    return [
+        RemoteDraft(
+            alias=config.alias,
+            ssh_host=config.ssh_host,
+            ssh_user=config.ssh_user,
+            ssh_port=config.ssh_port,
+            source_label=config.source_label,
+            claude_log_paths=list(config.claude_log_paths),
+            codex_log_paths=list(config.codex_log_paths),
+            copilot_cli_log_paths=list(config.copilot_cli_log_paths),
+            copilot_vscode_session_paths=list(config.copilot_vscode_session_paths),
+            use_sshpass=config.use_sshpass,
+        )
+        for config in configs
+    ]
+
+
+def apply_remote_drafts_to_document(document: EnvDocument, drafts: list[RemoteDraft]) -> None:
+    remote_keys = []
+    for line in document.lines:
+        if line.kind == "entry" and line.key and line.key.startswith("REMOTE_"):
+            remote_keys.append(line.key)
+    for key in remote_keys:
+        document.delete(key)
+
+    if not drafts:
+        return
+
+    existing_aliases: list[str] = []
+    normalized_drafts: list[tuple[str, RemoteDraft]] = []
+    for draft in drafts:
+        alias = unique_alias(draft.alias, existing_aliases)
+        existing_aliases.append(alias)
+        normalized_drafts.append((alias, draft))
+
+    document.set("REMOTE_HOSTS", ",".join(alias for alias, _ in normalized_drafts))
+    for alias, draft in normalized_drafts:
+        prefix = f"REMOTE_{alias}_"
+        document.set(prefix + "SSH_HOST", draft.ssh_host)
+        document.set(prefix + "SSH_USER", draft.ssh_user)
+        document.set(prefix + "SSH_PORT", str(draft.ssh_port))
+        document.set(prefix + "LABEL", draft.source_label)
+        document.set(prefix + "CLAUDE_LOG_PATHS", ",".join(draft.claude_log_paths))
+        document.set(prefix + "CODEX_LOG_PATHS", ",".join(draft.codex_log_paths))
+        document.set(prefix + "COPILOT_CLI_LOG_PATHS", ",".join(draft.copilot_cli_log_paths))
+        document.set(prefix + "COPILOT_VSCODE_SESSION_PATHS", ",".join(draft.copilot_vscode_session_paths))
+        document.set(prefix + "USE_SSHPASS", "1" if draft.use_sshpass else "0")
 
 
 def build_remote_collectors(
@@ -152,8 +222,8 @@ def build_temporary_remote(
         ssh_user=ssh_user,
         ssh_port=max(1, ssh_port),
         source_label=source_label,
-        claude_log_paths=claude_log_paths or list(DEFAULT_REMOTE_CLAUDE_LOG_PATHS),
-        codex_log_paths=codex_log_paths or list(DEFAULT_REMOTE_CODEX_LOG_PATHS),
+        claude_log_paths=list(DEFAULT_REMOTE_CLAUDE_LOG_PATHS) if claude_log_paths is None else list(claude_log_paths),
+        codex_log_paths=list(DEFAULT_REMOTE_CODEX_LOG_PATHS) if codex_log_paths is None else list(codex_log_paths),
         copilot_cli_log_paths=list(DEFAULT_REMOTE_COPILOT_CLI_LOG_PATHS),
         copilot_vscode_session_paths=list(DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS),
         is_ephemeral=True,
@@ -210,7 +280,7 @@ def probe_remote_ssh(
             run_kwargs["env"] = env
         completed = subprocess.run(command, **run_kwargs)
     except FileNotFoundError:
-        if config.use_sshpass:
+        if command and command[0] == "sshpass":
             return False, "sshpass 未找到"
         return False, "SSH 命令未找到"
     except subprocess.TimeoutExpired:

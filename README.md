@@ -22,6 +22,7 @@
 - `llm-usage sync`：在 `collect` 基础上，将聚合结果同步到飞书多维表格
 - `llm-usage doctor`：检查配置和各采集器可用性
 - `llm-usage init`：生成 `.env`、`.env.example` 和 `reports/`
+- `llm-usage config`：打开交互式菜单编辑器，编辑当前运行时 `.env`
 
 ## 快速开始
 
@@ -31,7 +32,8 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 
 llm-usage init
-# 编辑 .env，至少补全 HASH_SALT
+# 用菜单编辑器配置当前运行时 .env，至少补全 HASH_SALT
+llm-usage config
 # ORG_USERNAME 缺失时，命令行运行会提示输入并自动写回 .env
 
 llm-usage doctor
@@ -83,7 +85,7 @@ LOOKBACK_DAYS=30
 
 如果缺少 `ORG_USERNAME`，交互终端下运行时会提示输入并写回 `.env`。
 
-远端不建议手工编辑 `REMOTE_*` 配置。推荐直接运行 `llm-usage collect --ui auto` 或 `llm-usage sync --ui auto`，按提示输入 SSH 主机、用户、端口；连通性检查通过后，确认保存即可自动写入 `.env`。
+远端不建议手工编辑 `REMOTE_*` 配置。推荐直接运行 `llm-usage config`，在菜单里编辑当前运行时 `.env`，包括远端 SSH 主机、用户、端口和路径列表。保存前的修改都停留在草稿里，不会直接写盘。
 
 如果你是从旧版仓库迁移，旧配置通常还在仓库根目录的 `.env` 和 `reports/runtime_state.json`。这类配置现在需要一次性迁移到新的运行时路径，推荐在旧仓库根目录执行：
 
@@ -110,6 +112,7 @@ llm-usage --help
 
 - `llm-usage doctor`
 - `llm-usage whoami`
+- `llm-usage config`
 - `llm-usage collect --ui auto`
 - `llm-usage sync --ui cli`
 - `llm-usage import-config --from /path/to/legacy/repo`
@@ -140,6 +143,20 @@ llm-usage doctor --help
 常用参数：
 
 - `--lookback-days N`：覆盖 `.env` 中的 `LOOKBACK_DAYS`
+
+### `llm-usage config`
+
+推荐的配置编辑入口：
+
+- 打开当前运行时 `.env` 的交互式菜单编辑器
+- 支持分组编辑基础配置、飞书配置、Cursor 配置、远端配置和原始环境变量
+- 修改先保存在草稿里，确认 `Save` 后才写回文件
+
+查看帮助：
+
+```bash
+llm-usage config --help
+```
 
 ### `llm-usage whoami`
 
@@ -376,6 +393,7 @@ username@username@host_server_ip@host_jumpserver_ip
 运行时行为：
 
 - `--ui auto` 优先使用轻量 TUI，失败时回落到 CLI
+- `--ui none` 会禁用所有远端，不会沿用 `runtime_state.json` 里上次选中的静态远端
 - 上次选择的静态远端会保存到当前运行时数据目录下的 `runtime_state.json`
 - 可以在运行时临时添加远端
 - 推荐通过运行时交互添加远端，临时远端只有确认后才会追加写入 `.env`

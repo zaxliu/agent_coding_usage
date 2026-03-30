@@ -1,11 +1,15 @@
 import subprocess
 
+from llm_usage.env import EnvDocument, EnvLine
 from llm_usage.remotes import (
     append_remote_to_env,
+    apply_remote_drafts_to_document,
     build_remote_collectors,
     build_temporary_remote,
     default_source_label,
+    drafts_from_env_document,
     normalize_alias,
+    RemoteDraft,
     parse_remote_configs_from_env,
     probe_remote_ssh,
     unique_alias,
@@ -52,6 +56,133 @@ def test_parse_remote_configs_from_env_reads_use_sshpass_flag():
     assert configs[0].use_sshpass is True
 
 
+def test_parse_remote_configs_from_env_honors_explicit_empty_env_when_process_env_has_remotes(monkeypatch):
+    monkeypatch.setenv("REMOTE_HOSTS", "server_a")
+    monkeypatch.setenv("REMOTE_SERVER_A_SSH_HOST", "host-a")
+    monkeypatch.setenv("REMOTE_SERVER_A_SSH_USER", "alice")
+
+    env = {}
+
+    configs = parse_remote_configs_from_env(env)
+
+    assert configs == []
+
+
+def test_drafts_from_env_document_reads_structured_remote_fields():
+    document = EnvDocument(
+        lines=[
+            EnvLine(kind="entry", key="REMOTE_HOSTS", value="SERVER_A"),
+            EnvLine(kind="entry", key="REMOTE_SERVER_A_SSH_HOST", value="host-a"),
+            EnvLine(kind="entry", key="REMOTE_SERVER_A_SSH_USER", value="alice"),
+            EnvLine(kind="entry", key="REMOTE_SERVER_A_SSH_PORT", value="2200"),
+            EnvLine(kind="entry", key="REMOTE_SERVER_A_LABEL", value="prod-a"),
+            EnvLine(kind="entry", key="REMOTE_SERVER_A_CLAUDE_LOG_PATHS", value="/a,/b"),
+            EnvLine(kind="entry", key="REMOTE_SERVER_A_USE_SSHPASS", value="1"),
+        ]
+    )
+
+    drafts = drafts_from_env_document(document)
+
+    assert len(drafts) == 1
+    assert drafts[0] == RemoteDraft(
+        alias="SERVER_A",
+        ssh_host="host-a",
+        ssh_user="alice",
+        ssh_port=2200,
+        source_label="prod-a",
+        claude_log_paths=["/a", "/b"],
+        codex_log_paths=list(drafts[0].codex_log_paths),
+        copilot_cli_log_paths=list(drafts[0].copilot_cli_log_paths),
+        copilot_vscode_session_paths=list(drafts[0].copilot_vscode_session_paths),
+        use_sshpass=True,
+    )
+
+
+def test_apply_remote_drafts_to_document_normalizes_and_dedupes_aliases():
+    document = EnvDocument(
+        lines=[
+            EnvLine(kind="entry", key="REMOTE_HOSTS", value="OLD"),
+            EnvLine(kind="entry", key="REMOTE_OLD_SSH_HOST", value="old-host"),
+            EnvLine(kind="entry", key="REMOTE_OLD_SSH_USER", value="old-user"),
+        ]
+    )
+    drafts = [
+        RemoteDraft(
+            alias="prod-a",
+            ssh_host="host-a",
+            ssh_user="alice",
+            ssh_port=22,
+            source_label="alice@host-a",
+            claude_log_paths=[],
+            codex_log_paths=[],
+            copilot_cli_log_paths=[],
+            copilot_vscode_session_paths=[],
+            use_sshpass=False,
+        ),
+        RemoteDraft(
+            alias="PROD_A",
+            ssh_host="host-b",
+            ssh_user="bob",
+            ssh_port=2200,
+            source_label="bob@host-b",
+            claude_log_paths=[],
+            codex_log_paths=[],
+            copilot_cli_log_paths=[],
+            copilot_vscode_session_paths=[],
+            use_sshpass=True,
+        ),
+    ]
+
+    apply_remote_drafts_to_document(document, drafts)
+
+    assert document.get("REMOTE_HOSTS") == "PROD_A,PROD_A_2"
+    assert document.get("REMOTE_PROD_A_SSH_HOST") == "host-a"
+    assert document.get("REMOTE_PROD_A_2_SSH_HOST") == "host-b"
+    assert document.get("REMOTE_PROD_A_2_USE_SSHPASS") == "1"
+    assert document.get("REMOTE_OLD_SSH_HOST") is None
+
+
+def test_apply_remote_drafts_to_document_rewrites_remote_section():
+    document = EnvDocument(
+        lines=[
+            EnvLine(kind="entry", key="ORG_USERNAME", value="alice"),
+            EnvLine(kind="entry", key="REMOTE_HOSTS", value="OLD"),
+            EnvLine(kind="entry", key="REMOTE_OLD_SSH_HOST", value="old-host"),
+            EnvLine(kind="entry", key="REMOTE_OLD_SSH_USER", value="old-user"),
+        ]
+    )
+    drafts = [
+        RemoteDraft(
+            alias="SERVER_A",
+            ssh_host="host-a",
+            ssh_user="alice",
+            ssh_port=22,
+            source_label="alice@host-a",
+            claude_log_paths=["/a"],
+            codex_log_paths=["/b"],
+            copilot_cli_log_paths=["/c"],
+            copilot_vscode_session_paths=["/d"],
+            use_sshpass=False,
+        )
+    ]
+
+    apply_remote_drafts_to_document(document, drafts)
+
+    assert document.get("ORG_USERNAME") == "alice"
+    assert document.get("REMOTE_HOSTS") == "SERVER_A"
+    assert document.get("REMOTE_SERVER_A_SSH_HOST") == "host-a"
+    assert document.get("REMOTE_SERVER_A_SSH_USER") == "alice"
+    assert document.get("REMOTE_SERVER_A_SSH_PORT") == "22"
+    assert document.get("REMOTE_SERVER_A_LABEL") == "alice@host-a"
+    assert document.get("REMOTE_SERVER_A_CLAUDE_LOG_PATHS") == "/a"
+    assert document.get("REMOTE_SERVER_A_CODEX_LOG_PATHS") == "/b"
+    assert document.get("REMOTE_SERVER_A_COPILOT_CLI_LOG_PATHS") == "/c"
+    assert document.get("REMOTE_SERVER_A_COPILOT_VSCODE_SESSION_PATHS") == "/d"
+    assert document.get("REMOTE_SERVER_A_USE_SSHPASS") == "0"
+    assert document.get("REMOTE_OLD_SSH_HOST") is None
+    assert document.get("REMOTE_OLD_SSH_USER") is None
+
+
 def test_build_remote_collectors_sets_per_user_source_hash():
     config = build_temporary_remote("host-a", "alice")
     collectors_a = build_remote_collectors([config], username="alice", salt="salt")
@@ -72,6 +203,13 @@ def test_build_remote_collectors_uses_runtime_password_for_sshpass_remote():
     )
 
     assert collectors[0].ssh_password == "run-secret"
+
+
+def test_build_temporary_remote_preserves_explicit_empty_path_lists():
+    config = build_temporary_remote("host-a", "alice", claude_log_paths=[], codex_log_paths=[])
+
+    assert config.claude_log_paths == []
+    assert config.codex_log_paths == []
 
 
 def test_append_remote_to_env_writes_remote_fields(tmp_path):
@@ -201,3 +339,15 @@ def test_probe_remote_ssh_reports_missing_sshpass(monkeypatch):
 
     assert ok is False
     assert msg == "sshpass 未找到"
+
+
+def test_probe_remote_ssh_reports_missing_ssh_when_ssh_binary_is_unavailable(monkeypatch):
+    def _fake_run(cmd, check, capture_output, text, timeout, env=None):  # noqa: ANN001, ANN201
+        raise FileNotFoundError
+
+    monkeypatch.setattr("llm_usage.remotes.subprocess.run", _fake_run)
+
+    ok, msg = probe_remote_ssh(build_temporary_remote("host-a", "alice", 2200))
+
+    assert ok is False
+    assert msg == "SSH 命令未找到"

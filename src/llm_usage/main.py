@@ -26,7 +26,7 @@ from llm_usage.cursor_login import (
 )
 from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
-from llm_usage.interaction import confirm_save_temporary_remote, select_remotes
+from llm_usage.interaction import confirm_save_temporary_remote, run_config_editor, select_remotes
 from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
 from llm_usage.remotes import append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
@@ -264,6 +264,11 @@ def cmd_whoami(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_config(_: argparse.Namespace) -> int:
+    env_path = _ensure_env_file_exists()
+    return run_config_editor(env_path)
+
+
 def _capture_and_save_cursor_token(
     timeout_sec: int,
     browser: str,
@@ -417,7 +422,7 @@ def _resolve_remote_selection(
     state_aliases = load_selected_remote_aliases(_runtime_state_path())
     configured_aliases = [config.alias for config in configured_remotes]
     if getattr(args, "ui", "auto") == "none":
-        return state_aliases if state_aliases else [], [], {}
+        return [], [], {}
     if state_aliases:
         defaults = [alias for alias in state_aliases if alias in configured_aliases]
     else:
@@ -614,12 +619,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Collect local and selected remote LLM usage, print a terminal summary, "
-            "write reports/usage_report.csv, and optionally sync aggregated rows to Feishu."
+            "write reports/usage_report.csv, and optionally sync aggregated rows to Feishu.\n"
+            "\n"
+            "For configuration edits, use `llm-usage config` to open the interactive menu editor "
+            "for the active runtime .env."
         ),
         epilog=(
             "Examples:\n"
             "  llm-usage doctor\n"
             "  llm-usage whoami\n"
+            "  llm-usage config\n"
             "  llm-usage collect --ui auto\n"
             "  llm-usage sync --ui cli\n"
             "  llm-usage import-config --from /path/to/legacy/repo\n"
@@ -663,6 +672,17 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Show the current ORG_USERNAME, the derived user_hash, source_host_hash(local), "
             "and source_host_hash values for configured remotes."
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    sub.add_parser(
+        "config",
+        help="Open the interactive menu editor for the active runtime .env",
+        description=(
+            "Open the interactive menu editor for the active runtime .env.\n"
+            "\n"
+            "This is the preferred menu-based flow for editing configuration, including remote "
+            "hosts and other grouped settings, because changes stay in memory until you save."
         ),
         formatter_class=_HelpFormatter,
     )
@@ -766,7 +786,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "Remote selection UI mode: auto picks the best interactive UI, tui forces the terminal "
-            "selector, cli uses prompt-based selection, none skips remote selection"
+            "selector, cli uses prompt-based selection, none disables remotes"
         ),
     )
     sync_parser = sub.add_parser(
@@ -835,7 +855,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "Remote selection UI mode: auto picks the best interactive UI, tui forces the terminal "
-            "selector, cli uses prompt-based selection, none skips remote selection"
+            "selector, cli uses prompt-based selection, none disables remotes"
         ),
     )
     return parser
@@ -848,6 +868,7 @@ def main() -> int:
         "init": cmd_init,
         "doctor": cmd_doctor,
         "whoami": cmd_whoami,
+        "config": cmd_config,
         "import-config": cmd_import_config,
         "collect": cmd_collect,
         "sync": cmd_sync,
