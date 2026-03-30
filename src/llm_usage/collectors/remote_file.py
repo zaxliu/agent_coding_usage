@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import selectors
 import subprocess
 import tempfile
@@ -35,7 +36,50 @@ for spec in payload.get("jobs", []):
 print(json.dumps({"matches": len(sorted(set(matches)))}))
 """
 
-_COLLECT_SCRIPT = """
+_REMOTE_PARSE_TIME_HELPER = """
+def _normalize_iso_datetime_text(text):
+    text = text.strip()
+    text = text.replace(',', '.', 1)
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    match = re.search(r'([+-]\\d{2})$', text)
+    if match:
+        text = text + ':00'
+    match = re.search(r'([+-]\\d{2}):(\\d{2})$', text)
+    if match:
+        text = text[:match.start()] + match.group(1) + match.group(2)
+    return text
+
+def parse_iso_datetime(text):
+    normalized = _normalize_iso_datetime_text(text)
+    formats = (
+        '%Y-%m-%dT%H:%M:%S.%f%z',
+        '%Y-%m-%dT%H:%M:%S%z',
+        '%Y-%m-%dT%H:%M%z',
+        '%Y-%m-%d %H:%M:%S.%f%z',
+        '%Y-%m-%d %H:%M:%S%z',
+        '%Y-%m-%d %H:%M%z',
+        '%Y-%m-%dT%H:%M:%S.%f',
+        '%Y-%m-%dT%H:%M:%S',
+        '%Y-%m-%dT%H:%M',
+        '%Y-%m-%d %H:%M:%S.%f',
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%d',
+    )
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    return None
+"""
+
+_COLLECT_SCRIPT = (
+    """
 import base64, glob, json, os, re, sys
 from datetime import datetime, timezone
 
@@ -59,6 +103,8 @@ def coerce_int(value):
     except Exception:
         return 0
 
+__REMOTE_PARSE_TIME_HELPER__
+
 def parse_time(raw):
     if raw is None:
         return None
@@ -76,24 +122,18 @@ def parse_time(raw):
             if ts > 10000000000:
                 ts = ts / 1000.0
             return datetime.fromtimestamp(ts, tz=timezone.utc)
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        return parse_iso_datetime(text)
     return None
 
-def walk_json_nodes(obj):
+def walk_json_nodes(obj, parent_key=None):
     if isinstance(obj, dict):
-        yield obj
-        for value in obj.values():
-            for item in walk_json_nodes(value):
+        yield obj, parent_key
+        for key, value in obj.items():
+            for item in walk_json_nodes(value, key):
                 yield item
     elif isinstance(obj, list):
         for item in obj:
-            for node in walk_json_nodes(item):
+            for node in walk_json_nodes(item, parent_key):
                 yield node
 
 def extract_model(node):
@@ -585,7 +625,9 @@ for spec in jobs:
                                 )
                                 continue
                             local_seen = set()
-                            for candidate in walk_json_nodes(obj):
+                            for candidate, parent_key in walk_json_nodes(obj):
+                                if parent_key == "usage":
+                                    continue
                                 input_tokens, cache_tokens, output_tokens = extract_usage(candidate)
                                 if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
                                     continue
@@ -616,11 +658,11 @@ for spec in jobs:
                             warnings.append(active_tool + ": failed decoding " + path)
                             continue
                         if active_tool == "codex":
-                            for candidate in walk_json_nodes(obj):
+                            for candidate, _parent_key in walk_json_nodes(obj):
                                 turn_model = extract_codex_turn_model(candidate)
                                 if turn_model:
                                     codex_model_hint = turn_model
-                            for candidate in walk_json_nodes(obj):
+                            for candidate, _parent_key in walk_json_nodes(obj):
                                 usage = extract_codex_token_count_usage(candidate)
                                 if usage is None:
                                     continue
@@ -649,7 +691,9 @@ for spec in jobs:
                                 append_event(events, *item)
                         else:
                             local_seen = set()
-                            for candidate in walk_json_nodes(obj):
+                            for candidate, parent_key in walk_json_nodes(obj):
+                                if parent_key == "usage":
+                                    continue
                                 input_tokens, cache_tokens, output_tokens = extract_usage(candidate)
                                 if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
                                     continue
@@ -679,6 +723,7 @@ for spec in jobs:
             pass
 print(json.dumps({"events": events, "warnings": warnings}))
 """
+).replace("__REMOTE_PARSE_TIME_HELPER__", _REMOTE_PARSE_TIME_HELPER)
 
 
 @dataclass(frozen=True)
@@ -785,16 +830,9 @@ class RemoteFileCollector(BaseCollector):
         for item in raw_events:
             if not isinstance(item, dict):
                 continue
-            event_time_raw = item.get("event_time")
-            if not isinstance(event_time_raw, str):
+            event_time = _parse_datetime_value(item.get("event_time"))
+            if event_time is None:
                 continue
-            try:
-                event_time = datetime.fromisoformat(event_time_raw.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if event_time.tzinfo is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
-            event_time = event_time.astimezone(timezone.utc)
             if start <= event_time <= end:
                 events.append(
                     UsageEvent(
@@ -1158,6 +1196,8 @@ class RemoteFileCollector(BaseCollector):
                 command,
                 **run_kwargs,
             )
+        except FileNotFoundError as exc:
+            raise ValueError(_missing_ssh_binary_message(exc, self.use_sshpass))
         except subprocess.TimeoutExpired:
             if self._disable_connection_sharing("ssh timed out while using connection sharing"):
                 try:
@@ -1175,6 +1215,8 @@ class RemoteFileCollector(BaseCollector):
                         retry_command,
                         **retry_kwargs,
                     )
+                except FileNotFoundError as exc:
+                    raise ValueError(_missing_ssh_binary_message(exc, self.use_sshpass))
                 except subprocess.TimeoutExpired:
                     return None
             return None
@@ -1284,6 +1326,81 @@ def _coerce_int(value: object) -> int:
 def _optional_str(value: object) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value
+    return None
+
+
+def _missing_ssh_binary_message(exc: FileNotFoundError, use_sshpass: bool) -> str:
+    missing = (getattr(exc, "filename", None) or "").strip()
+    if not missing:
+        text = str(exc)
+        if "sshpass" in text:
+            missing = "sshpass"
+        elif "'ssh'" in text or text.strip() == "ssh":
+            missing = "ssh"
+    if missing == "sshpass":
+        return "sshpass 未找到"
+    if missing == "ssh":
+        return "SSH 命令未找到"
+    if use_sshpass:
+        return "SSH 或 sshpass 命令未找到"
+    return "SSH 命令未找到"
+
+
+def _normalize_iso_datetime_text(text: str) -> str:
+    stripped = text.strip()
+    stripped = stripped.replace(",", ".", 1)
+    if stripped.endswith("Z"):
+        stripped = stripped[:-1] + "+00:00"
+    match = re.search(r"([+-]\d{2})$", stripped)
+    if match:
+        stripped = stripped + ":00"
+    match = re.search(r"([+-]\d{2}):(\d{2})$", stripped)
+    if match:
+        stripped = stripped[: match.start()] + match.group(1) + match.group(2)
+    return stripped
+
+
+def _parse_datetime_value(raw: object) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        ts = float(raw)
+        if ts > 10000000000:
+            ts = ts / 1000.0
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        if text.isdigit():
+            ts = float(text)
+            if ts > 10000000000:
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        normalized = _normalize_iso_datetime_text(text)
+        formats = (
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M%z",
+            "%Y-%m-%d %H:%M:%S.%f%z",
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%d %H:%M%z",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        )
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(normalized, fmt)
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
     return None
 
 

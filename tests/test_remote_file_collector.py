@@ -1,7 +1,11 @@
+import base64
+import io
 import json
 import subprocess
 from datetime import datetime, timezone
+from contextlib import redirect_stdout
 
+from llm_usage.collectors import remote_file
 from llm_usage.collectors.remote_file import RemoteCollectJob, RemoteFileCollector, SshTarget
 
 
@@ -125,6 +129,54 @@ def test_remote_file_collector_requires_password_for_sshpass(tmp_path, monkeypat
     assert out.events == []
     assert out.warnings == ["server_a/codex: SSH 密码模式需要提供密码"]
     assert captured == []
+
+
+def test_remote_file_collector_reports_missing_sshpass_binary(tmp_path):
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
+        raise FileNotFoundError("sshpass")
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        source_name="server_a",
+        source_host_hash="hash",
+        patterns=["~/.codex/**/*.jsonl"],
+        runner=_runner,
+        use_sshpass=True,
+        ssh_password="secret",
+    )
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.events == []
+    assert out.warnings == ["server_a/codex: sshpass 未找到"]
+
+
+def test_remote_file_collector_reports_missing_ssh_binary_in_sshpass_mode(tmp_path):
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
+        raise FileNotFoundError("ssh")
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        source_name="server_a",
+        source_host_hash="hash",
+        patterns=["~/.codex/**/*.jsonl"],
+        runner=_runner,
+        use_sshpass=True,
+        ssh_password="secret",
+    )
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.events == []
+    assert out.warnings == ["server_a/codex: SSH 命令未找到"]
 
 
 def test_remote_file_collector_filters_bastion_noise_from_python_probe(tmp_path):
@@ -258,6 +310,114 @@ def test_remote_file_collector_collects_events_with_source_hash(tmp_path):
     assert len(out.events) == 1
     assert out.events[0].source_host_hash == "hash"
     assert out.events[0].input_tokens == 80
+
+
+def test_remote_collect_script_does_not_duplicate_nested_usage_as_unknown(tmp_path):
+    fake_file = tmp_path / "fake_usage.jsonl"
+    file_mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
+    fake_file.write_text(
+        json.dumps(
+            {
+                "created_at": "2026-03-08T01:02:03Z",
+                "model": "fake_model",
+                "usage": {
+                    "input_tokens": 80,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 20,
+                    "cache_creation_input_tokens": 0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_file.touch()
+    __import__("os").utime(fake_file, (file_mtime, file_mtime))
+    payload = base64.b64encode(
+        json.dumps(
+            {
+                "jobs": [{"tool": "claude_code", "patterns": [str(fake_file)]}],
+                "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
+                "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
+                "max_files": 100,
+                "max_total_bytes": 1024 * 1024,
+            }
+        ).encode("utf-8")
+    ).decode("ascii")
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
+
+    result = json.loads(stdout.getvalue())
+    assert result["warnings"] == []
+    assert [(event["model"], event["input_tokens"], event["cache_tokens"], event["output_tokens"]) for event in result["events"]] == [
+        ("fake_model", 80, 20, 5)
+    ]
+
+
+def test_remote_file_collector_parses_z_suffix_event_time_without_fromisoformat(tmp_path):
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            return _Completed(
+                stdout=json.dumps(
+                    {
+                        "events": [
+                            {
+                                "tool": "claude_code",
+                                "model": "claude-3-7-sonnet-20250219",
+                                "event_time": "2026-03-08T01:02:03Z",
+                                "input_tokens": 80,
+                                "cache_tokens": 20,
+                                "output_tokens": 5,
+                            }
+                        ],
+                        "warnings": [],
+                    }
+                )
+            )
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "claude_code",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.claude/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(out.events) == 1
+    assert out.events[0].event_time == datetime(2026, 3, 8, 1, 2, 3, tzinfo=timezone.utc)
+
+
+def test_remote_collect_script_avoids_fromisoformat_for_python36_compatibility():
+    assert "fromisoformat" not in remote_file._COLLECT_SCRIPT
+
+
+def test_remote_file_collector_parses_minute_precision_event_times():
+    assert remote_file._parse_datetime_value("2026-03-08T01:02Z") == datetime(
+        2026, 3, 8, 1, 2, tzinfo=timezone.utc
+    )
+    assert remote_file._parse_datetime_value("2026-03-08 01:02+00:00") == datetime(
+        2026, 3, 8, 1, 2, tzinfo=timezone.utc
+    )
+
+
+def test_remote_file_collector_preserves_broader_iso8601_variants():
+    assert remote_file._parse_datetime_value("2026-03-08T01:02:03+00") == datetime(
+        2026, 3, 8, 1, 2, 3, tzinfo=timezone.utc
+    )
+    assert remote_file._parse_datetime_value("2026-03-08T01:02:03,5+00:00") == datetime(
+        2026, 3, 8, 1, 2, 3, 500000, tzinfo=timezone.utc
+    )
 
 
 def test_remote_file_collector_tolerates_stdout_noise_around_json(tmp_path, monkeypatch):
