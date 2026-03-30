@@ -17,7 +17,7 @@
 ## 安装
 
 ```bash
-npm install -g llm-usage-node
+npm install -g @llm-usage-horizon/llm-usage-node
 ```
 
 ## 命令
@@ -46,3 +46,20 @@ CLI 会启动一个受工具管理的 Chromium profile，等待 `WorkosCursorSes
 项目主页：
 
 - https://github.com/zaxliu/agent_coding_usage
+
+## 发布
+
+发布前先更新 [package.json](/Users/lewis/Documents/code/agent_coding_usage/node/package.json) 中的 `version`，再执行本地校验：
+
+```bash
+npm install
+npm test
+npm pack --dry-run
+```
+
+仓库已提供 GitHub Actions workflow：
+
+- 推送 tag `node-vX.Y.Z` 自动发布到 npm
+- 或手动运行 `Publish npm`
+
+tag 发布会校验 tag 版本与 [package.json](/Users/lewis/Documents/code/agent_coding_usage/node/package.json) 中的 `version` 是否一致。workflow 采用 npm trusted publishing，仓库侧 environment 名称为 `npm`。

@@ -456,4 +456,47 @@ python -m twine upload dist/pypi/*
 python -m twine upload --repository testpypi dist/pypi/*
 ```
 
+GitHub Actions 自动发布也已支持：
+
+- 推送 tag `py-vX.Y.Z` 会触发 `.github/workflows/publish-pypi.yml`
+- 也可以在 Actions 页面手动运行 `Publish PyPI`
+- tag 触发时，workflow 会校验 tag 版本和 [pyproject.toml](/Users/lewis/Documents/code/agent_coding_usage/pyproject.toml) 中的 `version` 完全一致
+
+启用前提：
+
+- 在 PyPI 项目 `llm-usage-horizon` 中配置 GitHub trusted publisher
+- publisher 的仓库填 `zaxliu/agent_coding_usage`
+- workflow 名称填 `Publish PyPI`
+- environment 名称填 `pypi`
+
+手动触发不会改版本号，只会发布当前仓库里已经写入 [pyproject.toml](/Users/lewis/Documents/code/agent_coding_usage/pyproject.toml) 的版本。
+
+## 发布到 npm
+
+先确认 [node/package.json](/Users/lewis/Documents/code/agent_coding_usage/node/package.json) 里的 `version` 已更新，且包名仍然是 `@llm-usage-horizon/llm-usage-node`。
+
+本地发布前校验：
+
+```bash
+cd node
+npm install
+npm test
+npm pack --dry-run
+```
+
+GitHub Actions 自动发布也已支持：
+
+- 推送 tag `node-vX.Y.Z` 会触发 `.github/workflows/publish-npm.yml`
+- 也可以在 Actions 页面手动运行 `Publish npm`
+- tag 触发时，workflow 会校验 tag 版本和 [node/package.json](/Users/lewis/Documents/code/agent_coding_usage/node/package.json) 中的 `version` 完全一致
+
+启用前提：
+
+- 在 npm 上为包 `@llm-usage-horizon/llm-usage-node` 启用 trusted publishing
+- 关联 GitHub 仓库 `zaxliu/agent_coding_usage`
+- workflow 名称填 `Publish npm`
+- environment 名称填 `npm`
+
+手动触发不会改版本号，只会发布当前仓库里已经写入 [node/package.json](/Users/lewis/Documents/code/agent_coding_usage/node/package.json) 的版本。
+
 采集器扩展说明见 [docs/ADAPTERS.md](/Users/lewis/Documents/code/agent_coding_usage/docs/ADAPTERS.md)。
