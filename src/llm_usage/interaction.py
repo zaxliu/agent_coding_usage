@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import getpass
+import inspect
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, TextIO
 
-from llm_usage.remotes import RemoteHostConfig, build_temporary_remote, probe_remote_ssh
+from llm_usage.remotes import RemoteHostConfig, RemoteValidator, build_temporary_remote, probe_remote_ssh
 
 try:
     from prompt_toolkit import prompt as pt_prompt
@@ -17,6 +19,7 @@ class RemoteSelectionResult:
     selected_aliases: list[str]
     temporary_remotes: list[RemoteHostConfig]
     mode_used: str
+    runtime_passwords: dict[str, str] = field(default_factory=dict)
 
 
 def can_use_tui() -> bool:
@@ -29,13 +32,22 @@ def select_remotes(
     ui_mode: str = "auto",
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
-    remote_validator: Callable[[RemoteHostConfig], tuple[bool, str]] | None = None,
+    remote_validator: RemoteValidator | None = None,
+    password_getter: Callable[[], str | None] | None = None,
+    password_setter: Callable[[str], None] | None = None,
+    interactive_password_reader: Callable[[str], str] | None = None,
 ) -> RemoteSelectionResult:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     remote_validator = remote_validator or probe_remote_ssh
+    runtime_passwords: dict[str, str] = {}
     if ui_mode == "none" or not _is_interactive(stdin, stdout):
-        return RemoteSelectionResult(selected_aliases=list(default_aliases), temporary_remotes=[], mode_used="none")
+        return RemoteSelectionResult(
+            selected_aliases=list(default_aliases),
+            temporary_remotes=[],
+            mode_used="none",
+            runtime_passwords=runtime_passwords,
+        )
 
     use_prompt_toolkit = ui_mode == "tui" or (ui_mode == "auto" and can_use_tui())
     if not configs:
@@ -45,6 +57,10 @@ def select_remotes(
             mode_used="tui" if use_prompt_toolkit else "cli",
             use_prompt_toolkit=use_prompt_toolkit,
             remote_validator=remote_validator,
+            password_getter=password_getter,
+            password_setter=password_setter,
+            interactive_password_reader=interactive_password_reader,
+            runtime_passwords=runtime_passwords,
         )
     return _select_with_list(
         configs,
@@ -54,6 +70,10 @@ def select_remotes(
         mode_used="tui" if use_prompt_toolkit else "cli",
         use_prompt_toolkit=use_prompt_toolkit,
         remote_validator=remote_validator,
+        password_getter=password_getter,
+        password_setter=password_setter,
+        interactive_password_reader=interactive_password_reader,
+        runtime_passwords=runtime_passwords,
     )
 
 
@@ -83,7 +103,11 @@ def _select_with_list(
     stdout: TextIO,
     mode_used: str,
     use_prompt_toolkit: bool,
-    remote_validator: Callable[[RemoteHostConfig], tuple[bool, str]],
+    remote_validator: RemoteValidator,
+    password_getter: Callable[[], str | None] | None,
+    password_setter: Callable[[str], None] | None,
+    interactive_password_reader: Callable[[str], str] | None,
+    runtime_passwords: dict[str, str],
 ) -> RemoteSelectionResult:
     alias_map = {config.alias: config for config in configs}
     temporary_remotes: list[RemoteHostConfig] = []
@@ -106,6 +130,7 @@ def _select_with_list(
                 selected_aliases=list(default_aliases),
                 temporary_remotes=[],
                 mode_used=mode_used,
+                runtime_passwords=dict(runtime_passwords),
             )
         raw = answer.strip()
         if not raw:
@@ -113,6 +138,7 @@ def _select_with_list(
                 selected_aliases=list(default_aliases),
                 temporary_remotes=[],
                 mode_used=mode_used,
+                runtime_passwords=dict(runtime_passwords),
             )
         lower = raw.lower()
         if lower == "all":
@@ -120,17 +146,28 @@ def _select_with_list(
                 selected_aliases=list(alias_map),
                 temporary_remotes=[],
                 mode_used=mode_used,
+                runtime_passwords=dict(runtime_passwords),
             )
         if lower == "none":
-            return RemoteSelectionResult(selected_aliases=[], temporary_remotes=[], mode_used=mode_used)
+            return RemoteSelectionResult(selected_aliases=[], temporary_remotes=[], mode_used=mode_used, runtime_passwords=dict(runtime_passwords))
         if raw == "+":
-            temp = _prompt_temporary_remote(stdin, stdout, use_prompt_toolkit, remote_validator)
+            temp = _prompt_temporary_remote(
+                stdin,
+                stdout,
+                use_prompt_toolkit,
+                remote_validator,
+                password_getter=password_getter,
+                password_setter=password_setter,
+                interactive_password_reader=interactive_password_reader,
+                runtime_passwords=runtime_passwords,
+            )
             if temp is not None:
                 temporary_remotes.append(temp)
                 return RemoteSelectionResult(
                     selected_aliases=list(default_aliases),
                     temporary_remotes=temporary_remotes,
                     mode_used=mode_used,
+                    runtime_passwords=dict(runtime_passwords),
                 )
             continue
         resolved: list[str] = []
@@ -152,6 +189,7 @@ def _select_with_list(
                 selected_aliases=resolved,
                 temporary_remotes=temporary_remotes,
                 mode_used=mode_used,
+                runtime_passwords=dict(runtime_passwords),
             )
         stdout.write("输入无效，请重试。\n")
 
@@ -161,7 +199,11 @@ def _select_without_configs(
     stdout: TextIO,
     mode_used: str,
     use_prompt_toolkit: bool,
-    remote_validator: Callable[[RemoteHostConfig], tuple[bool, str]],
+    remote_validator: RemoteValidator,
+    password_getter: Callable[[], str | None] | None,
+    password_setter: Callable[[str], None] | None,
+    interactive_password_reader: Callable[[str], str] | None,
+    runtime_passwords: dict[str, str],
 ) -> RemoteSelectionResult:
     stdout.write("当前 .env 中还没有配置远端。\n")
     answer = _read_line(
@@ -171,12 +213,22 @@ def _select_without_configs(
         use_prompt_toolkit=use_prompt_toolkit,
     )
     if answer.strip() != "+":
-        return RemoteSelectionResult(selected_aliases=[], temporary_remotes=[], mode_used=mode_used)
-    temp = _prompt_temporary_remote(stdin, stdout, use_prompt_toolkit, remote_validator)
+        return RemoteSelectionResult(selected_aliases=[], temporary_remotes=[], mode_used=mode_used, runtime_passwords=dict(runtime_passwords))
+    temp = _prompt_temporary_remote(
+        stdin,
+        stdout,
+        use_prompt_toolkit,
+        remote_validator,
+        password_getter=password_getter,
+        password_setter=password_setter,
+        interactive_password_reader=interactive_password_reader,
+        runtime_passwords=runtime_passwords,
+    )
     return RemoteSelectionResult(
         selected_aliases=[],
         temporary_remotes=[temp] if temp else [],
         mode_used=mode_used,
+        runtime_passwords=dict(runtime_passwords),
     )
 
 
@@ -184,7 +236,11 @@ def _prompt_temporary_remote(
     stdin: TextIO,
     stdout: TextIO,
     use_prompt_toolkit: bool,
-    remote_validator: Callable[[RemoteHostConfig], tuple[bool, str]],
+    remote_validator: RemoteValidator,
+    password_getter: Callable[[], str | None] | None,
+    password_setter: Callable[[str], None] | None,
+    interactive_password_reader: Callable[[str], str] | None,
+    runtime_passwords: dict[str, str],
 ) -> RemoteHostConfig | None:
     while True:
         stdout.write("新增临时远端\n")
@@ -206,9 +262,38 @@ def _prompt_temporary_remote(
                 break
             except ValueError:
                 stdout.write("端口格式不正确，请重新输入。\n")
-        config = build_temporary_remote(host, user, port)
+        use_sshpass = _prompt_use_sshpass(stdin, stdout, use_prompt_toolkit)
+        ssh_password = None
+        if use_sshpass:
+            ssh_password = password_getter() if password_getter is not None else None
+            if ssh_password is not None and not ssh_password.strip():
+                ssh_password = None
+            if ssh_password is None:
+                ssh_password = _read_password(
+                    "SSH 密码：",
+                    stdin=stdin,
+                    stdout=stdout,
+                    use_prompt_toolkit=use_prompt_toolkit,
+                    interactive_password_reader=interactive_password_reader,
+                )
+            if not ssh_password.strip():
+                stdout.write("密码不能为空。\n")
+                retry = _read_line(
+                    "输入 r 重新填写，其他任意输入取消：",
+                    stdin=stdin,
+                    stdout=stdout,
+                    use_prompt_toolkit=use_prompt_toolkit,
+                ).strip().lower()
+                if retry != "r":
+                    return None
+                continue
+            if password_setter is not None:
+                password_setter(ssh_password)
+        config = build_temporary_remote(host, user, port, use_sshpass=use_sshpass)
+        if ssh_password is not None:
+            runtime_passwords[config.alias] = ssh_password
         stdout.write("正在检查 SSH 连通性...\n")
-        ok, message = remote_validator(config)
+        ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
         if ok:
             stdout.write(f"SSH 检查通过：{message}\n")
             return config
@@ -221,6 +306,49 @@ def _prompt_temporary_remote(
         ).strip().lower()
         if retry != "r":
             return None
+
+
+def _prompt_use_sshpass(stdin: TextIO, stdout: TextIO, use_prompt_toolkit: bool) -> bool:
+    answer = _read_line(
+        "是否使用 sshpass？[y/N]：",
+        stdin=stdin,
+        stdout=stdout,
+        use_prompt_toolkit=use_prompt_toolkit,
+    ).strip().lower()
+    return answer in {"y", "yes", "是", "确认"}
+def _read_password(
+    prompt_text: str,
+    stdin: TextIO,
+    stdout: TextIO,
+    use_prompt_toolkit: bool,
+    interactive_password_reader: Callable[[str], str] | None,
+) -> str:
+    if interactive_password_reader is not None:
+        return interactive_password_reader(prompt_text)
+    if use_prompt_toolkit and pt_prompt is not None and _is_interactive(stdin, stdout):
+        return pt_prompt(prompt_text, is_password=True)
+    return getpass.getpass(prompt_text)
+
+
+def _invoke_remote_validator(
+    remote_validator: RemoteValidator,
+    config: RemoteHostConfig,
+    ssh_password: str | None,
+) -> tuple[bool, str]:
+    try:
+        signature = inspect.signature(remote_validator)
+    except (TypeError, ValueError):
+        signature = None
+    if signature is not None:
+        params = list(signature.parameters.values())
+        has_keyword = "ssh_password" in signature.parameters
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params)
+        if has_keyword or accepts_kwargs or len(params) >= 2:
+            return remote_validator(config, ssh_password=ssh_password)
+    try:
+        return remote_validator(config, ssh_password=ssh_password)
+    except TypeError:
+        return remote_validator(config)
 
 
 def _read_line(prompt_text: str, stdin: TextIO, stdout: TextIO, use_prompt_toolkit: bool) -> str:

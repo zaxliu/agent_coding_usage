@@ -49,6 +49,76 @@ def test_remote_file_collector_supports_python_fallback(tmp_path):
     assert "BatchMode=yes" not in calls[1]
 
 
+def test_remote_file_collector_uses_sshpass_env_for_collect(tmp_path):
+    captured = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
+        captured.append((cmd, env))
+        if cmd[:3] == ["sshpass", "-e", "ssh"] and cmd[-1].startswith("command -v python3"):
+            return _Completed(stdout="python3")
+        if cmd[:3] == ["sshpass", "-e", "ssh"] and cmd[-3:-1] == ["sh", "-lc"]:
+            assert env is not None
+            return _Completed(stdout=json.dumps({"events": [], "warnings": []}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        source_name="server_a",
+        source_host_hash="hash",
+        patterns=["~/.codex/**/*.jsonl"],
+        runner=_runner,
+        use_sshpass=True,
+        ssh_password="  secret  ",
+    )
+
+    collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    probe_call = next((item for item in captured if item[0][-1].startswith("command -v python3")), None)
+    collect_call = next(
+        (item for item in captured if item[0][-3:-1] == ["sh", "-lc"] and not item[0][-1].startswith("command -v ")),
+        None,
+    )
+
+    assert probe_call is not None
+    assert collect_call is not None
+    assert probe_call[0][:2] == ["sshpass", "-e"]
+    assert probe_call[1]["SSHPASS"] == "  secret  "
+    assert collect_call[0][:2] == ["sshpass", "-e"]
+    assert collect_call[1]["SSHPASS"] == "  secret  "
+
+
+def test_remote_file_collector_requires_password_for_sshpass(tmp_path, monkeypatch):
+    captured = []
+    monkeypatch.delenv("SSHPASS", raising=False)
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
+        captured.append((cmd, env))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        source_name="server_a",
+        source_host_hash="hash",
+        patterns=["~/.codex/**/*.jsonl"],
+        runner=_runner,
+        use_sshpass=True,
+    )
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.events == []
+    assert out.warnings == ["server_a/codex: SSH 密码模式需要提供密码"]
+    assert captured == []
+
+
 def test_remote_file_collector_filters_bastion_noise_from_python_probe(tmp_path):
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         if cmd[:1] == ["ssh"] and cmd[-1].startswith("command -v python3"):
@@ -464,19 +534,22 @@ def test_remote_file_collector_logs_stdout_receive_progress_with_popen(monkeypat
         popen_factory=subprocess.Popen,
     )
     monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
-    collector._ssh_command = lambda _args: [  # type: ignore[method-assign]
-        "python3",
-        "-c",
-        (
-            "import sys;"
-            "sys.stderr.write('info: starting\\n');"
-            "sys.stderr.flush();"
-            "sys.stdout.write('{\"events\":[],\"warnings\":[],\"padding\":\"');"
-            "sys.stdout.write('x'*300000);"
-            "sys.stdout.write('\"}');"
-            "sys.stdout.flush()"
-        ),
-    ]
+    collector._ssh_command_and_env = lambda _args: (  # type: ignore[method-assign]
+        [
+            "python3",
+            "-c",
+            (
+                "import sys;"
+                "sys.stderr.write('info: starting\\n');"
+                "sys.stderr.flush();"
+                "sys.stdout.write('{\"events\":[],\"warnings\":[],\"padding\":\"');"
+                "sys.stdout.write('x'*300000);"
+                "sys.stdout.write('\"}');"
+                "sys.stdout.flush()"
+            ),
+        ],
+        None,
+    )
 
     completed, error = collector._ssh_run_python_command(["ignored"], input_text="print('x')\n")
 

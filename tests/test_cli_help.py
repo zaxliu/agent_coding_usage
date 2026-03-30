@@ -15,8 +15,10 @@ def test_top_level_help_shows_examples_and_commands(capsys):
     assert "Examples:" in help_text
     assert "llm-usage collect --ui auto" in help_text
     assert "llm-usage sync --ui cli" in help_text
+    assert "llm-usage whoami" in help_text
     assert "collect" in help_text
     assert "sync" in help_text
+    assert "whoami" in help_text
     assert "bundle" not in help_text
 
 
@@ -67,6 +69,18 @@ def test_doctor_help_describes_validation_behavior(capsys):
     assert "validate identity settings" in help_text.lower()
     assert "probe local collectors" in help_text.lower()
     assert "remote collectors" in help_text.lower()
+
+
+def test_whoami_help_describes_hash_output(capsys):
+    parser = main.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["whoami", "--help"])
+
+    help_text = capsys.readouterr().out
+    assert "user_hash" in help_text
+    assert "source_host_hash" in help_text
+    assert "configured remotes" in help_text.lower()
 
 
 def test_parser_rejects_removed_bundle_command(capsys):

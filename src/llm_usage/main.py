@@ -19,6 +19,7 @@ from llm_usage.collectors import (
     build_opencode_collector,
 )
 from llm_usage.cursor_login import (
+    fetch_cursor_workos_id_from_local_browsers,
     fetch_cursor_session_token_via_browser,
     open_cursor_dashboard_login_page,
 )
@@ -238,13 +239,33 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     return 0
 
 
-def _capture_and_save_cursor_token(timeout_sec: int, browser: str, user_data_dir: str) -> str:
+def cmd_whoami(_: argparse.Namespace) -> int:
+    _load_runtime_env()
+    username = _required_org_username()
+    salt = _required_env("HASH_SALT")
+    print(f"ORG_USERNAME: {username}")
+    print(f"user_hash: {hash_user(username, salt)}")
+    print(f"source_host_hash(local): {hash_source_host(username, 'local', salt)}")
+    for config in parse_remote_configs_from_env():
+        print(f"source_host_hash({config.alias.lower()}): {hash_source_host(username, config.source_label, salt)}")
+    return 0
+
+
+def _capture_and_save_cursor_token(
+    timeout_sec: int,
+    browser: str,
+    user_data_dir: str,
+    *,
+    login_mode: str = "auto",
+) -> str:
     token = fetch_cursor_session_token_via_browser(
         timeout_sec=timeout_sec,
         browser=browser,
         user_data_dir=user_data_dir,
+        login_mode=login_mode,
     )
-    _save_cursor_web_credentials(token)
+    workos_id = fetch_cursor_workos_id_from_local_browsers(browser=browser) or ""
+    _save_cursor_web_credentials(token, workos_id)
     return token
 
 
@@ -280,8 +301,24 @@ def _clear_saved_cursor_token() -> None:
     os.environ.pop("CURSOR_WEB_WORKOS_ID", None)
 
 
-def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: str) -> str | None:
+def _resolve_cursor_login_mode(login_mode: str, browser: str) -> str:
+    normalized_mode = (login_mode or "auto").strip().lower() or "auto"
+    normalized_browser = (browser or "default").strip().lower()
+    if normalized_mode != "auto":
+        return normalized_mode
+    if os.name == "nt" and normalized_browser in {"default", "chrome", "chromium", "edge", "msedge"}:
+        return "managed-profile"
+    return "auto"
+
+
+def _maybe_capture_cursor_token(
+    timeout_sec: int,
+    browser: str,
+    user_data_dir: str,
+    login_mode: str = "auto",
+) -> str | None:
     _load_runtime_env()
+    effective_login_mode = _resolve_cursor_login_mode(login_mode, browser)
     if os.getenv("CURSOR_WEB_SESSION_TOKEN", "").strip():
         cursor_collector = build_cursor_collector()
         ok, msg = cursor_collector.probe()
@@ -293,7 +330,7 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
                 "clearing saved token and requesting a fresh login..."
             )
             _clear_saved_cursor_token()
-            if _should_require_manual_cursor_token_prompt(browser):
+            if effective_login_mode == "manual":
                 if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=False):
                     return None
                 print("warn: continuing with local cursor sources")
@@ -303,9 +340,10 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
                     timeout_sec=timeout_sec,
                     browser=browser,
                     user_data_dir=user_data_dir,
+                    login_mode=effective_login_mode,
                 )
             except RuntimeError as exc:
-                print(f"warn: cursor token refresh failed: {exc}")
+                print(f"warn: {effective_login_mode} cursor login failed: {exc}")
                 if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=True):
                     return None
                 print("warn: continuing with local cursor sources")
@@ -336,46 +374,65 @@ def _maybe_capture_cursor_token(timeout_sec: int, browser: str, user_data_dir: s
             "info: CURSOR_WEB_SESSION_TOKEN is empty and local cursor logs are unavailable; "
             "opening browser login..."
         )
-    if _should_require_manual_cursor_token_prompt(browser):
-        print(
-            "info: Windows detected with a Chromium-based browser. "
-            "Automatic Cursor cookie scanning is disabled; manual token input is required."
-        )
+    if effective_login_mode == "manual":
         if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=False):
             return None
-        print("warn: continuing without dashboard token (cursor may have no data)")
+        print("warn: continuing with local cursor sources")
         return None
     try:
         _capture_and_save_cursor_token(
             timeout_sec=timeout_sec,
             browser=browser,
             user_data_dir=user_data_dir,
+            login_mode=effective_login_mode,
         )
     except RuntimeError as exc:
-        print(f"warn: automatic cursor login failed: {exc}")
+        print(f"warn: {effective_login_mode} cursor login failed: {exc}")
         if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=True):
             return None
-        print("warn: continuing without dashboard token (cursor may have no data)")
+        print("warn: continuing with local cursor sources")
         return None
-    print("info: saved CURSOR_WEB_SESSION_TOKEN to .env")
+    if effective_login_mode == "managed-profile":
+        print("info: refreshed CURSOR_WEB_SESSION_TOKEN and saved to .env")
+    else:
+        print("info: saved CURSOR_WEB_SESSION_TOKEN to .env")
     return None
 
 
 def _resolve_remote_selection(
     args: argparse.Namespace,
     configured_remotes,
-) -> tuple[list[str], list]:
+) -> tuple[list[str], list, dict[str, str]]:
     state_aliases = load_selected_remote_aliases(_runtime_state_path())
     configured_aliases = [config.alias for config in configured_remotes]
     if getattr(args, "ui", "auto") == "none":
-        return state_aliases if state_aliases else [], []
+        return state_aliases if state_aliases else [], [], {}
     if state_aliases:
         defaults = [alias for alias in state_aliases if alias in configured_aliases]
     else:
         defaults = list(configured_aliases)
-    result = select_remotes(configured_remotes, defaults, ui_mode=getattr(args, "ui", "auto"))
+    runtime_password: dict[str, str] = {}
+
+    def _password_getter() -> str | None:
+        return next(iter(runtime_password.values()), None)
+
+    def _password_setter(password: str) -> None:
+        runtime_password["__current__"] = password
+
+    result = select_remotes(
+        configured_remotes,
+        defaults,
+        ui_mode=getattr(args, "ui", "auto"),
+        password_getter=_password_getter,
+        password_setter=_password_setter,
+    )
     save_selected_remote_aliases(_runtime_state_path(), result.selected_aliases)
-    return result.selected_aliases, result.temporary_remotes
+    resolved_passwords = dict(result.runtime_passwords or {})
+    if "__current__" in runtime_password and not resolved_passwords:
+        for config in result.temporary_remotes:
+            if config.use_sshpass:
+                resolved_passwords[config.alias] = runtime_password["__current__"]
+    return result.selected_aliases, result.temporary_remotes, resolved_passwords
 
 
 def _save_temporary_remotes(args: argparse.Namespace, remotes: list, configured_aliases: list[str]) -> None:
@@ -395,12 +452,19 @@ def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str]]:
     local_source_host_hash = hash_source_host(username, "local", salt)
 
     configured_remotes = parse_remote_configs_from_env()
-    selected_aliases, temporary_remotes = _resolve_remote_selection(args, configured_remotes)
+    selected_aliases, temporary_remotes, runtime_passwords = _resolve_remote_selection(args, configured_remotes)
     selected_configs = [config for config in configured_remotes if config.alias in selected_aliases]
     selected_configs.extend(temporary_remotes)
 
     collectors = _collectors(local_source_host_hash)
-    collectors.extend(build_remote_collectors(selected_configs, username=username, salt=salt))
+    collectors.extend(
+        build_remote_collectors(
+            selected_configs,
+            username=username,
+            salt=salt,
+            runtime_passwords=runtime_passwords,
+        )
+    )
     events, warnings = _collect_all(lookback_days, collectors)
     user_hash = hash_user(username, salt)
     rows = aggregate_events(events, user_hash=user_hash, timezone_name=timezone_name)
@@ -414,6 +478,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
         browser=getattr(args, "cursor_login_browser", "default"),
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+        login_mode=getattr(args, "cursor_login_mode", "auto"),
     )
     rows, warnings = _build_aggregates(args)
     print(f"env: {_env_path()}")
@@ -434,6 +499,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
         browser=getattr(args, "cursor_login_browser", "default"),
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+        login_mode=getattr(args, "cursor_login_mode", "auto"),
     )
     rows, warnings = _build_aggregates(args)
     print(f"env: {_env_path()}")
@@ -540,6 +606,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  llm-usage doctor\n"
+            "  llm-usage whoami\n"
             "  llm-usage collect --ui auto\n"
             "  llm-usage sync --ui cli\n"
             "  llm-usage import-config --from /path/to/legacy/repo\n"
@@ -563,6 +630,15 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Validate identity settings, probe local collectors, and probe configured remote "
             "collectors without writing reports or syncing data."
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    sub.add_parser(
+        "whoami",
+        help="Show ORG_USERNAME, user_hash, and per-host source hashes",
+        description=(
+            "Show the current ORG_USERNAME, the derived user_hash, source_host_hash(local), "
+            "and source_host_hash values for configured remotes."
         ),
         formatter_class=_HelpFormatter,
     )
@@ -618,6 +694,12 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=_HelpFormatter,
     )
     collect_parser.add_argument(
+        "--cursor-login-mode",
+        default="auto",
+        choices=["auto", "managed-profile", "manual"],
+        help="Cursor dashboard login mode",
+    )
+    collect_parser.add_argument(
         "--cursor-login-timeout-sec",
         type=int,
         default=600,
@@ -671,6 +753,12 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=_HelpFormatter,
     )
     sync_parser.add_argument(
+        "--cursor-login-mode",
+        default="auto",
+        choices=["auto", "managed-profile", "manual"],
+        help="Cursor dashboard login mode",
+    )
+    sync_parser.add_argument(
         "--cursor-login-timeout-sec",
         type=int,
         default=600,
@@ -715,6 +803,7 @@ def main() -> int:
     cmd_map = {
         "init": cmd_init,
         "doctor": cmd_doctor,
+        "whoami": cmd_whoami,
         "import-config": cmd_import_config,
         "collect": cmd_collect,
         "sync": cmd_sync,

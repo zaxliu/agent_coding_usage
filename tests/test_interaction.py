@@ -42,7 +42,7 @@ def test_select_remotes_cli_supports_temporary_remote():
         configs,
         ["SERVER_A"],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
@@ -58,13 +58,106 @@ def test_select_remotes_cli_supports_temporary_remote_without_configured_hosts()
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
     assert result.selected_aliases == []
     assert len(result.temporary_remotes) == 1
     assert result.temporary_remotes[0].ssh_host == "host-b"
+
+
+def test_select_remotes_cli_supports_sshpass_password_capture():
+    password_store = {"value": None}
+    password_prompts: list[str] = []
+    validator_calls: list[tuple[str, str | None, bool]] = []
+
+    def _password_getter():
+        return password_store["value"]
+
+    def _password_setter(password):  # noqa: ANN001
+        password_store["value"] = password
+
+    def _password_reader(prompt_text):  # noqa: ANN001
+        password_prompts.append(prompt_text)
+        return "hunter2"
+
+    def _validator(config, ssh_password=None):  # noqa: ANN001
+        validator_calls.append((config.alias, ssh_password, config.use_sshpass))
+        return True, "ok"
+
+    first = select_remotes(
+        [],
+        [],
+        ui_mode="cli",
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\n"),
+        stdout=_TTYStringIO(),
+        remote_validator=_validator,
+        password_getter=_password_getter,
+        password_setter=_password_setter,
+        interactive_password_reader=_password_reader,
+    )
+
+    assert len(first.temporary_remotes) == 1
+    assert first.temporary_remotes[0].use_sshpass is True
+    assert first.runtime_passwords == {first.temporary_remotes[0].alias: "hunter2"}
+    assert password_store["value"] == "hunter2"
+    assert password_prompts == ["SSH 密码："]
+    assert validator_calls == [(first.temporary_remotes[0].alias, "hunter2", True)]
+
+    password_prompts.clear()
+    validator_calls.clear()
+
+    second = select_remotes(
+        [],
+        [],
+        ui_mode="cli",
+        stdin=_TTYStringIO("+\nhost-c\ncarol\n2222\ny\n"),
+        stdout=_TTYStringIO(),
+        remote_validator=_validator,
+        password_getter=_password_getter,
+        password_setter=_password_setter,
+        interactive_password_reader=lambda prompt_text: (_ for _ in ()).throw(AssertionError(prompt_text)),
+    )
+
+    assert len(second.temporary_remotes) == 1
+    assert second.temporary_remotes[0].use_sshpass is True
+    assert password_prompts == []
+    assert validator_calls == [(second.temporary_remotes[0].alias, "hunter2", True)]
+
+
+def test_select_remotes_cli_uses_getpass_when_prompt_toolkit_is_unavailable(monkeypatch):
+    import llm_usage.interaction as interaction
+
+    monkeypatch.setattr(interaction, "pt_prompt", None)
+
+    getpass_calls = []
+
+    def _fake_getpass(prompt_text):  # noqa: ANN001
+        getpass_calls.append(prompt_text)
+        return "hidden-secret"
+
+    monkeypatch.setattr(interaction.getpass, "getpass", _fake_getpass)
+
+    validator_calls = []
+
+    def _validator(config, ssh_password=None):  # noqa: ANN001
+        validator_calls.append((config.use_sshpass, ssh_password))
+        return True, "ok"
+
+    result = interaction.select_remotes(
+        [],
+        [],
+        ui_mode="cli",
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\n"),
+        stdout=_TTYStringIO(),
+        remote_validator=_validator,
+    )
+
+    assert len(result.temporary_remotes) == 1
+    assert result.temporary_remotes[0].use_sshpass is True
+    assert getpass_calls == ["SSH 密码："]
+    assert validator_calls == [(True, "hidden-secret")]
 
 
 def test_confirm_save_temporary_remote_cli_yes():
@@ -90,7 +183,7 @@ def test_select_remotes_cli_retries_when_ssh_probe_fails():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nr\nhost-c\nroot\n22\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\nr\nhost-c\nroot\n22\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
     )
@@ -103,7 +196,7 @@ def test_select_remotes_cli_cancels_when_ssh_probe_fails():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (False, "Permission denied"),
     )

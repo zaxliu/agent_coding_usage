@@ -713,6 +713,8 @@ class RemoteFileCollector(BaseCollector):
         runner=None,
         popen_factory=None,
         jobs: list[RemoteCollectJob] | None = None,
+        use_sshpass: bool = False,
+        ssh_password: str | None = None,
     ) -> None:
         self.name = name
         self.target = target
@@ -727,12 +729,16 @@ class RemoteFileCollector(BaseCollector):
         self.timeout_sec = max(10, timeout_sec)
         self._runner = runner or subprocess.run
         self._popen_factory = popen_factory or (subprocess.Popen if runner is None else None)
+        self.use_sshpass = use_sshpass
+        self.ssh_password = ssh_password
         self._use_connection_sharing = True
         self._logged_connection_sharing_fallback = False
 
     def probe(self) -> tuple[bool, str]:
         self._log_progress("探测：查找远端 Python")
-        python_cmd = self._discover_python()
+        python_cmd, error = self._discover_python()
+        if error:
+            return False, error
         if not python_cmd:
             return False, "no remote python interpreter found"
         self._log_progress(f"探测：使用远端解释器 {python_cmd}")
@@ -751,7 +757,9 @@ class RemoteFileCollector(BaseCollector):
         self._active_start_value = start
         self._active_end_value = end
         self._log_progress("采集：查找远端 Python")
-        python_cmd = self._discover_python()
+        python_cmd, error = self._discover_python()
+        if error:
+            return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: {error}"])
         if not python_cmd:
             return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: no remote python interpreter found"])
         self._log_progress(f"采集：使用远端解释器 {python_cmd}")
@@ -804,21 +812,24 @@ class RemoteFileCollector(BaseCollector):
             warnings.append(f"{self.source_name}/{self.name}: no usage events in selected time range")
         return CollectOutput(events=events, warnings=warnings)
 
-    def _discover_python(self) -> str | None:
-        completed = self._run_ssh_with_optional_fallback(
-            [
-                "sh",
-                "-lc",
-                "command -v python3 >/dev/null 2>&1 && printf python3 || "
-                "(command -v python >/dev/null 2>&1 && printf python || true)",
-            ],
-            timeout=15,
-        )
+    def _discover_python(self) -> tuple[str | None, str | None]:
+        try:
+            completed = self._run_ssh_with_optional_fallback(
+                [
+                    "sh",
+                    "-lc",
+                    "command -v python3 >/dev/null 2>&1 && printf python3 || "
+                    "(command -v python >/dev/null 2>&1 && printf python || true)",
+                ],
+                timeout=15,
+            )
+        except ValueError as exc:
+            return None, str(exc)
         if completed is None:
-            return None
+            return None, None
         if completed.returncode != 0:
-            return None
-        return _extract_python_command(completed.stdout)
+            return None, None
+        return _extract_python_command(completed.stdout), None
 
     def _run_python_script(self, python_cmd: str, script: str) -> tuple[dict, str | None]:
         command, script_input = self._python_stdin_command(python_cmd, script)
@@ -919,11 +930,14 @@ class RemoteFileCollector(BaseCollector):
         return "\n".join(wrapper) + script.lstrip()
 
     def _ssh_write_text(self, remote_path: str, content: str) -> str | None:
-        completed = self._run_ssh_with_optional_fallback(
-            ["sh", "-lc", f"cat > {_shell_quote(remote_path)}"],
-            input_text=content,
-            timeout=self.timeout_sec,
-        )
+        try:
+            completed = self._run_ssh_with_optional_fallback(
+                ["sh", "-lc", f"cat > {_shell_quote(remote_path)}"],
+                input_text=content,
+                timeout=self.timeout_sec,
+            )
+        except ValueError as exc:
+            return str(exc)
         if completed is None:
             return "ssh upload timed out"
         if completed.returncode != 0:
@@ -940,10 +954,13 @@ class RemoteFileCollector(BaseCollector):
             return
 
     def _ssh_read_text(self, remote_path: str) -> tuple[str, str | None]:
-        completed = self._run_ssh_with_optional_fallback(
-            ["sh", "-lc", f"cat {_shell_quote(remote_path)}"],
-            timeout=self.timeout_sec,
-        )
+        try:
+            completed = self._run_ssh_with_optional_fallback(
+                ["sh", "-lc", f"cat {_shell_quote(remote_path)}"],
+                timeout=self.timeout_sec,
+            )
+        except ValueError as exc:
+            return "", str(exc)
         if completed is None:
             return "", "ssh download timed out"
         if completed.returncode != 0:
@@ -970,12 +987,19 @@ class RemoteFileCollector(BaseCollector):
         input_text: str,
         allow_retry: bool,
     ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+        try:
+            command, env = self._ssh_command_and_env(args)
+        except ValueError as exc:
+            return None, str(exc)
         if self._popen_factory is None:
-            completed = self._run_ssh_with_optional_fallback(
-                args,
-                input_text=input_text,
-                timeout=self.timeout_sec,
-            )
+            try:
+                completed = self._run_ssh_with_optional_fallback(
+                    args,
+                    input_text=input_text,
+                    timeout=self.timeout_sec,
+                )
+            except ValueError as exc:
+                return None, str(exc)
             if completed is None:
                 return None, "remote command timed out"
             if completed.returncode != 0:
@@ -989,13 +1013,15 @@ class RemoteFileCollector(BaseCollector):
 
         stdout_handle = tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False, encoding="utf-8")
         try:
-            process = self._popen_factory(
-                self._ssh_command(args),
+            popen_kwargs = dict(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=False,
             )
+            if env is not None:
+                popen_kwargs["env"] = env
+            process = self._popen_factory(command, **popen_kwargs)
         except OSError as exc:
             stdout_handle.close()
             Path(stdout_handle.name).unlink(missing_ok=True)
@@ -1080,18 +1106,21 @@ class RemoteFileCollector(BaseCollector):
             if stdout_bytes:
                 self._log_progress(f"remote stdout complete {stdout_bytes} bytes")
             stdout_text = Path(stdout_handle.name).read_text(encoding="utf-8")
-            return subprocess.CompletedProcess(self._ssh_command(args), process.returncode, stdout_text, "\n".join(stderr_lines)), None
+            return subprocess.CompletedProcess(command, process.returncode, stdout_text, "\n".join(stderr_lines)), None
         finally:
             stdout_handle.close()
             Path(stdout_handle.name).unlink(missing_ok=True)
         return None, "remote command failed"
 
-    def _ssh_command(self, remote_args: list[str]) -> list[str]:
-        return _ssh_base_command(
+    def _ssh_command_and_env(self, remote_args: list[str]) -> tuple[list[str], dict[str, str] | None]:
+        return _ssh_command_and_env(
             self.target.destination,
             self.target.port,
+            remote_args,
             use_connection_sharing=self._use_connection_sharing,
-        ) + remote_args
+            use_sshpass=self.use_sshpass,
+            ssh_password=self.ssh_password,
+        )
 
     def _log_progress(self, message: str) -> None:
         print(f"info: remote[{self.source_name}/{self.name}] {message}")
@@ -1116,25 +1145,37 @@ class RemoteFileCollector(BaseCollector):
         input_text: str | None = None,
         timeout: int,
     ):
+        command, env = self._ssh_command_and_env(remote_args)
         try:
-            return self._runner(
-                self._ssh_command(remote_args),
+            run_kwargs = dict(
                 check=False,
                 capture_output=True,
                 text=True,
                 input=input_text,
                 timeout=timeout,
             )
+            if env is not None:
+                run_kwargs["env"] = env
+            return self._runner(
+                command,
+                **run_kwargs,
+            )
         except subprocess.TimeoutExpired:
             if self._disable_connection_sharing("ssh timed out while using connection sharing"):
                 try:
-                    return self._runner(
-                        self._ssh_command(remote_args),
+                    retry_command, retry_env = self._ssh_command_and_env(remote_args)
+                    retry_kwargs = dict(
                         check=False,
                         capture_output=True,
                         text=True,
                         input=input_text,
                         timeout=timeout,
+                    )
+                    if retry_env is not None:
+                        retry_kwargs["env"] = retry_env
+                    return self._runner(
+                        retry_command,
+                        **retry_kwargs,
                     )
                 except subprocess.TimeoutExpired:
                     return None
@@ -1210,6 +1251,26 @@ def _ssh_base_command(destination: str, port: int, use_connection_sharing: bool 
             "ControlPath=/tmp/llm-usage-ssh-%C",
         ]
     return command
+
+
+def _ssh_command_and_env(
+    destination: str,
+    port: int,
+    remote_args: list[str],
+    *,
+    use_connection_sharing: bool = True,
+    use_sshpass: bool = False,
+    ssh_password: str | None = None,
+) -> tuple[list[str], dict[str, str] | None]:
+    command = _ssh_base_command(destination, port, use_connection_sharing=use_connection_sharing) + remote_args
+    if not use_sshpass:
+        return command, None
+    password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
+    if not password.strip():
+        raise ValueError("SSH 密码模式需要提供密码")
+    env = os.environ.copy()
+    env["SSHPASS"] = password
+    return ["sshpass", "-e"] + command, env
 
 
 def _coerce_int(value: object) -> int:

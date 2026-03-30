@@ -5,9 +5,15 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from llm_usage.collectors.base import BaseCollector
-from llm_usage.collectors.remote_file import RemoteCollectJob, RemoteFileCollector, SshTarget, _ssh_base_command
+from llm_usage.collectors.remote_file import (
+    RemoteCollectJob,
+    RemoteFileCollector,
+    SshTarget,
+    _ssh_command_and_env,
+)
 from llm_usage.env import upsert_env_var
 from llm_usage.identity import hash_source_host
 
@@ -41,6 +47,10 @@ class RemoteHostConfig:
     copilot_cli_log_paths: list[str]
     copilot_vscode_session_paths: list[str]
     is_ephemeral: bool = False
+    use_sshpass: bool = False
+
+
+RemoteValidator = Callable[[RemoteHostConfig, str | None], tuple[bool, str]]
 
 
 def parse_remote_configs_from_env(env: dict[str, str] | None = None) -> list[RemoteHostConfig]:
@@ -82,6 +92,7 @@ def parse_remote_configs_from_env(env: dict[str, str] | None = None) -> list[Rem
                 codex_log_paths=codex_log_paths,
                 copilot_cli_log_paths=copilot_cli_log_paths,
                 copilot_vscode_session_paths=copilot_vscode_session_paths,
+                use_sshpass=_env_flag(data.get(prefix + "USE_SSHPASS", "")),
             )
         )
     return out
@@ -91,8 +102,10 @@ def build_remote_collectors(
     configs: list[RemoteHostConfig],
     username: str,
     salt: str,
+    runtime_passwords: dict[str, str] | None = None,
 ) -> list[BaseCollector]:
     collectors: list[BaseCollector] = []
+    runtime_passwords = runtime_passwords or {}
     for config in configs:
         source_host_hash = hash_source_host(username, config.source_label, salt)
         target = SshTarget(host=config.ssh_host, user=config.ssh_user, port=config.ssh_port)
@@ -113,6 +126,8 @@ def build_remote_collectors(
                     source_name=config.alias.lower(),
                     source_host_hash=source_host_hash,
                     jobs=jobs,
+                    use_sshpass=config.use_sshpass,
+                    ssh_password=runtime_passwords.get(config.alias),
                 )
             )
     return collectors
@@ -124,6 +139,7 @@ def build_temporary_remote(
     ssh_port: int = 22,
     claude_log_paths: list[str] | None = None,
     codex_log_paths: list[str] | None = None,
+    use_sshpass: bool = False,
 ) -> RemoteHostConfig:
     ssh_host = ssh_host.strip()
     ssh_user = ssh_user.strip()
@@ -141,6 +157,7 @@ def build_temporary_remote(
         copilot_cli_log_paths=list(DEFAULT_REMOTE_COPILOT_CLI_LOG_PATHS),
         copilot_vscode_session_paths=list(DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS),
         is_ephemeral=True,
+        use_sshpass=use_sshpass,
     )
 
 
@@ -160,18 +177,42 @@ def append_remote_to_env(path: Path, config: RemoteHostConfig, existing_aliases:
         prefix + "COPILOT_VSCODE_SESSION_PATHS",
         ",".join(config.copilot_vscode_session_paths),
     )
+    upsert_env_var(path, prefix + "USE_SSHPASS", "1" if config.use_sshpass else "0")
     return alias
 
 
-def probe_remote_ssh(config: RemoteHostConfig, timeout_sec: int = 10) -> tuple[bool, str]:
+def probe_remote_ssh(
+    config: RemoteHostConfig,
+    timeout_sec: int = 10,
+    *,
+    ssh_password: str | None = None,
+) -> tuple[bool, str]:
+    password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
+    if config.use_sshpass and not password.strip():
+        return False, "SSH 密码模式需要提供密码"
+
+    command, env = _ssh_command_and_env(
+        f"{config.ssh_user}@{config.ssh_host}",
+        config.ssh_port,
+        ["true"],
+        use_sshpass=config.use_sshpass,
+        ssh_password=password,
+    )
+
     try:
-        completed = subprocess.run(
-            _ssh_base_command(f"{config.ssh_user}@{config.ssh_host}", config.ssh_port) + ["true"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=max(3, timeout_sec),
-        )
+        run_kwargs = {
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": max(3, timeout_sec),
+        }
+        if env is not None:
+            run_kwargs["env"] = env
+        completed = subprocess.run(command, **run_kwargs)
+    except FileNotFoundError:
+        if config.use_sshpass:
+            return False, "sshpass 未找到"
+        return False, "SSH 命令未找到"
     except subprocess.TimeoutExpired:
         return False, "SSH 连接超时"
     if completed.returncode == 0:
@@ -212,6 +253,10 @@ def _split_paths(raw: str, default: list[str]) -> list[str]:
     if not raw.strip():
         return list(default)
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _env_flag(raw: str) -> bool:
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _safe_port(raw: str) -> int:
