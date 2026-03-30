@@ -3,24 +3,47 @@ import path from "node:path";
 
 import { banner, info, section } from "./ui.js";
 
-export function printTerminalReport(rows) {
-  console.log(section("Usage Report"));
-  console.log(banner("Daily Aggregates", `${rows.length} rows`));
-  const headers = ["日期", "来源", "工具", "模型", "输入", "缓存", "输出"];
-  const widths = [10, 14, 14, 28, 10, 10, 10];
-  console.log(headers.map((value, index) => value.padEnd(widths[index])).join("  "));
-  console.log(widths.map((width) => "─".repeat(width)).join("  "));
+function groupTerminalRows(rows) {
+  const buckets = new Map();
   for (const row of rows) {
+    const key = JSON.stringify([row.date_local, row.tool, row.model]);
+    const current = buckets.get(key) || {
+      input_tokens_sum: 0,
+      cache_tokens_sum: 0,
+      output_tokens_sum: 0,
+      sample: row,
+    };
+    current.input_tokens_sum += Number(row.input_tokens_sum || 0);
+    current.cache_tokens_sum += Number(row.cache_tokens_sum || 0);
+    current.output_tokens_sum += Number(row.output_tokens_sum || 0);
+    buckets.set(key, current);
+  }
+  return [...buckets.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, bucket]) => ({
+      ...bucket.sample,
+      source_host_hash: "",
+      input_tokens_sum: bucket.input_tokens_sum,
+      cache_tokens_sum: bucket.cache_tokens_sum,
+      output_tokens_sum: bucket.output_tokens_sum,
+    }));
+}
+
+export function printTerminalReport(rows) {
+  const headers = ["日期", "工具", "模型", "输入", "缓存", "输出"];
+  const widths = [10, 10, 28, 10, 10, 10];
+  console.log(headers.map((value, index) => value.padEnd(widths[index])).join(" | "));
+  console.log(widths.map((width) => "-".repeat(width)).join("-+-"));
+  for (const row of groupTerminalRows(rows)) {
     const data = [
       row.date_local,
-      row.source_host_hash.slice(0, 14),
       row.tool,
       row.model.slice(0, 28),
       String(row.input_tokens_sum),
       String(row.cache_tokens_sum),
       String(row.output_tokens_sum),
     ];
-    console.log(data.map((value, index) => value.padEnd(widths[index])).join("  "));
+    console.log(data.map((value, index) => value.padEnd(widths[index])).join(" | "));
   }
 }
 
