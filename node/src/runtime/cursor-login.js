@@ -31,7 +31,7 @@ export function resolveCursorLoginMode(loginMode, browser, platform = process.pl
   if (normalizedMode !== "auto") {
     return normalizedMode;
   }
-  if (platform === "win32" && ["default", "chrome", "chromium", "edge", "msedge"].includes(normalizedBrowser)) {
+  if (platform === "win32" && ["chrome", "chromium", "edge", "msedge"].includes(normalizedBrowser)) {
     return "managed-profile";
   }
   return "auto";

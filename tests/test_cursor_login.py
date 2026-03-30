@@ -2,6 +2,7 @@ import argparse
 import builtins
 from types import SimpleNamespace
 
+from llm_usage.env import load_env_document
 import llm_usage.main as main
 from llm_usage.env import upsert_env_var
 from llm_usage.models import AggregateRecord
@@ -338,6 +339,21 @@ def test_maybe_capture_cursor_token_windows_chromium_auto_uses_managed_profile(m
     ]
 
 
+def test_resolve_cursor_login_mode_windows_default_keeps_auto(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
+
+    assert main._resolve_cursor_login_mode("auto", "default") == "auto"
+
+
 def test_collect_parser_accepts_cursor_login_mode():
     parser = main.build_parser()
     args = parser.parse_args(["collect", "--cursor-login-mode", "managed-profile"])
@@ -461,8 +477,9 @@ def test_clear_saved_cursor_token(monkeypatch, tmp_path):
 
     main._clear_saved_cursor_token()
 
-    text = env_path.read_text(encoding="utf-8")
-    assert "CURSOR_WEB_SESSION_TOKEN=\n" in text
+    document = load_env_document(env_path)
+    assert document.get("CURSOR_WEB_SESSION_TOKEN") == ""
+    assert document.get("CURSOR_WEB_WORKOS_ID") == ""
     assert "CURSOR_WEB_SESSION_TOKEN" not in main.os.environ
 
 

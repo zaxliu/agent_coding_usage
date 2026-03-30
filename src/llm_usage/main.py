@@ -324,7 +324,7 @@ def _resolve_cursor_login_mode(login_mode: str, browser: str) -> str:
     normalized_browser = (browser or "default").strip().lower()
     if normalized_mode != "auto":
         return normalized_mode
-    if os.name == "nt" and normalized_browser in {"default", "chrome", "chromium", "edge", "msedge"}:
+    if os.name == "nt" and normalized_browser in {"chrome", "chromium", "edge", "msedge"}:
         return "managed-profile"
     return "auto"
 
