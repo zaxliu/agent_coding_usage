@@ -1,5 +1,6 @@
 import argparse
 import builtins
+from types import SimpleNamespace
 
 import llm_usage.main as main
 from llm_usage.env import upsert_env_var
@@ -35,7 +36,7 @@ def test_maybe_capture_skips_when_token_exists(monkeypatch):
     monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
     called = {"capture": 0}
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         called["capture"] += 1
         return "x"
 
@@ -58,10 +59,11 @@ def test_maybe_capture_refreshes_expired_token(monkeypatch):
     def _fake_clear():  # noqa: ANN201
         called["clear"] += 1
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         called["capture"] += 1
         assert timeout_sec == 61
         assert browser == "default"
+        assert login_mode == "auto"
         return "token-new"
 
     monkeypatch.setattr(main, "_clear_saved_cursor_token", _fake_clear)
@@ -87,7 +89,7 @@ def test_maybe_capture_uses_local_files_without_browser(monkeypatch):
 
     called = {"capture": 0}
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         called["capture"] += 1
         return "x"
 
@@ -110,11 +112,12 @@ def test_maybe_capture_triggers_browser_when_local_logs_have_no_events(monkeypat
     monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
     called = {"capture": 0}
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         called["capture"] += 1
         assert timeout_sec == 66
         assert browser == "default"
         assert user_data_dir == "/tmp/profile"
+        assert login_mode == "auto"
         return "browser-token"
 
     monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_capture)
@@ -137,11 +140,12 @@ def test_maybe_capture_triggers_browser_when_needed(monkeypatch):
     monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
     called = {"capture": 0}
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         called["capture"] += 1
         assert timeout_sec == 77
         assert browser == "chromium"
         assert user_data_dir == ""
+        assert login_mode == "auto"
         return "browser-token"
 
     monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_capture)
@@ -149,10 +153,19 @@ def test_maybe_capture_triggers_browser_when_needed(monkeypatch):
     assert called["capture"] == 1
 
 
-def test_maybe_capture_windows_chromium_prompts_manual_before_auto(monkeypatch):
+def test_maybe_capture_windows_chromium_auto_uses_managed_profile(monkeypatch):
     monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
-    monkeypatch.setattr(main.os, "name", "nt")
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
 
     class _Collector:
         def probe(self):  # noqa: ANN201
@@ -161,30 +174,39 @@ def test_maybe_capture_windows_chromium_prompts_manual_before_auto(monkeypatch):
     monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
     capture_called = {"count": 0}
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         capture_called["count"] += 1
+        assert browser == "chrome"
+        assert login_mode == "managed-profile"
         return "browser-token"
 
     prompt_called = {"count": 0}
 
-    def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
-        prompt_called["count"] += 1
-        assert browser == "chrome"
-        assert automatic_capture_failed is False
-        return "manual-token"
-
     monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_capture)
-    monkeypatch.setattr(main, "_prompt_for_manual_cursor_token", _fake_prompt)
+    monkeypatch.setattr(
+        main,
+        "_prompt_for_manual_cursor_token",
+        lambda browser, automatic_capture_failed: prompt_called.__setitem__("count", prompt_called["count"] + 1),
+    )
 
     assert main._maybe_capture_cursor_token(timeout_sec=77, browser="chrome", user_data_dir="") is None
-    assert prompt_called["count"] == 1
-    assert capture_called["count"] == 0
+    assert prompt_called["count"] == 0
+    assert capture_called["count"] == 1
 
 
-def test_maybe_capture_windows_chromium_does_not_auto_scan_when_manual_skipped(monkeypatch):
+def test_maybe_capture_windows_chromium_managed_profile_falls_back_to_manual_prompt(monkeypatch):
     monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
-    monkeypatch.setattr(main.os, "name", "nt")
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
 
     class _Collector:
         def probe(self):  # noqa: ANN201
@@ -193,16 +215,18 @@ def test_maybe_capture_windows_chromium_does_not_auto_scan_when_manual_skipped(m
     monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
     capture_called = {"count": 0}
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         capture_called["count"] += 1
-        return "browser-token"
+        assert browser == "edge"
+        assert login_mode == "managed-profile"
+        raise RuntimeError("cookie timeout")
 
     prompt_called = {"count": 0}
 
     def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
         prompt_called["count"] += 1
         assert browser == "edge"
-        assert automatic_capture_failed is False
+        assert automatic_capture_failed is True
         return None
 
     monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_capture)
@@ -210,13 +234,22 @@ def test_maybe_capture_windows_chromium_does_not_auto_scan_when_manual_skipped(m
 
     assert main._maybe_capture_cursor_token(timeout_sec=77, browser="edge", user_data_dir="") is None
     assert prompt_called["count"] == 1
-    assert capture_called["count"] == 0
+    assert capture_called["count"] == 1
 
 
-def test_maybe_capture_windows_expired_token_prompts_manual_without_auto_scan(monkeypatch):
+def test_maybe_capture_windows_expired_token_retries_managed_profile_before_manual(monkeypatch):
     monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "expired")
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
-    monkeypatch.setattr(main.os, "name", "nt")
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
 
     class _Collector:
         def probe(self):  # noqa: ANN201
@@ -228,14 +261,16 @@ def test_maybe_capture_windows_expired_token_prompts_manual_without_auto_scan(mo
     def _fake_clear():  # noqa: ANN201
         state["clear"] += 1
 
-    def _fake_capture(timeout_sec, browser, user_data_dir):  # noqa: ANN001, ANN201
+    def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         state["capture"] += 1
-        return "browser-token"
+        assert browser == "chrome"
+        assert login_mode == "managed-profile"
+        raise RuntimeError("cookie timeout")
 
     def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
         state["prompt"] += 1
         assert browser == "chrome"
-        assert automatic_capture_failed is False
+        assert automatic_capture_failed is True
         return "manual-token"
 
     monkeypatch.setattr(main, "_clear_saved_cursor_token", _fake_clear)
@@ -245,7 +280,68 @@ def test_maybe_capture_windows_expired_token_prompts_manual_without_auto_scan(mo
     assert main._maybe_capture_cursor_token(timeout_sec=61, browser="chrome", user_data_dir="") is None
     assert state["clear"] == 1
     assert state["prompt"] == 1
-    assert state["capture"] == 0
+    assert state["capture"] == 1
+
+
+def test_maybe_capture_cursor_token_windows_chromium_auto_uses_managed_profile(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="nt",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
+    monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
+    monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(main, "_clear_saved_cursor_token", lambda: None)
+
+    class _Collector:
+        def probe(self):  # noqa: ANN201
+            return False, "cursor dashboard unavailable"
+
+    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+
+    calls = []
+
+    def _fake_fetch(*, timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN003
+        calls.append(
+            {
+                "timeout_sec": timeout_sec,
+                "browser": browser,
+                "user_data_dir": user_data_dir,
+                "login_mode": login_mode,
+            }
+        )
+        return "token-from-browser"
+
+    monkeypatch.setattr(main, "_capture_and_save_cursor_token", _fake_fetch)
+    monkeypatch.setattr(main, "_prompt_for_manual_cursor_token", lambda *args, **kwargs: None)
+
+    warning = main._maybe_capture_cursor_token(
+        timeout_sec=60,
+        browser="chrome",
+        user_data_dir="",
+        login_mode="auto",
+    )
+
+    assert warning is None
+    assert calls == [
+        {
+            "timeout_sec": 60,
+            "browser": "chrome",
+            "user_data_dir": "",
+            "login_mode": "managed-profile",
+        }
+    ]
+
+
+def test_collect_parser_accepts_cursor_login_mode():
+    parser = main.build_parser()
+    args = parser.parse_args(["collect", "--cursor-login-mode", "managed-profile"])
+    assert args.cursor_login_mode == "managed-profile"
 
 
 def test_maybe_capture_uses_manual_token_when_auto_login_fails(monkeypatch):
@@ -260,7 +356,9 @@ def test_maybe_capture_uses_manual_token_when_auto_login_fails(monkeypatch):
     monkeypatch.setattr(
         main,
         "_capture_and_save_cursor_token",
-        lambda timeout_sec, browser, user_data_dir: (_ for _ in ()).throw(RuntimeError("cookie timeout")),
+        lambda timeout_sec, browser, user_data_dir, login_mode="auto": (_ for _ in ()).throw(
+            RuntimeError("cookie timeout")
+        ),
     )
     prompted = {"count": 0}
 
@@ -282,8 +380,9 @@ def test_capture_and_save_cursor_token(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main,
         "fetch_cursor_session_token_via_browser",
-        lambda timeout_sec, browser, user_data_dir: "token-from-browser",
+        lambda timeout_sec, browser, user_data_dir, login_mode="auto": "token-from-browser",
     )
+    monkeypatch.setattr(main, "fetch_cursor_workos_id_from_local_browsers", lambda browser="default": "workos-1")
 
     token = main._capture_and_save_cursor_token(
         timeout_sec=60,
@@ -293,6 +392,7 @@ def test_capture_and_save_cursor_token(monkeypatch, tmp_path):
     assert token == "token-from-browser"
     text = env_path.read_text(encoding="utf-8")
     assert "CURSOR_WEB_SESSION_TOKEN=token-from-browser" in text
+    assert "CURSOR_WEB_WORKOS_ID=workos-1" in text
 
 
 def test_prompt_for_manual_cursor_token_saves_value(monkeypatch, tmp_path):
@@ -367,16 +467,18 @@ def test_clear_saved_cursor_token(monkeypatch, tmp_path):
 
 
 def test_cmd_collect_triggers_maybe_capture(monkeypatch):
-    called = {"timeout": None, "browser": None, "user_data_dir": None}
+    called = {"timeout": None, "browser": None, "user_data_dir": None, "login_mode": None, "lookback_days": None}
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
-        lambda timeout_sec, browser, user_data_dir: (
+        lambda timeout_sec, browser, user_data_dir, login_mode="auto", lookback_days=None: (
             called.__setitem__("timeout", timeout_sec),
             called.__setitem__("browser", browser),
             called.__setitem__("user_data_dir", user_data_dir),
+            called.__setitem__("login_mode", login_mode),
+            called.__setitem__("lookback_days", lookback_days),
             None,
-        ),
+        )[-1],
     )
     monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
     monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
@@ -388,25 +490,31 @@ def test_cmd_collect_triggers_maybe_capture(monkeypatch):
             cursor_login_timeout_sec=88,
             cursor_login_browser="default",
             cursor_login_user_data_dir="/tmp/p1",
+            cursor_login_mode="managed-profile",
+            lookback_days=30,
         )
     )
     assert exit_code == 0
     assert called["timeout"] == 88
     assert called["browser"] == "default"
     assert called["user_data_dir"] == "/tmp/p1"
+    assert called["login_mode"] == "managed-profile"
+    assert called["lookback_days"] == 30
 
 
 def test_cmd_sync_triggers_maybe_capture(monkeypatch):
-    called = {"timeout": None, "browser": None, "user_data_dir": None}
+    called = {"timeout": None, "browser": None, "user_data_dir": None, "login_mode": None, "lookback_days": None}
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
-        lambda timeout_sec, browser, user_data_dir: (
+        lambda timeout_sec, browser, user_data_dir, login_mode="auto", lookback_days=None: (
             called.__setitem__("timeout", timeout_sec),
             called.__setitem__("browser", browser),
             called.__setitem__("user_data_dir", user_data_dir),
+            called.__setitem__("login_mode", login_mode),
+            called.__setitem__("lookback_days", lookback_days),
             None,
-        ),
+        )[-1],
     )
     monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
     monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
@@ -436,11 +544,15 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
             cursor_login_timeout_sec=99,
             cursor_login_browser="chromium",
             cursor_login_user_data_dir="",
+            cursor_login_mode="auto",
+            lookback_days=45,
         )
     )
     assert exit_code == 0
     assert called["timeout"] == 99
     assert called["browser"] == "chromium"
+    assert called["login_mode"] == "auto"
+    assert called["lookback_days"] == 45
 
 
 def test_cmd_collect_suppresses_cursor_probe_warning_when_cursor_rows_exist(monkeypatch):
@@ -448,7 +560,7 @@ def test_cmd_collect_suppresses_cursor_probe_warning_when_cursor_rows_exist(monk
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
-        lambda timeout_sec, browser, user_data_dir: "cursor warning",
+        lambda timeout_sec, browser, user_data_dir, login_mode="auto", lookback_days=None: "cursor warning",
     )
     monkeypatch.setattr(
         main,
@@ -481,6 +593,7 @@ def test_cmd_collect_suppresses_cursor_probe_warning_when_cursor_rows_exist(monk
             cursor_login_timeout_sec=88,
             cursor_login_browser="default",
             cursor_login_user_data_dir="/tmp/p1",
+            cursor_login_mode="auto",
             ui="none",
         )
     )
@@ -493,7 +606,7 @@ def test_cmd_collect_keeps_cursor_probe_warning_when_no_cursor_rows(monkeypatch)
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
-        lambda timeout_sec, browser, user_data_dir: "cursor warning",
+        lambda timeout_sec, browser, user_data_dir, login_mode="auto", lookback_days=None: "cursor warning",
     )
     monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
     monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
@@ -506,6 +619,7 @@ def test_cmd_collect_keeps_cursor_probe_warning_when_no_cursor_rows(monkeypatch)
             cursor_login_timeout_sec=88,
             cursor_login_browser="default",
             cursor_login_user_data_dir="/tmp/p1",
+            cursor_login_mode="auto",
             ui="none",
         )
     )

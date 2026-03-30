@@ -41,6 +41,9 @@ class _HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescrip
     """Preserve multi-line descriptions while showing argument defaults."""
 
 
+DEFAULT_LOOKBACK_DAYS = 30
+
+
 def _repo_root() -> Path:
     return Path.cwd()
 
@@ -142,6 +145,15 @@ def _collect_all(lookback_days: int, collectors: list[BaseCollector]) -> tuple[l
     return events, warnings
 
 
+def _resolve_lookback_days(parsed_value: int | None) -> int:
+    if isinstance(parsed_value, int) and parsed_value > 0:
+        return parsed_value
+    try:
+        return max(1, int(os.getenv("LOOKBACK_DAYS", str(DEFAULT_LOOKBACK_DAYS)) or str(DEFAULT_LOOKBACK_DAYS)))
+    except ValueError:
+        return DEFAULT_LOOKBACK_DAYS
+
+
 def cmd_init(_: argparse.Namespace) -> int:
     root = _repo_root()
     env_example = root / ".env.example"
@@ -154,7 +166,7 @@ def cmd_init(_: argparse.Namespace) -> int:
                     "ORG_USERNAME=",
                     "HASH_SALT=",
                     "TIMEZONE=Asia/Shanghai",
-                    "LOOKBACK_DAYS=7",
+                    f"LOOKBACK_DAYS={DEFAULT_LOOKBACK_DAYS}",
                     "",
                     "# Feishu Bitable",
                     "FEISHU_APP_TOKEN=",
@@ -316,6 +328,7 @@ def _maybe_capture_cursor_token(
     browser: str,
     user_data_dir: str,
     login_mode: str = "auto",
+    lookback_days: int | None = None,
 ) -> str | None:
     _load_runtime_env()
     effective_login_mode = _resolve_cursor_login_mode(login_mode, browser)
@@ -352,12 +365,9 @@ def _maybe_capture_cursor_token(
             return None
         return f"cursor dashboard probe failed with existing token: {msg}"
 
-    try:
-        lookback_days = max(1, int(os.getenv("LOOKBACK_DAYS", "7") or "7"))
-    except ValueError:
-        lookback_days = 7
+    resolved_lookback_days = _resolve_lookback_days(lookback_days)
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=lookback_days)
+    start = end - timedelta(days=resolved_lookback_days)
 
     cursor_collector = build_cursor_collector()
     ok, _ = cursor_collector.probe()
@@ -448,7 +458,7 @@ def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str]]:
     username = _required_org_username()
     salt = _required_env("HASH_SALT")
     timezone_name = os.getenv("TIMEZONE", "Asia/Shanghai")
-    lookback_days = int(os.getenv("LOOKBACK_DAYS", "7"))
+    lookback_days = _resolve_lookback_days(getattr(args, "lookback_days", None))
     local_source_host_hash = hash_source_host(username, "local", salt)
 
     configured_remotes = parse_remote_configs_from_env()
@@ -475,6 +485,7 @@ def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str]]:
 
 def cmd_collect(args: argparse.Namespace) -> int:
     cursor_probe_warning = _maybe_capture_cursor_token(
+        lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
         browser=getattr(args, "cursor_login_browser", "default"),
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
@@ -496,6 +507,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     cursor_probe_warning = _maybe_capture_cursor_token(
+        lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
         browser=getattr(args, "cursor_login_browser", "default"),
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
@@ -620,11 +632,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initialize runtime .env and report folders",
         description=(
             "Create the active runtime .env and reports directory if they do not exist yet. "
-            "Use this once when bootstrapping a new checkout."
+            f"Use this once when bootstrapping a new checkout. The generated env defaults to "
+            f"LOOKBACK_DAYS={DEFAULT_LOOKBACK_DAYS}."
         ),
         formatter_class=_HelpFormatter,
     )
-    sub.add_parser(
+    doctor_parser = sub.add_parser(
         "doctor",
         help="Check required config and available data sources",
         description=(
@@ -632,6 +645,16 @@ def build_parser() -> argparse.ArgumentParser:
             "collectors without writing reports or syncing data."
         ),
         formatter_class=_HelpFormatter,
+    )
+    doctor_parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=None,
+        metavar="LOOKBACK_DAYS",
+        help=(
+            "Collection window in days. Overrides LOOKBACK_DAYS from .env when provided; "
+            f"defaults to {DEFAULT_LOOKBACK_DAYS} if neither is set."
+        ),
     )
     sub.add_parser(
         "whoami",
@@ -694,6 +717,16 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=_HelpFormatter,
     )
     collect_parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=None,
+        metavar="LOOKBACK_DAYS",
+        help=(
+            "Collection window in days. Overrides LOOKBACK_DAYS from .env when provided; "
+            f"defaults to {DEFAULT_LOOKBACK_DAYS} if neither is set."
+        ),
+    )
+    collect_parser.add_argument(
         "--cursor-login-mode",
         default="auto",
         choices=["auto", "managed-profile", "manual"],
@@ -751,6 +784,16 @@ def build_parser() -> argparse.ArgumentParser:
             "  llm-usage sync --ui cli --cursor-login-browser chrome\n"
         ),
         formatter_class=_HelpFormatter,
+    )
+    sync_parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=None,
+        metavar="LOOKBACK_DAYS",
+        help=(
+            "Collection window in days. Overrides LOOKBACK_DAYS from .env when provided; "
+            f"defaults to {DEFAULT_LOOKBACK_DAYS} if neither is set."
+        ),
     )
     sync_parser.add_argument(
         "--cursor-login-mode",

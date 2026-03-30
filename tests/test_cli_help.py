@@ -33,6 +33,7 @@ def test_collect_help_describes_terminal_grouping_and_csv_behavior(capsys):
     assert "reports/usage_report.csv" in help_text
     assert "original aggregated rows" in help_text.lower()
     assert "--ui {auto,tui,cli,none}" in help_text
+    assert "--lookback-days LOOKBACK_DAYS" in help_text
 
 
 def test_sync_help_describes_terminal_grouping_and_feishu_behavior(capsys):
@@ -46,6 +47,7 @@ def test_sync_help_describes_terminal_grouping_and_feishu_behavior(capsys):
     assert "upsert" in help_text.lower()
     assert "feishu" in help_text.lower()
     assert "original aggregated rows" in help_text.lower()
+    assert "--lookback-days LOOKBACK_DAYS" in help_text
 
 
 def test_init_help_describes_bootstrap_behavior(capsys):
@@ -57,6 +59,7 @@ def test_init_help_describes_bootstrap_behavior(capsys):
     help_text = capsys.readouterr().out
     assert "active runtime .env" in help_text.lower()
     assert "reports directory" in help_text.lower()
+    assert "30" in help_text
 
 
 def test_doctor_help_describes_validation_behavior(capsys):
@@ -69,6 +72,7 @@ def test_doctor_help_describes_validation_behavior(capsys):
     assert "validate identity settings" in help_text.lower()
     assert "probe local collectors" in help_text.lower()
     assert "remote collectors" in help_text.lower()
+    assert "--lookback-days LOOKBACK_DAYS" in help_text
 
 
 def test_whoami_help_describes_hash_output(capsys):

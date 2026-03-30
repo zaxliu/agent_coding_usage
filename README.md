@@ -71,7 +71,7 @@ node ./bin/llm-usage-node.js collect --ui none
 ORG_USERNAME=san.zhang
 HASH_SALT=change-me
 TIMEZONE=Asia/Shanghai
-LOOKBACK_DAYS=7
+LOOKBACK_DAYS=30
 ```
 
 说明：
@@ -79,7 +79,7 @@ LOOKBACK_DAYS=7
 - `ORG_USERNAME`：必填，用于生成稳定的匿名身份哈希
 - `HASH_SALT`：必填，决定匿名字段的稳定性与不可逆性
 - `TIMEZONE`：聚合时按该时区落到 `date_local`
-- `LOOKBACK_DAYS`：采集窗口，默认 `7`
+- `LOOKBACK_DAYS`：采集窗口，默认 `30`
 
 如果缺少 `ORG_USERNAME`，交互终端下运行时会提示输入并写回 `.env`。
 
@@ -121,6 +121,7 @@ llm-usage --help
 - `.env.example`
 - `.env`
 - `reports/`
+- 默认写入 `LOOKBACK_DAYS=30`
 
 ### `llm-usage doctor`
 
@@ -135,6 +136,10 @@ llm-usage --help
 ```bash
 llm-usage doctor --help
 ```
+
+常用参数：
+
+- `--lookback-days N`：覆盖 `.env` 中的 `LOOKBACK_DAYS`
 
 ### `llm-usage whoami`
 
@@ -170,6 +175,7 @@ llm-usage collect --help
 
 常用参数：
 
+- `--lookback-days N`：覆盖 `.env` 中的 `LOOKBACK_DAYS`
 - `--ui auto|tui|cli|none`：远端选择界面。`auto` 自动选最合适的交互方式，`tui` 强制终端选择器，`cli` 使用逐项提示，`none` 跳过远端选择
 - `--cursor-login-mode`：Cursor 登录模式。默认 `auto`；Windows Chromium 浏览器下会自动切到 `managed-profile`；也可显式选择 `manual`
 - `--cursor-login-timeout-sec`：Cursor 浏览器登录等待时间，默认 `600`
@@ -197,6 +203,15 @@ llm-usage collect --ui cli --cursor-login-browser safari
 ```bash
 llm-usage sync --help
 ```
+
+常用参数：
+
+- `--lookback-days N`：覆盖 `.env` 中的 `LOOKBACK_DAYS`
+- `--ui auto|tui|cli|none`：远端选择界面。`auto` 自动选最合适的交互方式，`tui` 强制终端选择器，`cli` 使用逐项提示，`none` 跳过远端选择
+- `--cursor-login-mode`：Cursor 登录模式。默认 `auto`；Windows Chromium 浏览器下会自动切到 `managed-profile`；也可显式选择 `manual`
+- `--cursor-login-timeout-sec`：Cursor 浏览器登录等待时间，默认 `600`
+- `--cursor-login-browser`：指定 Cursor 登录捕获所用浏览器；默认 `default`
+- `--cursor-login-user-data-dir`：`managed-profile` 模式下的专用浏览器 profile 目录；留空时使用工具默认的受控目录
 
 常用参数：
 
