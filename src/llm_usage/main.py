@@ -7,6 +7,7 @@ import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from llm_usage.aggregation import aggregate_events
 from llm_usage.collectors import (
@@ -145,7 +146,7 @@ def _collect_all(lookback_days: int, collectors: list[BaseCollector]) -> tuple[l
     return events, warnings
 
 
-def _resolve_lookback_days(parsed_value: int | None) -> int:
+def _resolve_lookback_days(parsed_value: Optional[int]) -> int:
     if isinstance(parsed_value, int) and parsed_value > 0:
         return parsed_value
     try:
@@ -281,7 +282,7 @@ def _capture_and_save_cursor_token(
     return token
 
 
-def _prompt_for_manual_cursor_token(browser: str, *, automatic_capture_failed: bool) -> str | None:
+def _prompt_for_manual_cursor_token(browser: str, *, automatic_capture_failed: bool) -> Optional[str]:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return None
 
@@ -328,8 +329,8 @@ def _maybe_capture_cursor_token(
     browser: str,
     user_data_dir: str,
     login_mode: str = "auto",
-    lookback_days: int | None = None,
-) -> str | None:
+    lookback_days: Optional[int] = None,
+) -> Optional[str]:
     _load_runtime_env()
     effective_login_mode = _resolve_cursor_login_mode(login_mode, browser)
     if os.getenv("CURSOR_WEB_SESSION_TOKEN", "").strip():
@@ -423,7 +424,7 @@ def _resolve_remote_selection(
         defaults = list(configured_aliases)
     runtime_password: dict[str, str] = {}
 
-    def _password_getter() -> str | None:
+    def _password_getter() -> Optional[str]:
         return next(iter(runtime_password.values()), None)
 
     def _password_setter(password: str) -> None:

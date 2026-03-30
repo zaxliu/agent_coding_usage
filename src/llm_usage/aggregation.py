@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from .identity import build_row_key
@@ -12,7 +13,7 @@ def aggregate_events(
     events: list[UsageEvent],
     user_hash: str,
     timezone_name: str,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
 ) -> list[AggregateRecord]:
     tz = ZoneInfo(timezone_name)
     curr = (now or datetime.now(tz)).astimezone(tz)

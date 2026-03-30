@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Optional
 
 
 def hash_user(username: str, salt: str) -> str:
@@ -19,7 +20,7 @@ def build_row_key(
     date_local: str,
     tool: str,
     model: str,
-    session_fingerprint: str | None = None,
+    session_fingerprint: Optional[str] = None,
 ) -> str:
     identity = session_fingerprint.strip() if session_fingerprint and session_fingerprint.strip() else f"model:{model}"
     payload = f"{user_hash}|{source_host_hash}|{date_local}|{tool}|{identity}".encode("utf-8")

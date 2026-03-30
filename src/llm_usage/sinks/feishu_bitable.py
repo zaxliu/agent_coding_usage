@@ -4,6 +4,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from typing import Optional
 
 import requests
 
@@ -39,7 +40,7 @@ def _format_feishu_api_error(payload: dict, *, context: str) -> str:
     return text
 
 
-def _maybe_json(resp: requests.Response) -> dict | None:
+def _maybe_json(resp: requests.Response) -> Optional[dict]:
     try:
         payload = resp.json()
     except ValueError:
@@ -219,7 +220,7 @@ class FeishuBitableClient:
     def _fetch_field_type_map(self) -> dict[str, int]:
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
         out: dict[str, int] = {}
-        page_token: str | None = None
+        page_token: Optional[str] = None
         while True:
             params = {"page_size": 500}
             if page_token:

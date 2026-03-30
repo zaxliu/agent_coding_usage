@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -12,8 +13,8 @@ class UsageEvent:
     input_tokens: int
     cache_tokens: int
     output_tokens: int
-    session_fingerprint: str | None = None
-    source_ref: str | None = None
+    session_fingerprint: Optional[str] = None
+    source_ref: Optional[str] = None
     source_host_hash: str = ""
 
 

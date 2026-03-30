@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, Union
 
 from llm_usage.models import UsageEvent
 
@@ -706,15 +707,15 @@ class RemoteFileCollector(BaseCollector):
         target: SshTarget,
         source_name: str,
         source_host_hash: str,
-        patterns: list[str] | None = None,
+        patterns: Optional[list[str]] = None,
         max_files: int = 400,
         max_total_bytes: int = 64 * 1024 * 1024,
         timeout_sec: int = 120,
         runner=None,
         popen_factory=None,
-        jobs: list[RemoteCollectJob] | None = None,
+        jobs: Optional[list[RemoteCollectJob]] = None,
         use_sshpass: bool = False,
-        ssh_password: str | None = None,
+        ssh_password: Optional[str] = None,
     ) -> None:
         self.name = name
         self.target = target
@@ -812,7 +813,7 @@ class RemoteFileCollector(BaseCollector):
             warnings.append(f"{self.source_name}/{self.name}: no usage events in selected time range")
         return CollectOutput(events=events, warnings=warnings)
 
-    def _discover_python(self) -> tuple[str | None, str | None]:
+    def _discover_python(self) -> tuple[Optional[str], Optional[str]]:
         try:
             completed = self._run_ssh_with_optional_fallback(
                 [
@@ -831,7 +832,7 @@ class RemoteFileCollector(BaseCollector):
             return None, None
         return _extract_python_command(completed.stdout), None
 
-    def _run_python_script(self, python_cmd: str, script: str) -> tuple[dict, str | None]:
+    def _run_python_script(self, python_cmd: str, script: str) -> tuple[dict, Optional[str]]:
         command, script_input = self._python_stdin_command(python_cmd, script)
         self._log_progress("执行远端脚本（单次 SSH）")
         completed, error = self._ssh_run_python_command(command, input_text=script_input)
@@ -872,7 +873,7 @@ class RemoteFileCollector(BaseCollector):
         remote_command = f"{_shell_quote(python_cmd)} -c {_shell_quote(bootstrap)}"
         return ["sh", "-lc", remote_command], payload + "\n" + script
 
-    def _run_python_script_via_uploaded_file(self, python_cmd: str, script: str) -> tuple[dict, str | None]:
+    def _run_python_script_via_uploaded_file(self, python_cmd: str, script: str) -> tuple[dict, Optional[str]]:
         remote_base = f".llm_usage_{os.getpid()}_{next(tempfile._get_candidate_names())}"
         remote_script = f"{remote_base}.py"
         remote_output = f"{remote_base}_output.json"
@@ -929,7 +930,7 @@ class RemoteFileCollector(BaseCollector):
         ]
         return "\n".join(wrapper) + script.lstrip()
 
-    def _ssh_write_text(self, remote_path: str, content: str) -> str | None:
+    def _ssh_write_text(self, remote_path: str, content: str) -> Optional[str]:
         try:
             completed = self._run_ssh_with_optional_fallback(
                 ["sh", "-lc", f"cat > {_shell_quote(remote_path)}"],
@@ -953,7 +954,7 @@ class RemoteFileCollector(BaseCollector):
         except Exception:
             return
 
-    def _ssh_read_text(self, remote_path: str) -> tuple[str, str | None]:
+    def _ssh_read_text(self, remote_path: str) -> tuple[str, Optional[str]]:
         try:
             completed = self._run_ssh_with_optional_fallback(
                 ["sh", "-lc", f"cat {_shell_quote(remote_path)}"],
@@ -978,7 +979,7 @@ class RemoteFileCollector(BaseCollector):
         args: list[str],
         *,
         input_text: str,
-    ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    ) -> tuple[Optional[subprocess.CompletedProcess[str]], Optional[str]]:
         return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=True)
 
     def _ssh_run_python_command_once(
@@ -986,7 +987,7 @@ class RemoteFileCollector(BaseCollector):
         args: list[str],
         input_text: str,
         allow_retry: bool,
-    ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    ) -> tuple[Optional[subprocess.CompletedProcess[str]], Optional[str]]:
         try:
             command, env = self._ssh_command_and_env(args)
         except ValueError as exc:
@@ -1112,7 +1113,7 @@ class RemoteFileCollector(BaseCollector):
             Path(stdout_handle.name).unlink(missing_ok=True)
         return None, "remote command failed"
 
-    def _ssh_command_and_env(self, remote_args: list[str]) -> tuple[list[str], dict[str, str] | None]:
+    def _ssh_command_and_env(self, remote_args: list[str]) -> tuple[list[str], Optional[dict[str, str]]]:
         return _ssh_command_and_env(
             self.target.destination,
             self.target.port,
@@ -1142,7 +1143,7 @@ class RemoteFileCollector(BaseCollector):
         self,
         remote_args: list[str],
         *,
-        input_text: str | None = None,
+        input_text: Optional[str] = None,
         timeout: int,
     ):
         command, env = self._ssh_command_and_env(remote_args)
@@ -1260,8 +1261,8 @@ def _ssh_command_and_env(
     *,
     use_connection_sharing: bool = True,
     use_sshpass: bool = False,
-    ssh_password: str | None = None,
-) -> tuple[list[str], dict[str, str] | None]:
+    ssh_password: Optional[str] = None,
+) -> tuple[list[str], Optional[dict[str, str]]]:
     command = _ssh_base_command(destination, port, use_connection_sharing=use_connection_sharing) + remote_args
     if not use_sshpass:
         return command, None
@@ -1282,13 +1283,13 @@ def _coerce_int(value: object) -> int:
         return 0
 
 
-def _optional_str(value: object) -> str | None:
+def _optional_str(value: object) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value
     return None
 
 
-def _extract_python_command(stdout: str) -> str | None:
+def _extract_python_command(stdout: str) -> Optional[str]:
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if line in {"python3", "python"}:
@@ -1299,7 +1300,7 @@ def _extract_python_command(stdout: str) -> str | None:
     return None
 
 
-def _extract_json_payload(stdout: str) -> tuple[dict | list | None, str]:
+def _extract_json_payload(stdout: str) -> tuple[Optional[Union[dict, list]], str]:
     text = stdout.strip()
     if not text:
         return None, ""

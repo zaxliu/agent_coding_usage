@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -29,7 +29,7 @@ class CursorDashboardCollector(BaseCollector):
         self.page_size = max(1, min(page_size, 300))
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = max(1.0, timeout_sec)
-        self._request_mode: str | None = None
+        self._request_mode: Optional[str] = None
 
     def probe(self) -> tuple[bool, str]:
         if not self.session_token:
@@ -97,7 +97,7 @@ class CursorDashboardCollector(BaseCollector):
     def _fetch_usage_events(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         page = 1
         all_events: list[dict[str, Any]] = []
-        total_pages: int | None = None
+        total_pages: Optional[int] = None
 
         while True:
             payload = self._request_page(start=start, end=end, page=page, page_size=self.page_size)
@@ -146,7 +146,7 @@ class CursorDashboardCollector(BaseCollector):
             cookies["workos_id"] = self.workos_id
 
         auth_failures: list[tuple[str, int, str]] = []
-        last_http_error: tuple[int, str] | None = None
+        last_http_error: Optional[tuple[int, str]] = None
         for mode, body in self._candidate_request_bodies(start=start, end=end, page=page, page_size=page_size):
             try:
                 response = requests.post(
@@ -234,7 +234,7 @@ def _coerce_int(value: Any) -> int:
         return 0
 
 
-def _parse_time(raw: Any) -> datetime | None:
+def _parse_time(raw: Any) -> Optional[datetime]:
     if raw is None:
         return None
 
@@ -264,7 +264,7 @@ def _parse_time(raw: Any) -> datetime | None:
     return None
 
 
-def _extract_time(node: dict[str, Any]) -> datetime | None:
+def _extract_time(node: dict[str, Any]) -> Optional[datetime]:
     for key in ("timestamp", "createdAt", "created_at", "time", "eventTime", "date"):
         parsed = _parse_time(node.get(key))
         if parsed is not None:

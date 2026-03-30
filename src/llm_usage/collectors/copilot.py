@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Optional
 
 from llm_usage.env import split_csv_env
 
@@ -11,7 +12,7 @@ from .file_collector import FileCollector
 def build_copilot_cli_collector(
     source_name: str = "local",
     source_host_hash: str = "",
-    patterns: list[str] | None = None,
+    patterns: Optional[list[str]] = None,
 ) -> FileCollector:
     return FileCollector(
         "copilot_cli",
@@ -24,7 +25,7 @@ def build_copilot_cli_collector(
 def build_copilot_vscode_collector(
     source_name: str = "local",
     source_host_hash: str = "",
-    patterns: list[str] | None = None,
+    patterns: Optional[list[str]] = None,
 ) -> FileCollector:
     return FileCollector(
         "copilot_vscode",

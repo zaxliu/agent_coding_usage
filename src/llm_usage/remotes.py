@@ -5,7 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from llm_usage.collectors.base import BaseCollector
 from llm_usage.collectors.remote_file import (
@@ -50,10 +50,10 @@ class RemoteHostConfig:
     use_sshpass: bool = False
 
 
-RemoteValidator = Callable[[RemoteHostConfig, str | None], tuple[bool, str]]
+RemoteValidator = Callable[[RemoteHostConfig, Optional[str]], tuple[bool, str]]
 
 
-def parse_remote_configs_from_env(env: dict[str, str] | None = None) -> list[RemoteHostConfig]:
+def parse_remote_configs_from_env(env: Optional[dict[str, str]] = None) -> list[RemoteHostConfig]:
     data = env or os.environ
     aliases = _split_aliases(data.get("REMOTE_HOSTS", ""))
     out: list[RemoteHostConfig] = []
@@ -102,7 +102,7 @@ def build_remote_collectors(
     configs: list[RemoteHostConfig],
     username: str,
     salt: str,
-    runtime_passwords: dict[str, str] | None = None,
+    runtime_passwords: Optional[dict[str, str]] = None,
 ) -> list[BaseCollector]:
     collectors: list[BaseCollector] = []
     runtime_passwords = runtime_passwords or {}
@@ -137,8 +137,8 @@ def build_temporary_remote(
     ssh_host: str,
     ssh_user: str,
     ssh_port: int = 22,
-    claude_log_paths: list[str] | None = None,
-    codex_log_paths: list[str] | None = None,
+    claude_log_paths: Optional[list[str]] = None,
+    codex_log_paths: Optional[list[str]] = None,
     use_sshpass: bool = False,
 ) -> RemoteHostConfig:
     ssh_host = ssh_host.strip()
@@ -185,7 +185,7 @@ def probe_remote_ssh(
     config: RemoteHostConfig,
     timeout_sec: int = 10,
     *,
-    ssh_password: str | None = None,
+    ssh_password: Optional[str] = None,
 ) -> tuple[bool, str]:
     password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
     if config.use_sshpass and not password.strip():

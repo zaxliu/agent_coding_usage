@@ -4,7 +4,7 @@ import getpass
 import inspect
 import sys
 from dataclasses import dataclass, field
-from typing import Callable, TextIO
+from typing import Callable, Optional, TextIO
 
 from llm_usage.remotes import RemoteHostConfig, RemoteValidator, build_temporary_remote, probe_remote_ssh
 
@@ -30,12 +30,12 @@ def select_remotes(
     configs: list[RemoteHostConfig],
     default_aliases: list[str],
     ui_mode: str = "auto",
-    stdin: TextIO | None = None,
-    stdout: TextIO | None = None,
-    remote_validator: RemoteValidator | None = None,
-    password_getter: Callable[[], str | None] | None = None,
-    password_setter: Callable[[str], None] | None = None,
-    interactive_password_reader: Callable[[str], str] | None = None,
+    stdin: Optional[TextIO] = None,
+    stdout: Optional[TextIO] = None,
+    remote_validator: Optional[RemoteValidator] = None,
+    password_getter: Optional[Callable[[], Optional[str]]] = None,
+    password_setter: Optional[Callable[[str], None]] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
 ) -> RemoteSelectionResult:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
@@ -80,8 +80,8 @@ def select_remotes(
 def confirm_save_temporary_remote(
     config: RemoteHostConfig,
     ui_mode: str = "auto",
-    stdin: TextIO | None = None,
-    stdout: TextIO | None = None,
+    stdin: Optional[TextIO] = None,
+    stdout: Optional[TextIO] = None,
 ) -> bool:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
@@ -104,9 +104,9 @@ def _select_with_list(
     mode_used: str,
     use_prompt_toolkit: bool,
     remote_validator: RemoteValidator,
-    password_getter: Callable[[], str | None] | None,
-    password_setter: Callable[[str], None] | None,
-    interactive_password_reader: Callable[[str], str] | None,
+    password_getter: Optional[Callable[[], Optional[str]]],
+    password_setter: Optional[Callable[[str], None]],
+    interactive_password_reader: Optional[Callable[[str], str]],
     runtime_passwords: dict[str, str],
 ) -> RemoteSelectionResult:
     alias_map = {config.alias: config for config in configs}
@@ -200,9 +200,9 @@ def _select_without_configs(
     mode_used: str,
     use_prompt_toolkit: bool,
     remote_validator: RemoteValidator,
-    password_getter: Callable[[], str | None] | None,
-    password_setter: Callable[[str], None] | None,
-    interactive_password_reader: Callable[[str], str] | None,
+    password_getter: Optional[Callable[[], Optional[str]]],
+    password_setter: Optional[Callable[[str], None]],
+    interactive_password_reader: Optional[Callable[[str], str]],
     runtime_passwords: dict[str, str],
 ) -> RemoteSelectionResult:
     stdout.write("当前 .env 中还没有配置远端。\n")
@@ -237,11 +237,11 @@ def _prompt_temporary_remote(
     stdout: TextIO,
     use_prompt_toolkit: bool,
     remote_validator: RemoteValidator,
-    password_getter: Callable[[], str | None] | None,
-    password_setter: Callable[[str], None] | None,
-    interactive_password_reader: Callable[[str], str] | None,
+    password_getter: Optional[Callable[[], Optional[str]]],
+    password_setter: Optional[Callable[[str], None]],
+    interactive_password_reader: Optional[Callable[[str], str]],
     runtime_passwords: dict[str, str],
-) -> RemoteHostConfig | None:
+) -> Optional[RemoteHostConfig]:
     while True:
         stdout.write("新增临时远端\n")
         host = _read_line("SSH 主机：", stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit).strip()
@@ -321,7 +321,7 @@ def _read_password(
     stdin: TextIO,
     stdout: TextIO,
     use_prompt_toolkit: bool,
-    interactive_password_reader: Callable[[str], str] | None,
+    interactive_password_reader: Optional[Callable[[str], str]],
 ) -> str:
     if interactive_password_reader is not None:
         return interactive_password_reader(prompt_text)
@@ -333,7 +333,7 @@ def _read_password(
 def _invoke_remote_validator(
     remote_validator: RemoteValidator,
     config: RemoteHostConfig,
-    ssh_password: str | None,
+    ssh_password: Optional[str],
 ) -> tuple[bool, str]:
     try:
         signature = inspect.signature(remote_validator)

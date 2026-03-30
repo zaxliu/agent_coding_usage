@@ -3,12 +3,13 @@ from __future__ import annotations
 import csv
 from collections import defaultdict
 from pathlib import Path
+from typing import Union
 
 from .models import AggregateRecord
 
 
 def _group_terminal_rows(rows: list[AggregateRecord]) -> list[AggregateRecord]:
-    buckets: dict[tuple[str, str, str], dict[str, int | AggregateRecord]] = defaultdict(
+    buckets: dict[tuple[str, str, str], dict[str, Union[int, AggregateRecord]]] = defaultdict(
         lambda: {
             "input_tokens_sum": 0,
             "cache_tokens_sum": 0,

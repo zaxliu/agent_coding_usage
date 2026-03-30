@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 import shutil
 import sys
+from typing import Optional
 
 
 APP_NAME = "llm-usage"
@@ -27,7 +28,7 @@ def reset_runtime_paths_cache() -> None:
     _RUNTIME_PATHS_CACHE.clear()
 
 
-def resolve_runtime_paths(legacy_root: Path | None = None) -> RuntimePaths:
+def resolve_runtime_paths(legacy_root: Optional[Path] = None) -> RuntimePaths:
     root = (legacy_root or Path.cwd()).resolve()
     env_override = os.environ.get("LLM_USAGE_ENV_FILE", "").strip()
     data_override = os.environ.get("LLM_USAGE_DATA_DIR", "").strip()

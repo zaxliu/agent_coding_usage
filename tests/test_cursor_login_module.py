@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Optional
 
 from llm_usage import cursor_login
 
@@ -307,7 +308,7 @@ def test_read_tokens_with_browser_cookie3_passes_matching_key_file(monkeypatch, 
     key_file = user_data_dir / "Local State"
     key_file.write_text("{}", encoding="utf-8")
 
-    seen: list[tuple[str | None, str | None]] = []
+    seen: list[tuple[Optional[str], Optional[str]]] = []
 
     def _fake_loader(domain_name="", cookie_file=None, key_file=None):  # noqa: ANN001, ANN201
         seen.append((cookie_file, key_file))

@@ -4,7 +4,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from llm_usage.models import UsageEvent
 
@@ -28,7 +28,7 @@ def _coerce_int(value: Any) -> int:
         return 0
 
 
-def _parse_time(raw: Any) -> datetime | None:
+def _parse_time(raw: Any) -> Optional[datetime]:
     if raw is None:
         return None
     if isinstance(raw, (int, float)):
@@ -76,7 +76,7 @@ def _extract_usage(node: dict[str, Any]) -> tuple[int, int, int]:
     return input_tokens, cache_tokens, output_tokens
 
 
-def _extract_codex_token_count_usage(node: dict[str, Any]) -> tuple[int, int, int] | None:
+def _extract_codex_token_count_usage(node: dict[str, Any]) -> Optional[tuple[int, int, int]]:
     if node.get("type") != "event_msg":
         return None
     payload = node.get("payload")
@@ -96,7 +96,7 @@ def _extract_codex_token_count_usage(node: dict[str, Any]) -> tuple[int, int, in
     return input_tokens, cache_tokens, output_tokens
 
 
-def _extract_codex_turn_model(node: dict[str, Any]) -> str | None:
+def _extract_codex_turn_model(node: dict[str, Any]) -> Optional[str]:
     if node.get("type") != "turn_context":
         return None
     payload = node.get("payload")
@@ -117,7 +117,7 @@ def _extract_codex_turn_model(node: dict[str, Any]) -> str | None:
     return nested_model if nested_model != "unknown" else None
 
 
-def _build_session_fingerprint(path: Path, tool: str) -> str | None:
+def _build_session_fingerprint(path: Path, tool: str) -> Optional[str]:
     if tool == "codex":
         matches = re.findall(
             r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
@@ -144,7 +144,7 @@ def _extract_model(node: dict[str, Any]) -> str:
     return "unknown"
 
 
-def _extract_time(node: dict[str, Any]) -> datetime | None:
+def _extract_time(node: dict[str, Any]) -> Optional[datetime]:
     for key in ("timestamp", "created_at", "createdAt", "time", "date"):
         parsed = _parse_time(node.get(key))
         if parsed is not None:
@@ -156,7 +156,7 @@ def _extract_copilot_cli_events(
     node: dict[str, Any],
     fallback_time: datetime,
     source_ref: str,
-    session_fingerprint: str | None,
+    session_fingerprint: Optional[str],
 ) -> list[UsageEvent]:
     if node.get("type") != "session.shutdown":
         return []
@@ -352,7 +352,7 @@ def _build_copilot_vscode_event(
     request: dict[str, Any],
     fallback_time: datetime,
     source_ref: str,
-) -> UsageEvent | None:
+) -> Optional[UsageEvent]:
     session_id = session.get("sessionId")
     request_id = request.get("requestId")
     if not isinstance(session_id, str) or not session_id.strip():
@@ -533,8 +533,8 @@ def extract_usage_events_from_node(
     tool: str,
     fallback_time: datetime,
     source_ref: str,
-    codex_model_hint: str | None = None,
-    session_fingerprint: str | None = None,
+    codex_model_hint: Optional[str] = None,
+    session_fingerprint: Optional[str] = None,
 ) -> list[UsageEvent]:
     if tool == "copilot_cli":
         return _extract_copilot_cli_events(
@@ -608,10 +608,10 @@ def read_events_from_text(
     source_ref: str,
     fallback_time: datetime,
     file_suffix: str,
-    session_fingerprint_source: str | None = None,
-) -> tuple[list[UsageEvent], str | None]:
+    session_fingerprint_source: Optional[str] = None,
+) -> tuple[list[UsageEvent], Optional[str]]:
     events: list[UsageEvent] = []
-    codex_model_hint: str | None = None
+    codex_model_hint: Optional[str] = None
     session_fingerprint = (
         _build_session_fingerprint(Path(session_fingerprint_source), tool)
         if session_fingerprint_source
@@ -677,7 +677,7 @@ def read_events_from_text(
         return [], f"failed decoding {source_ref}: {exc}"
 
 
-def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], str | None]:
+def read_events_from_file(path: Path, tool: str) -> tuple[list[UsageEvent], Optional[str]]:
     fallback_time = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     try:
         text = path.read_text(encoding="utf-8")

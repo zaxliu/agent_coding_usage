@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -22,7 +22,7 @@ def fetch_cursor_session_token_via_browser(
     usage_url: str = "https://cursor.com/dashboard/usage",
     timeout_sec: int = 600,
     browser: str = "default",
-    user_data_dir: str | None = None,
+    user_data_dir: Optional[str] = None,
     login_mode: str = "auto",
 ) -> str:
     resolved_mode = (login_mode or "auto").strip().lower() or "auto"
@@ -109,7 +109,7 @@ def fetch_cursor_session_token_via_browser(
     )
 
 
-def fetch_cursor_workos_id_from_local_browsers(browser: str = "default") -> str | None:
+def fetch_cursor_workos_id_from_local_browsers(browser: str = "default") -> Optional[str]:
     requested_browser = (browser or "default").strip().lower()
     resolved_browser = _resolve_browser_choice(requested_browser)
     strict_browser = requested_browser != "default"
@@ -142,7 +142,7 @@ def _fetch_cursor_session_token_via_managed_profile(
     usage_url: str,
     timeout_sec: int,
     browser: str,
-    user_data_dir: str | None,
+    user_data_dir: Optional[str],
 ) -> str:
     managed_dir = (user_data_dir or "").strip() or _default_managed_profile_dir(browser)
     Path(managed_dir).mkdir(parents=True, exist_ok=True)
@@ -175,7 +175,7 @@ def _read_raw_cursor_session_token_candidates_from_managed_profile(
 def _read_cursor_session_token_from_local_browsers(
     preferred_browser: str,
     strict: bool = False,
-) -> str | None:
+) -> Optional[str]:
     candidates = _read_raw_cursor_session_token_candidates_from_local_browsers(
         preferred_browser,
         strict=strict,
@@ -197,7 +197,7 @@ def _read_cookie_value_from_local_browsers(
     preferred_browser: str,
     cookie_name: str,
     strict: bool = False,
-) -> str | None:
+) -> Optional[str]:
     candidates = _collect_named_cookie_values_from_local_browsers(
         preferred_browser=preferred_browser,
         cookie_name=cookie_name,
@@ -412,12 +412,12 @@ def _extract_cookie_values_from_cookie_iterable(cookies: Any, cookie_name: str) 
     return out
 
 
-def _extract_token_from_cookie_iterable(cookies: Any) -> str | None:
+def _extract_token_from_cookie_iterable(cookies: Any) -> Optional[str]:
     tokens = _extract_tokens_from_cookie_iterable(cookies)
     return tokens[0] if tokens else None
 
 
-def _find_valid_token(candidates: list[str]) -> str | None:
+def _find_valid_token(candidates: list[str]) -> Optional[str]:
     if not candidates:
         return None
 
@@ -451,7 +451,7 @@ def _find_valid_token(candidates: list[str]) -> str | None:
     return None
 
 
-def _select_login_fallback_token(candidates: list[str], baseline: list[str]) -> str | None:
+def _select_login_fallback_token(candidates: list[str], baseline: list[str]) -> Optional[str]:
     if not candidates:
         return None
     if not baseline:
@@ -462,7 +462,7 @@ def _select_login_fallback_token(candidates: list[str], baseline: list[str]) -> 
     return None
 
 
-def _validate_cursor_session_token(token: str, workos_id: str | None = None) -> tuple[bool, str]:
+def _validate_cursor_session_token(token: str, workos_id: Optional[str] = None) -> tuple[bool, str]:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=1)
 
@@ -544,7 +544,7 @@ def _validate_cursor_session_token(token: str, workos_id: str | None = None) -> 
     return False, "authentication failed"
 
 
-def _open_url_in_system_browser(url: str, browser: str = "default", user_data_dir: str | None = None) -> None:
+def _open_url_in_system_browser(url: str, browser: str = "default", user_data_dir: Optional[str] = None) -> None:
     browser = _normalize_browser_name(browser)
     try:
         if sys.platform == "darwin":
@@ -594,7 +594,7 @@ def _resolve_browser_choice(requested: str) -> str:
     return "chromium"
 
 
-def _detect_system_default_browser() -> str | None:
+def _detect_system_default_browser() -> Optional[str]:
     if sys.platform != "darwin":
         return None
 
@@ -618,7 +618,7 @@ def _detect_system_default_browser() -> str | None:
     return mapping.get(bundle_id)
 
 
-def _extract_handler_bundle_id_from_plist(path: Path) -> str | None:
+def _extract_handler_bundle_id_from_plist(path: Path) -> Optional[str]:
     if not path.exists():
         return None
     try:
@@ -669,7 +669,7 @@ def _normalize_browser_name(name: str) -> str:
     return value
 
 
-def _macos_app_name_for_browser(browser: str) -> str | None:
+def _macos_app_name_for_browser(browser: str) -> Optional[str]:
     mapping = {
         "chrome": "Google Chrome",
         "msedge": "Microsoft Edge",
@@ -680,7 +680,7 @@ def _macos_app_name_for_browser(browser: str) -> str | None:
     return mapping.get(browser)
 
 
-def _windows_browser_command(browser: str) -> list[str] | None:
+def _windows_browser_command(browser: str) -> Optional[list[str]]:
     candidates = {
         "chrome": [
             os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
@@ -704,7 +704,7 @@ def _windows_browser_command(browser: str) -> list[str] | None:
     return None
 
 
-def _linux_browser_command(browser: str) -> str | None:
+def _linux_browser_command(browser: str) -> Optional[str]:
     mapping = {
         "chrome": "google-chrome",
         "msedge": "microsoft-edge",
@@ -766,7 +766,7 @@ def _chromium_cookie_files_from_user_data_dir(user_data_dir: str) -> list[str]:
     return out
 
 
-def _chromium_key_file_for_cookie_file(cookie_file: str) -> str | None:
+def _chromium_key_file_for_cookie_file(cookie_file: str) -> Optional[str]:
     path = Path(cookie_file)
     name = path.name.lower()
     if name != "cookies":

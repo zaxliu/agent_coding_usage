@@ -9,7 +9,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from llm_usage.models import UsageEvent
 
@@ -26,7 +26,7 @@ def _get_opencode_db_path() -> Path:
     return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 
 
-def _parse_timestamp(ts: int | None) -> datetime:
+def _parse_timestamp(ts: Optional[int]) -> datetime:
     """Parse OpenCode timestamp (milliseconds) to datetime."""
     if ts is None:
         return datetime.now(timezone.utc)
@@ -34,7 +34,7 @@ def _parse_timestamp(ts: int | None) -> datetime:
     return datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
 
 
-def _extract_tokens_from_part_data(data: str) -> tuple[int, int, int] | None:
+def _extract_tokens_from_part_data(data: str) -> Optional[tuple[int, int, int]]:
     """Extract token usage from part data JSON.
 
     Returns (input_tokens, cache_tokens, output_tokens) or None if not a token record.
@@ -105,7 +105,7 @@ class OpenCodeCollector(BaseCollector):
         self,
         source_name: str = "local",
         source_host_hash: str = "",
-        db_path: Path | None = None,
+        db_path: Optional[Path] = None,
     ) -> None:
         self.source_name = source_name
         self.source_host_hash = source_host_hash

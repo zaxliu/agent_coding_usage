@@ -1,4 +1,5 @@
 from io import StringIO
+from typing import Optional
 
 from llm_usage.interaction import confirm_save_temporary_remote, select_remotes
 from llm_usage.remotes import RemoteHostConfig
@@ -70,7 +71,7 @@ def test_select_remotes_cli_supports_temporary_remote_without_configured_hosts()
 def test_select_remotes_cli_supports_sshpass_password_capture():
     password_store = {"value": None}
     password_prompts: list[str] = []
-    validator_calls: list[tuple[str, str | None, bool]] = []
+    validator_calls: list[tuple[str, Optional[str], bool]] = []
 
     def _password_getter():
         return password_store["value"]

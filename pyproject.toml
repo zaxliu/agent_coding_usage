@@ -11,7 +11,7 @@ license = "MIT"
 authors = [
   {name = "Lewis"},
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license-files = ["LICENSE"]
 keywords = ["llm", "usage", "cli", "feishu"]
 classifiers = [
@@ -19,6 +19,7 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Topic :: Software Development :: Build Tools",
