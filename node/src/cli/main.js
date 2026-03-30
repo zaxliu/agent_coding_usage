@@ -2,11 +2,13 @@ import process from "node:process";
 
 import { aggregateEvents } from "../core/aggregation.js";
 import { hashUser } from "../core/identity.js";
+import { buildCursorCollector } from "../collectors/cursor-dashboard.js";
 import { collectLocalUsage, probeLocalUsage } from "../collectors/local.js";
 import { toFeishuFields } from "../core/privacy.js";
+import { maybeCaptureCursorToken } from "../runtime/cursor-login.js";
 import {
-  getEnv,
   getEnvPath,
+  getEnv,
   getReportsDir,
   intEnv,
   loadDotenv,
@@ -30,15 +32,31 @@ Commands:
 Options:
   --lookback-days N
   --ui auto|cli|none
+  --cursor-login-mode auto|managed-profile|manual
+  --cursor-login-browser default|chrome|edge|safari|firefox|chromium|msedge|webkit
+  --cursor-login-user-data-dir PATH
+  --cursor-login-timeout-sec N
 `);
 }
 
 function parseArgs(argv) {
-  const options = { lookbackDays: undefined, ui: "auto" };
+  const options = {
+    help: false,
+    lookbackDays: undefined,
+    ui: "auto",
+    cursorLoginMode: "auto",
+    cursorLoginBrowser: "default",
+    cursorLoginUserDataDir: "",
+    cursorLoginTimeoutSec: 600,
+  };
   const positional = [];
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
+    if (value === "-h" || value === "--help") {
+      options.help = true;
+      continue;
+    }
     if (value === "--lookback-days") {
       options.lookbackDays = Number.parseInt(argv[index + 1] || "", 10);
       index += 1;
@@ -46,6 +64,26 @@ function parseArgs(argv) {
     }
     if (value === "--ui") {
       options.ui = argv[index + 1] || "auto";
+      index += 1;
+      continue;
+    }
+    if (value === "--cursor-login-mode") {
+      options.cursorLoginMode = argv[index + 1] || "auto";
+      index += 1;
+      continue;
+    }
+    if (value === "--cursor-login-browser") {
+      options.cursorLoginBrowser = argv[index + 1] || "default";
+      index += 1;
+      continue;
+    }
+    if (value === "--cursor-login-user-data-dir") {
+      options.cursorLoginUserDataDir = argv[index + 1] || "";
+      index += 1;
+      continue;
+    }
+    if (value === "--cursor-login-timeout-sec") {
+      options.cursorLoginTimeoutSec = Number.parseInt(argv[index + 1] || "", 10);
       index += 1;
       continue;
     }
@@ -96,7 +134,7 @@ function remoteCollectionWarnings() {
 }
 
 async function buildAggregates(lookbackDays) {
-  const localPayload = collectLocalUsage(lookbackDays);
+  const localPayload = await collectLocalUsage(lookbackDays);
   const username = requiredEnv("ORG_USERNAME");
   const salt = requiredEnv("HASH_SALT");
   const userHash = hashUser(username, salt);
@@ -114,13 +152,22 @@ async function buildAggregates(lookbackDays) {
 async function runDoctor(_lookbackDays, _uiMode) {
   printDoctorReport({
     envPath: getEnvPath(),
-    probes: probeLocalUsage(),
+    probes: await probeLocalUsage(),
     warnings: remoteCollectionWarnings(),
   });
   return 0;
 }
 
-async function runCollect(lookbackDays, uiMode) {
+async function runCollect(lookbackDays, uiMode, options) {
+  await maybeCaptureCursorToken({
+    timeoutSec: options.cursorLoginTimeoutSec,
+    browser: options.cursorLoginBrowser,
+    userDataDir: options.cursorLoginUserDataDir,
+    loginMode: options.cursorLoginMode,
+    lookbackDays,
+    envPath: getEnvPath(),
+    buildCursorCollector: () => buildCollectorsForCursor(),
+  });
   const { rows, warnings } = await buildAggregates(lookbackDays, uiMode);
   printWarnings(warnings);
   printTerminalReport(rows);
@@ -129,7 +176,16 @@ async function runCollect(lookbackDays, uiMode) {
   return 0;
 }
 
-async function runSync(lookbackDays, uiMode) {
+async function runSync(lookbackDays, uiMode, options) {
+  await maybeCaptureCursorToken({
+    timeoutSec: options.cursorLoginTimeoutSec,
+    browser: options.cursorLoginBrowser,
+    userDataDir: options.cursorLoginUserDataDir,
+    loginMode: options.cursorLoginMode,
+    lookbackDays,
+    envPath: getEnvPath(),
+    buildCursorCollector: () => buildCollectorsForCursor(),
+  });
   const { rows, warnings } = await buildAggregates(lookbackDays, uiMode);
   printWarnings(warnings);
   printTerminalReport(rows);
@@ -159,10 +215,15 @@ async function runSync(lookbackDays, uiMode) {
 }
 
 export async function main(argv) {
-  await prepareRuntimePaths(repoRoot);
-  loadDotenv();
   const { positional, options } = parseArgs(argv);
   const [command] = positional;
+  if (options.help && (command === "collect" || command === "sync" || command === "doctor" || command === undefined)) {
+    printHelp();
+    process.exitCode = 0;
+    return;
+  }
+  await prepareRuntimePaths(repoRoot);
+  loadDotenv();
   const lookbackDays = resolveLookbackDays(options.lookbackDays);
   const uiMode = ["auto", "cli", "none"].includes(options.ui) ? options.ui : "auto";
 
@@ -171,10 +232,10 @@ export async function main(argv) {
       process.exitCode = await runDoctor(lookbackDays, uiMode);
       return;
     case "collect":
-      process.exitCode = await runCollect(lookbackDays, uiMode);
+      process.exitCode = await runCollect(lookbackDays, uiMode, options);
       return;
     case "sync":
-      process.exitCode = await runSync(lookbackDays, uiMode);
+      process.exitCode = await runSync(lookbackDays, uiMode, options);
       return;
     case "-h":
     case "--help":
@@ -185,4 +246,15 @@ export async function main(argv) {
     default:
       throw new Error(`unknown command: ${command}`);
   }
+}
+
+function buildCollectorsForCursor() {
+  return {
+    probe() {
+      return buildCursorCollector().probe();
+    },
+    collect(start, end) {
+      return buildCursorCollector().collect(start, end);
+    },
+  };
 }

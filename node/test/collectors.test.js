@@ -6,6 +6,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { FileCollector } from "../src/collectors/file-collector.js";
+import { CursorDashboardCollector, buildCursorCollector } from "../src/collectors/cursor-dashboard.js";
 import { OpenCodeCollector } from "../src/collectors/opencode.js";
 import { readEventsFromText } from "../src/collectors/parsing.js";
 
@@ -163,4 +164,139 @@ test("OpenCodeCollector reads token usage from sqlite", () => {
   assert.equal(result.events[0].cacheTokens, 6);
   assert.equal(result.events[0].outputTokens, 9);
   assert.equal(result.events[0].sourceHostHash, "local-hash");
+});
+
+test("buildCursorCollector defaults to file collector", () => {
+  const originalToken = process.env.CURSOR_WEB_SESSION_TOKEN;
+  delete process.env.CURSOR_WEB_SESSION_TOKEN;
+  try {
+    const collector = buildCursorCollector({ sourceHostHash: "local-hash" });
+    assert.equal(collector instanceof FileCollector, true);
+    assert.equal(collector.name, "cursor");
+  } finally {
+    if (originalToken === undefined) {
+      delete process.env.CURSOR_WEB_SESSION_TOKEN;
+    } else {
+      process.env.CURSOR_WEB_SESSION_TOKEN = originalToken;
+    }
+  }
+});
+
+test("buildCursorCollector uses dashboard collector when token exists", () => {
+  const originalToken = process.env.CURSOR_WEB_SESSION_TOKEN;
+  process.env.CURSOR_WEB_SESSION_TOKEN = "token-abc";
+  try {
+    const collector = buildCursorCollector({ sourceHostHash: "local-hash" });
+    assert.equal(collector instanceof CursorDashboardCollector, true);
+    assert.equal(collector.name, "cursor");
+  } finally {
+    if (originalToken === undefined) {
+      delete process.env.CURSOR_WEB_SESSION_TOKEN;
+    } else {
+      process.env.CURSOR_WEB_SESSION_TOKEN = originalToken;
+    }
+  }
+});
+
+test("CursorDashboardCollector paginates and maps tokens", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const origins = [];
+  const baseTs = Date.parse("2026-03-10T00:00:00Z");
+
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(String(options.body));
+    calls.push(body.page);
+    origins.push(options.headers?.Origin || "");
+    const payload =
+      body.page === 1
+        ? {
+            totalUsageEventsCount: 3,
+            usageEventsDisplay: [
+              {
+                timestamp: String(baseTs),
+                model: "gpt-5",
+                tokenUsage: {
+                  inputTokens: 100,
+                  outputTokens: 20,
+                  cacheReadTokens: 5,
+                  cacheWriteTokens: 2,
+                },
+              },
+              {
+                timestamp: String(baseTs + 1000),
+                model: "claude-4",
+                tokenUsage: {
+                  inputTokens: 10,
+                  outputTokens: 1,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                },
+              },
+            ],
+          }
+        : {
+            totalUsageEventsCount: 3,
+            usageEventsDisplay: [
+              {
+                timestamp: String(baseTs + 2000),
+                model: "gpt-4.1",
+                tokenUsage: {
+                  inputTokens: 30,
+                  outputTokens: 6,
+                  cacheReadTokens: 3,
+                  cacheWriteTokens: 1,
+                },
+              },
+            ],
+          };
+
+    return {
+      status: 200,
+      async text() {
+        return JSON.stringify(payload);
+      },
+      async json() {
+        return payload;
+      },
+    };
+  };
+
+  try {
+    const collector = new CursorDashboardCollector({ sessionToken: "token", pageSize: 2 });
+    const out = await collector.collect(new Date("2026-03-01T00:00:00Z"), new Date("2026-03-31T00:00:00Z"));
+
+    assert.deepEqual(calls, [1, 2]);
+    assert.equal(origins.every((value) => value === "https://cursor.com"), true);
+    assert.equal(out.warnings.length, 0);
+    assert.equal(out.events.length, 3);
+    assert.equal(out.events[0].inputTokens, 100);
+    assert.equal(out.events[0].cacheTokens, 7);
+    assert.equal(out.events[0].outputTokens, 20);
+    assert.equal(out.events[2].model, "gpt-4.1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("CursorDashboardCollector probe returns auth failure", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    status: 401,
+    async text() {
+      return "{}";
+    },
+    async json() {
+      return {};
+    },
+  });
+
+  try {
+    const collector = new CursorDashboardCollector({ sessionToken: "expired-token" });
+    const probe = await collector.probe();
+    assert.equal(probe.ok, false);
+    assert.match(probe.message, /authentication failed/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

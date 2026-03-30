@@ -11,6 +11,7 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(nodeRoot, "package.json
 test("package metadata is ready for npm publish", () => {
   assert.equal(packageJson.private, undefined);
   assert.equal(packageJson.name, "@llm-usage-horizon/llm-usage-node");
+  assert.equal(packageJson.version, "0.1.3");
   assert.equal(packageJson.license, "MIT");
   assert.equal(packageJson.author, "Lewis");
   assert.deepEqual(packageJson.keywords, ["llm", "usage", "cli", "feishu", "codex", "cursor"]);
@@ -20,6 +21,7 @@ test("package metadata is ready for npm publish", () => {
   assert.equal(packageJson.repository.url, "git+https://github.com/zaxliu/agent_coding_usage.git");
   assert.equal(packageJson.repository.directory, "node");
   assert.equal(packageJson.bugs.url, "https://github.com/zaxliu/agent_coding_usage/issues");
+  assert.equal(packageJson.bin, "./bin/llm-usage-node.js");
 });
 
 test("package includes a pack validation script and a narrow published file list", () => {
@@ -31,6 +33,7 @@ test("package includes a pack validation script and a narrow published file list
     "src/cli",
     "src/collectors",
     "src/core",
+    "src/runtime/cursor-login.js",
     "src/runtime/env.js",
     "src/runtime/feishu.js",
     "src/runtime/remotes.js",

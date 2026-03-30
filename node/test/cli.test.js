@@ -71,17 +71,34 @@ function runCli(command, extraEnv = {}) {
   });
 }
 
-test("doctor succeeds without python3 when using only local collectors", () => {
+test("doctor succeeds when using only local collectors", () => {
   const result = runCli("doctor");
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /LLM Usage Node doctor/u);
   assert.match(result.stdout, /codex/u);
 });
 
-test("collect succeeds without python3 when using only local collectors", () => {
+test("collect succeeds when using only local collectors", () => {
   const result = runCli("collect");
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /Usage Report/u);
+  assert.match(result.stdout, /日期/u);
   assert.match(result.stdout, /codex/u);
   assert.match(result.stdout, /usage_report\.csv/u);
+});
+
+test("collect help shows Cursor login options", () => {
+  const result = spawnSync(nodeBin, [cliPath, "collect", "--help"], {
+    cwd: path.resolve(testDir, ".."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: nodeBinDir,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /--cursor-login-mode/u);
+  assert.match(result.stdout, /--cursor-login-browser/u);
+  assert.match(result.stdout, /--cursor-login-user-data-dir/u);
+  assert.match(result.stdout, /--cursor-login-timeout-sec/u);
 });

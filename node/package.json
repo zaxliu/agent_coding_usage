@@ -1,12 +1,19 @@
 {
   "name": "@llm-usage-horizon/llm-usage-node",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "type": "module",
   "description": "Local-first Node.js CLI for collecting LLM coding usage and syncing to Feishu",
   "license": "MIT",
   "author": "Lewis",
   "homepage": "https://github.com/zaxliu/agent_coding_usage/tree/main/node",
-  "keywords": ["llm", "usage", "cli", "feishu", "codex", "cursor"],
+  "keywords": [
+    "llm",
+    "usage",
+    "cli",
+    "feishu",
+    "codex",
+    "cursor"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zaxliu/agent_coding_usage.git",
@@ -24,6 +31,7 @@
     "src/cli",
     "src/collectors",
     "src/core",
+    "src/runtime/cursor-login.js",
     "src/runtime/env.js",
     "src/runtime/feishu.js",
     "src/runtime/remotes.js",
@@ -32,9 +40,7 @@
     "README.md",
     "LICENSE"
   ],
-  "bin": {
-    "llm-usage-node": "./bin/llm-usage-node.js"
-  },
+  "bin": "./bin/llm-usage-node.js",
   "scripts": {
     "test": "node --test",
     "pack:check": "env NPM_CONFIG_CACHE=/tmp/llm-usage-npm-cache npm pack --dry-run",

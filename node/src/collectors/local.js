@@ -2,6 +2,7 @@ import process from "node:process";
 
 import { hashSourceHost } from "../core/identity.js";
 import { getEnv, intEnv } from "../runtime/env.js";
+import { buildCursorCollector } from "./cursor-dashboard.js";
 import { FileCollector } from "./file-collector.js";
 import { OpenCodeCollector } from "./opencode.js";
 
@@ -72,10 +73,6 @@ function defaultCopilotVscodePaths() {
   ]);
 }
 
-function includeCursorLocalCollector() {
-  return !getEnv("CURSOR_WEB_SESSION_TOKEN");
-}
-
 function buildCollectors() {
   const username = getEnv("ORG_USERNAME");
   const salt = getEnv("HASH_SALT");
@@ -95,22 +92,7 @@ function buildCollectors() {
     }),
   ];
   collectors.push(new OpenCodeCollector({ sourceHostHash }));
-  if (includeCursorLocalCollector()) {
-    collectors.push(
-      new FileCollector(
-        "cursor",
-        splitCsvEnv("CURSOR_LOG_PATHS", [
-          "~/.cursor/logs/**/*.jsonl",
-          "~/.cursor/logs/**/*.json",
-          "~/.config/Cursor/User/workspaceStorage/**/*.json",
-          "~/.config/Cursor/User/globalStorage/**/*.json",
-          "~/Library/Application Support/Cursor/User/workspaceStorage/**/*.json",
-          "~/Library/Application Support/Cursor/User/globalStorage/**/*.json",
-        ]),
-        { sourceHostHash },
-      ),
-    );
-  }
+  collectors.push(buildCursorCollector({ sourceHostHash }));
   return collectors;
 }
 
@@ -118,24 +100,28 @@ export function localCollectorNames() {
   return buildCollectors().map((collector) => collector.name);
 }
 
-export function collectLocalUsage(lookbackDays = intEnv("LOOKBACK_DAYS", 7)) {
+export async function collectLocalUsage(lookbackDays = intEnv("LOOKBACK_DAYS", 7)) {
   const end = new Date();
   const start = new Date(end.getTime() - Math.max(1, lookbackDays) * 24 * 60 * 60 * 1000);
   const events = [];
   const warnings = [];
   for (const collector of buildCollectors()) {
-    const result = collector.collect(start, end);
+    const result = await collector.collect(start, end);
     events.push(...result.events);
     warnings.push(...result.warnings);
   }
   return { events, warnings };
 }
 
-export function probeLocalUsage() {
-  return buildCollectors().map((collector) => ({
-    name: collector.name,
-    source_name: collector.sourceName,
-    source_host_hash: collector.sourceHostHash,
-    ...collector.probe(),
-  }));
+export async function probeLocalUsage() {
+  const probes = [];
+  for (const collector of buildCollectors()) {
+    probes.push({
+      name: collector.name,
+      source_name: collector.sourceName,
+      source_host_hash: collector.sourceHostHash,
+      ...(await collector.probe()),
+    });
+  }
+  return probes;
 }
