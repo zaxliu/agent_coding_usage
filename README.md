@@ -96,7 +96,7 @@ llm-usage import-config --from /path/to/old/repo
 - `--dry-run`：先预览会复制哪些文件
 - `--force`：覆盖新位置里已存在的目标文件
 
-如果你就在旧仓库根目录执行，也可以省略 `--from`。迁移完成后，后续直接使用 `llm-usage doctor`、`llm-usage collect` 或 `llm-usage sync` 即可。
+如果你就在旧仓库根目录执行，也可以省略 `--from`。迁移完成后，后续直接使用 `llm-usage doctor`、`llm-usage whoami`、`llm-usage collect` 或 `llm-usage sync` 即可。
 
 ## 命令说明
 
@@ -109,6 +109,7 @@ llm-usage --help
 顶层 help 会列出所有子命令，并附带常用示例：
 
 - `llm-usage doctor`
+- `llm-usage whoami`
 - `llm-usage collect --ui auto`
 - `llm-usage sync --ui cli`
 - `llm-usage import-config --from /path/to/legacy/repo`
@@ -135,6 +136,21 @@ llm-usage --help
 llm-usage doctor --help
 ```
 
+### `llm-usage whoami`
+
+输出：
+
+- 当前 `ORG_USERNAME`
+- 当前 `user_hash`
+- `source_host_hash(local)`
+- 每个已配置远端各自的 `source_host_hash(<alias>)`
+
+查看帮助：
+
+```bash
+llm-usage whoami --help
+```
+
 ### `llm-usage collect`
 
 行为：
@@ -155,9 +171,10 @@ llm-usage collect --help
 常用参数：
 
 - `--ui auto|tui|cli|none`：远端选择界面。`auto` 自动选最合适的交互方式，`tui` 强制终端选择器，`cli` 使用逐项提示，`none` 跳过远端选择
+- `--cursor-login-mode`：Cursor 登录模式。默认 `auto`；Windows Chromium 浏览器下会自动切到 `managed-profile`；也可显式选择 `manual`
 - `--cursor-login-timeout-sec`：Cursor 浏览器登录等待时间，默认 `600`
 - `--cursor-login-browser`：指定 Cursor 登录捕获所用浏览器；默认 `default`
-- `--cursor-login-user-data-dir`：兼容旧登录流程的参数；当前系统浏览器流程通常保持为空即可
+- `--cursor-login-user-data-dir`：`managed-profile` 模式下的专用浏览器 profile 目录；留空时使用工具默认的受控目录
 
 示例：
 
@@ -184,9 +201,10 @@ llm-usage sync --help
 常用参数：
 
 - `--ui auto|tui|cli|none`：与 `collect` 相同，用于选择远端来源交互方式
+- `--cursor-login-mode`：Cursor 登录模式。默认 `auto`；Windows Chromium 浏览器下会自动切到 `managed-profile`；也可显式选择 `manual`
 - `--cursor-login-timeout-sec`：Cursor 浏览器登录等待时间，默认 `600`
 - `--cursor-login-browser`：指定 Cursor 登录捕获所用浏览器；默认 `default`
-- `--cursor-login-user-data-dir`：兼容旧登录流程的参数；当前系统浏览器流程通常保持为空即可
+- `--cursor-login-user-data-dir`：`managed-profile` 模式下的专用浏览器 profile 目录；留空时使用工具默认的受控目录
 
 示例：
 
@@ -222,6 +240,12 @@ llm-usage sync --ui cli --cursor-login-browser chrome
 
 - `user_hash` 基于 `ORG_USERNAME + HASH_SALT`
 - `source_host_hash` 基于 `ORG_USERNAME + source_label + HASH_SALT`
+
+如需查看当前机器和已配置远端对应的哈希值，可直接运行：
+
+```bash
+llm-usage whoami
+```
 
 这意味着同一台共享服务器上的不同用户不会发生来源冲突。
 
@@ -271,20 +295,19 @@ OpenCode 采集器从 SQLite 读取 token 使用量：
 行为说明：
 
 - 若 `CURSOR_WEB_SESSION_TOKEN` 已配置，优先使用网页仪表盘接口
-- 若 token 失效，会清空旧 token，并引导重新登录后将新 token 粘贴回命令行
-- 若 token 为空且本地日志不可用，会尝试打开系统浏览器登录页，并提示将 token 粘贴回命令行后自动写回 `.env`
+- 若 token 失效，会清空旧 token，并引导重新登录
+- 若 token 为空且本地日志不可用，会尝试打开登录页并刷新 `.env` 中的网页登录凭证
 
-Windows 下使用 `default` / `chrome` / `chromium` / `edge` / `msedge` 时，不会自动扫描本地 Cursor 浏览器 cookie，而是固定走“弹出网页登录页 + 手动粘贴 token”流程。
+Windows 下使用 `default` / `chrome` / `chromium` / `edge` / `msedge` 时，默认不会扫描系统浏览器默认 profile 的 cookie。
+程序会优先使用受控浏览器 profile 登录流程；若失败，再回退到手动粘贴 `WorkosCursorSessionToken`。
 
-Windows 手动登录步骤：
+Windows 受控 profile 登录流程：
 
 1. 运行 `llm-usage collect` 或 `llm-usage sync`
-2. 程序会自动打开 `https://cursor.com/dashboard/usage`
-3. 在浏览器里完成登录
-4. 打开 DevTools
-5. 在 `Application > Cookies > https://cursor.com` 中复制 `WorkosCursorSessionToken`
-6. 回到命令行，粘贴到 `CURSOR_WEB_SESSION_TOKEN` 提示中
-7. 程序会自动写入 `.env`，后续优先复用
+2. 若是 Windows Chromium 浏览器，程序会打开一个由工具管理的专用浏览器 profile
+3. 在该窗口中完成 `https://cursor.com/dashboard/usage` 登录
+4. 程序会轮询该 profile 中的 cookie，并自动写入 `.env`
+5. 如果自动捕获失败，程序才会回退到手动粘贴 `WorkosCursorSessionToken`
 
 ## 远端 SSH 采集
 
