@@ -40,8 +40,12 @@ def test_release_script_builds_only_python_distributions():
 
     script_text = script_path.read_text(encoding="utf-8")
 
-    assert "python -m build --sdist --wheel --outdir \"$OUTPUT_DIR\"" in script_text
-    assert "python -m twine check \"$OUTPUT_DIR\"/*" in script_text
+    assert 'PYTHON_BIN="${PYTHON_BIN:-}"' in script_text
+    assert 'command -v python3 >/dev/null 2>&1' in script_text
+    assert 'PYTHON_BIN="python3"' in script_text
+    assert 'PYTHON_BIN="python"' in script_text
+    assert '"$PYTHON_BIN" -m build --sdist --wheel --outdir "$OUTPUT_DIR"' in script_text
+    assert '"$PYTHON_BIN" -m twine check "$OUTPUT_DIR"/*' in script_text
     assert "twine upload" not in script_text
     assert "dist/*" not in script_text
 
