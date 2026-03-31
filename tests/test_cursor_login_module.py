@@ -119,6 +119,35 @@ def test_fetch_returns_latest_raw_candidate_after_timeout(monkeypatch):
     assert token == "token-timeout"
 
 
+def test_fetch_prints_delayed_safari_macos_hint(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cursor_login,
+        "_read_raw_cursor_session_token_candidates_from_local_browsers",
+        lambda preferred_browser, strict=False: [],
+    )
+    monkeypatch.setattr(cursor_login, "_find_valid_token", lambda candidates: None)
+    monkeypatch.setattr(cursor_login, "_select_login_fallback_token", lambda candidates, baseline: None)
+    monkeypatch.setattr(
+        cursor_login,
+        "_open_url_in_system_browser",
+        lambda url, browser="default": None,
+    )
+    monkeypatch.setattr(cursor_login, "_cookie_visibility_diagnostics", lambda: [])
+    monkeypatch.setattr(cursor_login.time, "sleep", lambda sec: None)
+    monkeypatch.setattr(cursor_login.sys, "platform", "darwin")
+
+    monotonic_values = iter([0.0, 0.0, 30.0, 30.0, 31.0, 31.0])
+    monkeypatch.setattr(cursor_login.time, "monotonic", lambda: next(monotonic_values))
+
+    try:
+        cursor_login.fetch_cursor_session_token_via_browser(timeout_sec=30, browser="safari")
+    except RuntimeError:
+        pass
+
+    output = capsys.readouterr().out
+    assert 'temporarily turning off "Prevent cross-site tracking"' in output
+
+
 def test_fetch_cursor_session_token_via_browser_managed_profile_reads_explicit_profile(monkeypatch):
     calls = []
 

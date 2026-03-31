@@ -16,6 +16,7 @@ TOKEN_COOKIE_NAME = "WorkosCursorSessionToken"
 WORKOS_ID_COOKIE_NAME = "workos_id"
 CURSOR_DOMAIN = "cursor.com"
 CURSOR_BASE_URL = "https://cursor.com"
+SAFARI_MACOS_HINT_DELAY_SEC = 30
 
 
 def fetch_cursor_session_token_via_browser(
@@ -65,6 +66,7 @@ def fetch_cursor_session_token_via_browser(
     print("info: no valid Cursor session token found. please login in your normal browser window.")
     print(f"info: waiting up to {timeout_sec}s for Cursor session cookie...")
     printed_marks: set[int] = set()
+    printed_safari_macos_hint = False
 
     while time.monotonic() < deadline:
         raw_candidates = _read_raw_cursor_session_token_candidates_from_local_browsers(
@@ -88,6 +90,18 @@ def fetch_cursor_session_token_via_browser(
             print(
                 "info: still waiting for browser cookie. "
                 "confirm login completed in the selected browser tab and refresh /dashboard/usage once."
+            )
+        if (
+            not printed_safari_macos_hint
+            and resolved_browser == "safari"
+            and sys.platform == "darwin"
+            and elapsed >= SAFARI_MACOS_HINT_DELAY_SEC
+        ):
+            printed_safari_macos_hint = True
+            print(
+                'info: If you\'re using Safari on macOS and the login has been waiting a long time '
+                'for a browser cookie, try temporarily turning off "Prevent cross-site tracking" '
+                "in Safari settings, then refresh the page and try again."
             )
         time.sleep(2)
 
