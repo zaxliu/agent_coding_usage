@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import hashlib
 import json
 import os
 import re
@@ -16,6 +18,9 @@ from typing import Optional, Union
 from llm_usage.models import UsageEvent
 
 from .base import BaseCollector, CollectOutput
+
+_CHUNKED_STDOUT_PREFIX = "LLMUSAGE_CHUNKED_V1"
+_DEFAULT_STDOUT_CHUNK_SIZE = 32 * 1024
 
 _PROBE_SCRIPT = """
 import base64, glob, json, os, sys
@@ -80,7 +85,7 @@ def parse_iso_datetime(text):
 
 _COLLECT_SCRIPT = (
     """
-import base64, glob, json, os, re, sys
+import base64, glob, hashlib, json, os, re, sys
 from datetime import datetime, timezone
 
 payload = json.loads(base64.b64decode(PAYLOAD_B64).decode("utf-8"))
@@ -92,6 +97,18 @@ max_total_bytes = int(payload.get("max_total_bytes", 0) or 0)
 
 def log(message):
     print(message, file=sys.stderr)
+
+def _emit_chunked_payload(payload_obj):
+    raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = base64.b64encode(raw).decode("ascii")
+    chunk_size = __CHUNKED_CHUNK_SIZE__
+    chunks = [blob[i : i + chunk_size] for i in range(0, len(blob), chunk_size)] or [""]
+    prefix = __CHUNKED_STDOUT_PREFIX__
+    print(prefix + " BEGIN total_chunks=" + str(len(chunks)) + " total_bytes=" + str(len(raw)) + " sha256=" + digest)
+    for index, chunk in enumerate(chunks):
+        print(prefix + " CHUNK index=" + str(index) + " data=" + chunk)
+    print(prefix + " END")
 
 log("info: remote script started jobs=" + str(len(jobs)))
 
@@ -540,12 +557,12 @@ for spec in jobs:
                     continue
                 if max_files > 0 and processed_files >= max_files:
                     warnings.append("stopped after reaching max_files=" + str(max_files))
-                    print(json.dumps({"events": events, "warnings": warnings}))
+                    _emit_chunked_payload({"events": events, "warnings": warnings})
                     raise SystemExit(0)
                 file_size = int(stat.st_size)
                 if max_total_bytes > 0 and total_bytes + file_size > max_total_bytes:
                     warnings.append("stopped after reaching max_total_bytes=" + str(max_total_bytes))
-                    print(json.dumps({"events": events, "warnings": warnings}))
+                    _emit_chunked_payload({"events": events, "warnings": warnings})
                     raise SystemExit(0)
                 seen.add(dedupe_key)
                 processed_files += 1
@@ -721,9 +738,11 @@ for spec in jobs:
                     warnings.append(active_tool + ": failed reading " + path + ": " + str(exc))
         except Exception:
             pass
-print(json.dumps({"events": events, "warnings": warnings}))
+_emit_chunked_payload({"events": events, "warnings": warnings})
 """
-).replace("__REMOTE_PARSE_TIME_HELPER__", _REMOTE_PARSE_TIME_HELPER)
+).replace("__REMOTE_PARSE_TIME_HELPER__", _REMOTE_PARSE_TIME_HELPER).replace(
+    "__CHUNKED_CHUNK_SIZE__", str(_DEFAULT_STDOUT_CHUNK_SIZE)
+).replace("__CHUNKED_STDOUT_PREFIX__", repr(_CHUNKED_STDOUT_PREFIX))
 
 
 @dataclass(frozen=True)
@@ -883,7 +902,11 @@ class RemoteFileCollector(BaseCollector):
         completed, error = self._ssh_run_python_command(command, input_text=script_input)
         if error:
             return {}, error
-        payload, discarded = _extract_json_payload(completed.stdout)
+        payload, discarded, chunked_error = _extract_remote_payload_with_fallbacks(completed.stdout)
+        if chunked_error:
+            self._log_non_json_debug(completed.stdout, completed.stderr)
+            self._log_progress(chunked_error)
+            return {}, chunked_error
         if discarded:
             for line in discarded.splitlines():
                 text = line.strip()
@@ -941,7 +964,11 @@ class RemoteFileCollector(BaseCollector):
             if completed.stderr.strip():
                 for line in completed.stderr.strip().splitlines():
                     self._log_progress(f"remote stderr: {line}")
-            payload, discarded = _extract_json_payload(completed.stdout)
+            payload, discarded, chunked_error = _extract_remote_payload_with_fallbacks(completed.stdout)
+            if chunked_error:
+                self._log_non_json_debug(completed.stdout, completed.stderr)
+                self._log_progress(chunked_error)
+                return {}, chunked_error
             if discarded:
                 for line in discarded.splitlines():
                     text = line.strip()
@@ -1441,7 +1468,75 @@ def _is_python_command(value: str) -> bool:
     return basename in {"python3", "python"}
 
 
-def _extract_json_payload(stdout: str) -> tuple[Optional[Union[dict, list]], str]:
+def _encode_chunked_stdout_payload(
+    payload: dict[str, object], *, chunk_size: int = _DEFAULT_STDOUT_CHUNK_SIZE
+) -> str:
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = base64.b64encode(raw).decode("ascii")
+    chunks = [blob[index : index + chunk_size] for index in range(0, len(blob), chunk_size)] or [""]
+    lines = [
+        f"{_CHUNKED_STDOUT_PREFIX} BEGIN total_chunks={len(chunks)} total_bytes={len(raw)} sha256={digest}",
+    ]
+    for index, chunk in enumerate(chunks):
+        lines.append(f"{_CHUNKED_STDOUT_PREFIX} CHUNK index={index} data={chunk}")
+    lines.append(f"{_CHUNKED_STDOUT_PREFIX} END")
+    return "\n".join(lines)
+
+
+def _decode_chunked_stdout_payload(stdout: str) -> tuple[Optional[dict[str, object]], str, Optional[str]]:
+    if _CHUNKED_STDOUT_PREFIX not in stdout:
+        return None, stdout, None
+    begin_re = re.compile(
+        rf"^{re.escape(_CHUNKED_STDOUT_PREFIX)} BEGIN total_chunks=(\d+) total_bytes=(\d+) sha256=([a-f0-9]{{64}})\s*$"
+    )
+    chunk_re = re.compile(rf"^{re.escape(_CHUNKED_STDOUT_PREFIX)} CHUNK index=(\d+) data=(.*)$")
+    end_re = re.compile(rf"^{re.escape(_CHUNKED_STDOUT_PREFIX)} END\s*$")
+    discarded_lines: list[str] = []
+    begin: Optional[tuple[int, int, str]] = None
+    chunk_data: dict[int, str] = {}
+    saw_end = False
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        m_begin = begin_re.match(line)
+        if m_begin:
+            begin = (int(m_begin.group(1)), int(m_begin.group(2)), m_begin.group(3))
+            continue
+        m_chunk = chunk_re.match(line)
+        if m_chunk:
+            chunk_data[int(m_chunk.group(1))] = m_chunk.group(2)
+            continue
+        if end_re.match(line):
+            saw_end = True
+            continue
+        discarded_lines.append(line)
+    if begin is None or not saw_end:
+        return None, stdout, "remote chunked stdout invalid framing"
+    total_chunks, total_bytes, expected_sha = begin
+    if len(chunk_data) != total_chunks or any(index not in chunk_data for index in range(total_chunks)):
+        return None, stdout, "remote chunked stdout missing chunks"
+    blob = "".join(chunk_data[index] for index in range(total_chunks))
+    try:
+        raw = base64.b64decode(blob.encode("ascii"), validate=True)
+    except (ValueError, binascii.Error):
+        return None, stdout, "remote chunked stdout invalid base64"
+    if len(raw) != total_bytes:
+        return None, stdout, "remote chunked stdout length mismatch"
+    if hashlib.sha256(raw).hexdigest() != expected_sha:
+        return None, stdout, "remote chunked stdout hash mismatch"
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return None, stdout, "remote chunked stdout invalid json"
+    if not isinstance(parsed, dict):
+        return None, stdout, "remote chunked stdout invalid json payload"
+    discarded_noise = "\n".join(discarded_lines).strip()
+    return parsed, discarded_noise, None
+
+
+def _extract_json_payload_legacy(stdout: str) -> tuple[Optional[Union[dict, list]], str]:
     text = stdout.strip()
     if not text:
         return None, ""
@@ -1460,6 +1555,25 @@ def _extract_json_payload(stdout: str) -> tuple[Optional[Union[dict, list]], str
         discarded = (stdout[:start] + stdout[start + end :]).strip()
         return payload, discarded
     return None, stdout
+
+
+def _extract_remote_payload_with_fallbacks(
+    stdout: str,
+) -> tuple[Optional[Union[dict, list]], str, Optional[str]]:
+    """Parse remote stdout: try chunked protocol first when present, then legacy JSON with noise tolerance.
+
+    Returns ``(payload, discarded_noise, chunked_error)``. On successful chunked decode,
+    ``discarded_noise`` holds non-protocol lines (e.g. SSH/bastion banners) around the frame.
+    When ``chunked_error`` is set, callers must not treat the failure as generic non-JSON
+    (chunked framing was present but invalid).
+    """
+    if _CHUNKED_STDOUT_PREFIX in stdout:
+        parsed, discarded, error = _decode_chunked_stdout_payload(stdout)
+        if error is not None:
+            return None, discarded, error
+        return parsed, discarded, None
+    payload, discarded = _extract_json_payload_legacy(stdout)
+    return payload, discarded, None
 
 
 def _preview_text(text: str, limit: int = 400) -> str:

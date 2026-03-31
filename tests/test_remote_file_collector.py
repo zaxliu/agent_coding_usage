@@ -312,6 +312,25 @@ def test_remote_file_collector_collects_events_with_source_hash(tmp_path):
     assert out.events[0].input_tokens == 80
 
 
+def test_remote_collect_script_emits_chunked_stdout_protocol(tmp_path):
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+    )
+    _cmd, script_input = collector._python_stdin_command("python3", remote_file._COLLECT_SCRIPT)
+    _payload_line, script_text = script_input.split("\n", 1)
+    first_line = next(line for line in script_text.splitlines() if line.strip())
+    assert first_line == "import base64, glob, hashlib, json, os, re, sys"
+    assert "_emit_chunked_payload" in script_text
+    assert repr(remote_file._CHUNKED_STDOUT_PREFIX) in script_text
+    assert f"chunk_size = {remote_file._DEFAULT_STDOUT_CHUNK_SIZE}" in script_text
+    assert 'print(json.dumps({"events": events, "warnings": warnings}))' not in script_text
+    assert "_emit_chunked_payload({\"events\": events, \"warnings\": warnings})" in script_text
+
+
 def test_remote_collect_script_does_not_duplicate_nested_usage_as_unknown(tmp_path):
     fake_file = tmp_path / "fake_usage.jsonl"
     file_mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
@@ -349,7 +368,9 @@ def test_remote_collect_script_does_not_duplicate_nested_usage_as_unknown(tmp_pa
     with redirect_stdout(stdout):
         exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
 
-    result = json.loads(stdout.getvalue())
+    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
+    assert error is None
+    result = parsed
     assert result["warnings"] == []
     assert [(event["model"], event["input_tokens"], event["cache_tokens"], event["output_tokens"]) for event in result["events"]] == [
         ("fake_model", 80, 20, 5)
@@ -916,3 +937,183 @@ def test_remote_file_collector_falls_back_to_uploaded_script_for_stdin_traceback
 
     assert called["fallback"] is True
     assert out.warnings == ["server_a/remote: no usage events in selected time range"]
+
+
+def test_remote_file_collector_collect_accepts_chunked_stdout(monkeypatch):
+    printed: list[str] = []
+    payload = {"events": [], "warnings": []}
+    chunked = remote_file._encode_chunked_stdout_payload(payload, chunk_size=24)
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            return _Completed(stdout=chunked)
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.warnings == ["server_a/codex: no usage events in selected time range"]
+    assert not any("remote stdout noise:" in line for line in printed)
+
+
+def test_decode_chunked_stdout_payload_returns_discarded_noise_around_frame():
+    payload = {"events": [], "warnings": []}
+    chunked = remote_file._encode_chunked_stdout_payload(payload, chunk_size=80)
+    stdout = "Last login: bastion\n" + chunked + "\ntrailer line\n"
+    parsed, discarded, error = remote_file._decode_chunked_stdout_payload(stdout)
+    assert error is None
+    assert parsed == payload
+    assert "Last login: bastion" in discarded
+    assert "trailer line" in discarded
+    assert remote_file._CHUNKED_STDOUT_PREFIX not in discarded
+
+
+def test_remote_file_collector_collect_accepts_chunked_stdout_with_surrounding_noise(monkeypatch):
+    """Chunked frame may be embedded in SSH/bastion lines; non-protocol lines are returned as discarded noise."""
+    printed: list[str] = []
+    payload = {"events": [], "warnings": []}
+    chunked = remote_file._encode_chunked_stdout_payload(payload, chunk_size=24)
+    stdout_mixed = "Last login: bastion\n" + chunked + "\ntrailer line\n"
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            return _Completed(stdout=stdout_mixed)
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.warnings == ["server_a/codex: no usage events in selected time range"]
+    assert any("remote stdout noise: Last login: bastion" in line for line in printed)
+    assert any("remote stdout noise: trailer line" in line for line in printed)
+
+
+def test_decode_chunked_stdout_payload_rejects_missing_chunk():
+    payload = {"events": [{"tool": "claude_code"}], "warnings": []}
+    chunked = remote_file._encode_chunked_stdout_payload(payload, chunk_size=12).splitlines()
+    broken = "\n".join(line for line in chunked if " index=1 " not in line)
+
+    parsed, discarded, error = remote_file._decode_chunked_stdout_payload(broken)
+
+    assert parsed is None
+    assert discarded == broken
+    assert error == "remote chunked stdout missing chunks"
+
+
+def test_decode_chunked_stdout_payload_rejects_hash_mismatch():
+    payload = {"events": [{"tool": "claude_code"}], "warnings": []}
+    lines = remote_file._encode_chunked_stdout_payload(payload, chunk_size=12).splitlines()
+    # Tamper with the declared digest so decoded bytes still match total_bytes but SHA-256 check fails.
+    begin = lines[0]
+    head, sep, _rest = begin.partition(" sha256=")
+    lines[0] = head + sep + ("0" * 64)
+
+    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload("\n".join(lines))
+
+    assert parsed is None
+    assert error == "remote chunked stdout hash mismatch"
+
+
+def test_remote_file_collector_collect_prefers_chunked_protocol_before_legacy_noise(monkeypatch):
+    """Legacy JSON in leading noise must not win when a valid chunked frame is also present."""
+    printed: list[str] = []
+    payload = {"events": [], "warnings": []}
+    chunked = remote_file._encode_chunked_stdout_payload(payload, chunk_size=24)
+    misleading = json.dumps({"events": [{"tool": "from_noise"}], "warnings": []})
+    stdout_mixed = "banner\n" + misleading + "\n" + chunked + "\n"
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            return _Completed(stdout=stdout_mixed)
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.events == []
+    assert out.warnings == ["server_a/codex: no usage events in selected time range"]
+    noise = [line for line in printed if "remote stdout noise:" in line]
+    assert any("banner" in line for line in noise)
+    assert len(noise) >= 2
+
+
+def test_remote_file_collector_reports_chunked_stdout_corruption(monkeypatch):
+    printed: list[str] = []
+    prefix = remote_file._CHUNKED_STDOUT_PREFIX
+    broken = (
+        f"{prefix} BEGIN total_chunks=1 total_bytes=10 sha256={'a' * 64}\n"
+        f"{prefix} CHUNK index=0 data=xxxx\n"
+        # missing END and invalid framing — must not collapse to generic non-JSON message
+    )
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            return _Completed(stdout=broken)
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert out.events == []
+    assert len(out.warnings) == 1
+    assert out.warnings[0].startswith("server_a/codex: remote chunked stdout")
+    assert "non-JSON" not in out.warnings[0]
+    assert not any("remote stdout noise:" in line for line in printed)
+    assert any("remote stdout debug:" in line for line in printed)
+    assert any("remote stdout preview:" in line for line in printed)
