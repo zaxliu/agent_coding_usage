@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version
 import os
 import shutil
 import sys
@@ -28,6 +29,7 @@ from llm_usage.cursor_login import (
 from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
 from llm_usage.interaction import confirm_save_temporary_remote, run_config_editor, select_remotes
+from llm_usage.offline_bundle import OfflineBundleError, read_offline_bundle, write_offline_bundle
 from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
 from llm_usage.remotes import append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
@@ -154,6 +156,99 @@ def _resolve_lookback_days(parsed_value: Optional[int]) -> int:
         return max(1, int(os.getenv("LOOKBACK_DAYS", str(DEFAULT_LOOKBACK_DAYS)) or str(DEFAULT_LOOKBACK_DAYS)))
     except ValueError:
         return DEFAULT_LOOKBACK_DAYS
+
+
+def _tool_version() -> str:
+    for package_name in ("llm-usage-horizon", "llm_usage_horizon"):
+        try:
+            return version(package_name)
+        except PackageNotFoundError:
+            continue
+    return "dev"
+
+
+def _default_bundle_output_path() -> Path:
+    timestamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H%M%S%z")
+    return _reports_dir() / f"llm-usage-bundle-{timestamp}.zip"
+
+
+def _print_warnings(warnings: list[str]) -> None:
+    for warning in warnings:
+        print(f"warn: {warning}")
+
+
+def _sync_rows_to_feishu(rows: list, *, dry_run: bool = False) -> int:
+    if dry_run:
+        print("dry-run: bundle validated and upload skipped")
+        return 0
+
+    app_token = _required_env("FEISHU_APP_TOKEN")
+    table_id = os.getenv("FEISHU_TABLE_ID", "").strip()
+    bot_token = os.getenv("FEISHU_BOT_TOKEN", "").strip()
+    if not bot_token:
+        app_id = _required_env("FEISHU_APP_ID")
+        app_secret = _required_env("FEISHU_APP_SECRET")
+        bot_token = fetch_tenant_access_token(app_id=app_id, app_secret=app_secret)
+    if not table_id:
+        table_id = fetch_first_table_id(app_token=app_token, bot_token=bot_token)
+        print(f"info: FEISHU_TABLE_ID empty, auto-selected first table: {table_id}")
+
+    client = FeishuBitableClient(app_token=app_token, table_id=table_id, bot_token=bot_token)
+    result = client.upsert(rows)
+    print(f"飞书同步完成：新增={result.created} 更新={result.updated} 失败={result.failed}")
+    if result.warning_samples:
+        for item in result.warning_samples:
+            print(f"warn: {item}")
+    if result.error_samples:
+        print("飞书失败示例：")
+        for item in result.error_samples:
+            print(f"warn: {item}")
+    return 0 if result.failed == 0 else 2
+
+
+def _validate_sync_bundle_args(args: argparse.Namespace) -> None:
+    conflicts: list[str] = []
+    if getattr(args, "lookback_days", None) is not None:
+        conflicts.append("--lookback-days")
+    if getattr(args, "ui", "auto") != "auto":
+        conflicts.append("--ui")
+    if getattr(args, "cursor_login_timeout_sec", 600) != 600:
+        conflicts.append("--cursor-login-timeout-sec")
+    if getattr(args, "cursor_login_browser", "default") != "default":
+        conflicts.append("--cursor-login-browser")
+    if getattr(args, "cursor_login_user_data_dir", ""):
+        conflicts.append("--cursor-login-user-data-dir")
+    if getattr(args, "cursor_login_mode", "auto") != "auto":
+        conflicts.append("--cursor-login-mode")
+    if conflicts:
+        joined = ", ".join(conflicts)
+        raise RuntimeError(f"--from-bundle cannot be combined with online collection flags: {joined}")
+
+
+def cmd_export_bundle(args: argparse.Namespace) -> int:
+    cursor_probe_warning = _maybe_capture_cursor_token(
+        lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
+        timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
+        browser=getattr(args, "cursor_login_browser", "default"),
+        user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+        login_mode=getattr(args, "cursor_login_mode", "auto"),
+    )
+    rows, warnings = _build_aggregates(args)
+    if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
+        warnings = [cursor_probe_warning, *warnings]
+    output_path = Path(getattr(args, "output", "") or _default_bundle_output_path()).expanduser()
+    timezone_name = os.getenv("TIMEZONE", "Asia/Shanghai")
+    bundle_path = write_offline_bundle(
+        rows,
+        output_path,
+        warnings=warnings,
+        timezone_name=timezone_name,
+        lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
+        tool_version=_tool_version(),
+        include_csv=getattr(args, "include_csv", True),
+    )
+    print(f"bundle: {bundle_path}")
+    return 0
 
 
 def cmd_init(_: argparse.Namespace) -> int:
@@ -506,8 +601,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
     if warnings:
-        for warning in warnings:
-            print(f"warn: {warning}")
+        _print_warnings(warnings)
 
     print_terminal_report(rows)
     path = write_csv_report(rows, _reports_dir())
@@ -516,6 +610,16 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
+    if getattr(args, "from_bundle", None):
+        _load_runtime_env()
+        _validate_sync_bundle_args(args)
+        rows, warnings, _manifest = read_offline_bundle(Path(args.from_bundle).expanduser())
+        print(f"env: {_env_path()}")
+        if warnings:
+            _print_warnings(warnings)
+        print_terminal_report(rows)
+        return _sync_rows_to_feishu(rows, dry_run=getattr(args, "dry_run", False))
+
     cursor_probe_warning = _maybe_capture_cursor_token(
         lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
@@ -528,35 +632,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
     if warnings:
-        for warning in warnings:
-            print(f"warn: {warning}")
+        _print_warnings(warnings)
 
     print_terminal_report(rows)
     csv_path = write_csv_report(rows, _reports_dir())
     print(f"csv: {csv_path}")
-
-    app_token = _required_env("FEISHU_APP_TOKEN")
-    table_id = os.getenv("FEISHU_TABLE_ID", "").strip()
-    bot_token = os.getenv("FEISHU_BOT_TOKEN", "").strip()
-    if not bot_token:
-        app_id = _required_env("FEISHU_APP_ID")
-        app_secret = _required_env("FEISHU_APP_SECRET")
-        bot_token = fetch_tenant_access_token(app_id=app_id, app_secret=app_secret)
-    if not table_id:
-        table_id = fetch_first_table_id(app_token=app_token, bot_token=bot_token)
-        print(f"info: FEISHU_TABLE_ID empty, auto-selected first table: {table_id}")
-
-    client = FeishuBitableClient(app_token=app_token, table_id=table_id, bot_token=bot_token)
-    result = client.upsert(rows)
-    print(f"飞书同步完成：新增={result.created} 更新={result.updated} 失败={result.failed}")
-    if result.warning_samples:
-        for item in result.warning_samples:
-            print(f"warn: {item}")
-    if result.error_samples:
-        print("飞书失败示例：")
-        for item in result.error_samples:
-            print(f"warn: {item}")
-    return 0 if result.failed == 0 else 2
+    return _sync_rows_to_feishu(rows, dry_run=getattr(args, "dry_run", False))
 
 
 def _import_config_plan(source_root: Path, runtime_paths, force: bool) -> tuple[list[tuple[Path, Path, str]], list[str]]:
@@ -635,6 +716,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  llm-usage config\n"
             "  llm-usage collect --ui auto\n"
             "  llm-usage sync --ui cli\n"
+            "  llm-usage export-bundle --output /tmp/offline.zip\n"
             "  llm-usage import-config --from /path/to/legacy/repo\n"
         ),
         formatter_class=_HelpFormatter,
@@ -793,6 +875,87 @@ def build_parser() -> argparse.ArgumentParser:
             "selector, cli uses prompt-based selection, none disables remotes"
         ),
     )
+    export_parser = sub.add_parser(
+        "export-bundle",
+        help="Collect usage and write an offline bundle for later upload",
+        description=(
+            "Collect usage from local and selected remote sources, then write a single offline bundle "
+            "file that can be copied to another machine and uploaded later via `llm-usage sync --from-bundle`."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  llm-usage export-bundle\n"
+            "  llm-usage export-bundle --output /tmp/offline.zip\n"
+            "  llm-usage export-bundle --no-csv\n"
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    export_parser.add_argument(
+        "--output",
+        type=str,
+        default="",
+        metavar="OUTPUT",
+        help="Output zip path for the offline bundle; defaults to reports/llm-usage-bundle-<timestamp>.zip",
+    )
+    export_parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=None,
+        metavar="LOOKBACK_DAYS",
+        help=(
+            "Collection window in days. Overrides LOOKBACK_DAYS from .env when provided; "
+            f"defaults to {DEFAULT_LOOKBACK_DAYS} if neither is set."
+        ),
+    )
+    export_parser.add_argument(
+        "--cursor-login-mode",
+        default="auto",
+        choices=["auto", "managed-profile", "manual"],
+        help="Cursor dashboard login mode",
+    )
+    export_parser.add_argument(
+        "--cursor-login-timeout-sec",
+        type=int,
+        default=600,
+        help=(
+            "Maximum wait time when opening browser login or capturing the Cursor session token; "
+            "increase this if you need more time to complete browser login"
+        ),
+    )
+    export_parser.add_argument(
+        "--cursor-login-browser",
+        choices=["default", "chrome", "edge", "safari", "firefox", "chromium", "msedge", "webkit"],
+        default="default",
+        help=(
+            "Browser used for Cursor login capture; keep the default unless you need a specific "
+            "installed browser for SSO or cookie access"
+        ),
+    )
+    export_parser.add_argument(
+        "--cursor-login-user-data-dir",
+        type=str,
+        default="",
+        help=(
+            "Compatibility option for older browser-login flows; leave empty for the current "
+            "system-browser flow"
+        ),
+    )
+    export_parser.add_argument(
+        "--ui",
+        choices=["auto", "tui", "cli", "none"],
+        default="auto",
+        help=(
+            "Remote selection UI mode: auto picks the best interactive UI, tui forces the terminal "
+            "selector, cli uses prompt-based selection, none disables remotes"
+        ),
+    )
+    export_parser.add_argument(
+        "--no-csv",
+        action="store_false",
+        dest="include_csv",
+        help="Do not include usage_report.csv inside the bundle",
+    )
+    export_parser.set_defaults(include_csv=True)
     sync_parser = sub.add_parser(
         "sync",
         help="Collect usage and upsert aggregated rows to Feishu",
@@ -801,14 +964,24 @@ def build_parser() -> argparse.ArgumentParser:
             "write reports/usage_report.csv, then upsert the original aggregated rows to Feishu.\n"
             "\n"
             "Terminal output is grouped by date + tool + model for easier reading.\n"
-            "CSV output and Feishu upserts keep the original aggregated rows."
+            "CSV output and Feishu upserts keep the original aggregated rows.\n"
+            "\n"
+            "Use --from-bundle to upload rows from an offline bundle instead of collecting live data."
         ),
         epilog=(
             "Examples:\n"
             "  llm-usage sync --ui auto\n"
             "  llm-usage sync --ui cli --cursor-login-browser chrome\n"
+            "  llm-usage sync --from-bundle /tmp/offline.zip --dry-run\n"
         ),
         formatter_class=_HelpFormatter,
+    )
+    sync_parser.add_argument(
+        "--from-bundle",
+        type=str,
+        default="",
+        metavar="FROM_BUNDLE",
+        help="Read aggregated rows from an offline bundle instead of collecting from local/remote sources",
     )
     sync_parser.add_argument(
         "--lookback-days",
@@ -862,6 +1035,11 @@ def build_parser() -> argparse.ArgumentParser:
             "selector, cli uses prompt-based selection, none disables remotes"
         ),
     )
+    sync_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate rows and print the terminal summary without uploading to Feishu",
+    )
     return parser
 
 
@@ -875,9 +1053,14 @@ def main() -> int:
         "config": cmd_config,
         "import-config": cmd_import_config,
         "collect": cmd_collect,
+        "export-bundle": cmd_export_bundle,
         "sync": cmd_sync,
     }
-    return cmd_map[args.command](args)
+    try:
+        return cmd_map[args.command](args)
+    except (OfflineBundleError, RuntimeError) as exc:
+        print(f"error: {exc}")
+        return 1
 
 
 if __name__ == "__main__":

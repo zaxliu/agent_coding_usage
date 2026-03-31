@@ -20,7 +20,7 @@ def test_top_level_help_shows_examples_and_commands(capsys):
     assert "sync" in help_text
     assert "whoami" in help_text
     assert "config" in help_text
-    assert "bundle" not in help_text
+    assert "export-bundle" in help_text
 
 
 def test_collect_help_describes_terminal_grouping_and_csv_behavior(capsys):
@@ -51,6 +51,7 @@ def test_sync_help_describes_terminal_grouping_and_feishu_behavior(capsys):
     assert "original aggregated rows" in help_text.lower()
     assert "--lookback-days LOOKBACK_DAYS" in help_text
     assert "none disables remotes" in help_text.lower()
+    assert "--from-bundle FROM_BUNDLE" in help_text
 
 
 def test_init_help_describes_bootstrap_behavior(capsys):
@@ -99,6 +100,18 @@ def test_parser_rejects_removed_bundle_command(capsys):
     err_text = capsys.readouterr().err
     assert "invalid choice" in err_text.lower()
     assert "bundle" in err_text
+
+
+def test_export_bundle_help_describes_offline_handoff(capsys):
+    parser = main.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["export-bundle", "--help"])
+
+    help_text = capsys.readouterr().out
+    assert "offline bundle" in help_text.lower()
+    assert "--output OUTPUT" in help_text
+    assert "--no-csv" in help_text
 
 
 def test_import_config_help_describes_examples_and_force_flag(capsys):

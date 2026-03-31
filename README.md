@@ -20,6 +20,7 @@
 
 - `llm-usage collect`：采集并汇总本地 + 已选远端数据，输出终端表格和 `reports/usage_report.csv`
 - `llm-usage sync`：在 `collect` 基础上，将聚合结果同步到飞书多维表格
+- `llm-usage export-bundle`：采集并生成离线 bundle，拷回联网机器后可用 `sync --from-bundle` 上传
 - `llm-usage doctor`：检查配置和各采集器可用性
 - `llm-usage init`：生成 `.env`、`.env.example` 和 `reports/`
 - `llm-usage config`：打开交互式菜单编辑器，编辑当前运行时 `.env`
@@ -115,6 +116,7 @@ llm-usage --help
 - `llm-usage config`
 - `llm-usage collect --ui auto`
 - `llm-usage sync --ui cli`
+- `llm-usage export-bundle --output /tmp/offline.zip`
 - `llm-usage import-config --from /path/to/legacy/repo`
 
 ### `llm-usage init`
@@ -230,20 +232,84 @@ llm-usage sync --help
 - `--cursor-login-browser`：指定 Cursor 登录捕获所用浏览器；默认 `default`
 - `--cursor-login-user-data-dir`：`managed-profile` 模式下的专用浏览器 profile 目录；留空时使用工具默认的受控目录
 
-常用参数：
-
-- `--ui auto|tui|cli|none`：与 `collect` 相同，用于选择远端来源交互方式
-- `--cursor-login-mode`：Cursor 登录模式。默认 `auto`；Windows Chromium 浏览器下会自动切到 `managed-profile`；也可显式选择 `manual`
-- `--cursor-login-timeout-sec`：Cursor 浏览器登录等待时间，默认 `600`
-- `--cursor-login-browser`：指定 Cursor 登录捕获所用浏览器；默认 `default`
-- `--cursor-login-user-data-dir`：`managed-profile` 模式下的专用浏览器 profile 目录；留空时使用工具默认的受控目录
-
 示例：
 
 ```bash
 llm-usage sync --ui auto
 llm-usage sync --ui cli --cursor-login-browser chrome
+llm-usage sync --from-bundle ~/Downloads/llm-usage-devbox-a.zip --dry-run
 ```
+
+离线导入参数：
+
+- `--from-bundle PATH`：从离线 bundle 读取聚合结果，跳过本地/远端在线采集
+- `--dry-run`：只校验 bundle 并输出终端汇总，不上传到飞书
+
+注意：`--from-bundle` 模式下不应再同时传 `--ui`、`--lookback-days` 或 Cursor 登录相关参数。
+
+### `llm-usage export-bundle`
+
+行为：
+
+- 读取本地日志并按当前配置聚合
+- 生成单个 zip bundle，默认写到 `reports/llm-usage-bundle-<timestamp>.zip`
+- bundle 内固定包含 `manifest.json` 和 `rows.jsonl`
+- 默认还会附带 `usage_report.csv`，方便人工检查
+
+查看帮助：
+
+```bash
+llm-usage export-bundle --help
+```
+
+常用参数：
+
+- `--output PATH`：指定输出 zip 路径
+- `--lookback-days N`：覆盖 `.env` 中的 `LOOKBACK_DAYS`
+- `--ui auto|tui|cli|none`：与 `collect` 相同，用于远端选择
+- `--no-csv`：bundle 中不附带 `usage_report.csv`
+
+示例：
+
+```bash
+llm-usage export-bundle
+llm-usage export-bundle --output ~/llm-usage-devbox-a.zip
+llm-usage export-bundle --no-csv
+```
+
+## 离线 Bundle 工作流
+
+适用场景：
+
+- 开发机无法联网
+- 只能通过远程桌面进入
+- 但可以把文件从远端拷回本地联网机器
+
+推荐流程：
+
+1. 在远端开发机执行：
+
+```bash
+llm-usage export-bundle --output ~/llm-usage-devbox-a.zip
+```
+
+2. 把 `~/llm-usage-devbox-a.zip` 拷回本地联网机器
+
+3. 在本地先校验：
+
+```bash
+llm-usage sync --from-bundle ~/Downloads/llm-usage-devbox-a.zip --dry-run
+```
+
+4. 校验无误后正式上传：
+
+```bash
+llm-usage sync --from-bundle ~/Downloads/llm-usage-devbox-a.zip
+```
+
+bundle 只包含聚合后的白名单字段，不包含提示词原文、响应原文、本地路径、命令内容或原始主机名。
+
+读取端除了支持默认的 `.zip` bundle，也兼容已经解压出来、且目录中包含 `manifest.json` 与 `rows.jsonl` 的 bundle 目录。
 
 ## 输出与隐私
 
