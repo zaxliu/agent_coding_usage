@@ -23,6 +23,7 @@ from llm_usage.cursor_login import (
     fetch_cursor_workos_id_from_local_browsers,
     fetch_cursor_session_token_via_browser,
     open_cursor_dashboard_login_page,
+    resolve_cursor_login_browser_choice,
 )
 from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
@@ -321,7 +322,7 @@ def _clear_saved_cursor_token() -> None:
 
 def _resolve_cursor_login_mode(login_mode: str, browser: str) -> str:
     normalized_mode = (login_mode or "auto").strip().lower() or "auto"
-    normalized_browser = (browser or "default").strip().lower()
+    normalized_browser = resolve_cursor_login_browser_choice(browser)
     if normalized_mode != "auto":
         return normalized_mode
     if os.name == "nt" and normalized_browser in {"chrome", "chromium", "edge", "msedge"}:
@@ -338,6 +339,9 @@ def _maybe_capture_cursor_token(
 ) -> Optional[str]:
     _load_runtime_env()
     effective_login_mode = _resolve_cursor_login_mode(login_mode, browser)
+    capture_browser = browser
+    if effective_login_mode == "managed-profile":
+        capture_browser = resolve_cursor_login_browser_choice(browser)
     if os.getenv("CURSOR_WEB_SESSION_TOKEN", "").strip():
         cursor_collector = build_cursor_collector()
         ok, msg = cursor_collector.probe()
@@ -357,13 +361,13 @@ def _maybe_capture_cursor_token(
             try:
                 _capture_and_save_cursor_token(
                     timeout_sec=timeout_sec,
-                    browser=browser,
+                    browser=capture_browser,
                     user_data_dir=user_data_dir,
                     login_mode=effective_login_mode,
                 )
             except RuntimeError as exc:
                 print(f"warn: {effective_login_mode} cursor login failed: {exc}")
-                if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=True):
+                if _prompt_for_manual_cursor_token(capture_browser, automatic_capture_failed=True):
                     return None
                 print("warn: continuing with local cursor sources")
                 return None
@@ -398,13 +402,13 @@ def _maybe_capture_cursor_token(
     try:
         _capture_and_save_cursor_token(
             timeout_sec=timeout_sec,
-            browser=browser,
+            browser=capture_browser,
             user_data_dir=user_data_dir,
             login_mode=effective_login_mode,
         )
     except RuntimeError as exc:
         print(f"warn: {effective_login_mode} cursor login failed: {exc}")
-        if _prompt_for_manual_cursor_token(browser, automatic_capture_failed=True):
+        if _prompt_for_manual_cursor_token(capture_browser, automatic_capture_failed=True):
             return None
         print("warn: continuing with local cursor sources")
         return None

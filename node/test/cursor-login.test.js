@@ -26,7 +26,7 @@ function withPlatform(platform, fn) {
 
 test("resolveCursorLoginMode routes Windows Chromium auto to managed-profile", () => {
   assert.equal(resolveCursorLoginMode("auto", "chrome", "win32"), "managed-profile");
-  assert.equal(resolveCursorLoginMode("auto", "default", "win32"), "auto");
+  assert.equal(resolveCursorLoginMode("auto", "default", "win32"), "managed-profile");
   assert.equal(resolveCursorLoginMode("auto", "firefox", "win32"), "auto");
   assert.equal(resolveCursorLoginMode("manual", "chrome", "win32"), "manual");
 });

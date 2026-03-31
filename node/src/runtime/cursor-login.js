@@ -25,13 +25,98 @@ function normalizeBrowserName(browser) {
   return value || "default";
 }
 
+function extractWindowsProgId(output) {
+  for (const rawLine of String(output || "").split(/\r?\n/u)) {
+    const parts = rawLine.trim().split(/\s+/u);
+    if (parts.length < 3) {
+      continue;
+    }
+    if (String(parts[0] || "").toLowerCase() !== "progid") {
+      continue;
+    }
+    return String(parts[parts.length - 1] || "").trim().toLowerCase();
+  }
+  return null;
+}
+
+function mapWindowsProgIdToBrowser(progId) {
+  const value = String(progId || "").trim().toLowerCase();
+  if (!value) {
+    return null;
+  }
+  const mapping = {
+    chromehtml: "chrome",
+    microsoftedgehtm: "msedge",
+    msedgehtm: "msedge",
+    firefoxurl: "firefox",
+    chromiumhtm: "chromium",
+    bravehtml: "chromium",
+  };
+  if (mapping[value]) {
+    return mapping[value];
+  }
+  if (value.includes("edge")) {
+    return "msedge";
+  }
+  if (value.includes("chrome")) {
+    return "chrome";
+  }
+  if (value.includes("firefox")) {
+    return "firefox";
+  }
+  if (value.includes("chromium")) {
+    return "chromium";
+  }
+  return null;
+}
+
+function detectWindowsDefaultBrowser({ spawnSyncImpl = spawnSync } = {}) {
+  for (const scheme of ["https", "http"]) {
+    const key = String.raw`HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\${scheme}\UserChoice`;
+    let result;
+    try {
+      result = spawnSyncImpl("reg", ["query", key, "/v", "ProgId"], { encoding: "utf8" });
+    } catch {
+      continue;
+    }
+    if (result?.status !== 0) {
+      continue;
+    }
+    const progId = extractWindowsProgId(result.stdout);
+    const browser = mapWindowsProgIdToBrowser(progId);
+    if (browser) {
+      return browser;
+    }
+  }
+  return null;
+}
+
+function resolveBrowserChoice(browser, platform = process.platform, deps = {}) {
+  const normalized = normalizeBrowserName(browser || "default");
+  if (["chrome", "chromium", "msedge", "safari", "firefox"].includes(normalized)) {
+    return normalized;
+  }
+  if (normalized !== "default") {
+    return "chromium";
+  }
+  if (platform === "win32") {
+    const detected = (deps.detectWindowsDefaultBrowser || detectWindowsDefaultBrowser)({
+      spawnSyncImpl: deps.spawnSyncImpl || spawnSync,
+    });
+    if (detected) {
+      return detected;
+    }
+  }
+  return "chromium";
+}
+
 export function resolveCursorLoginMode(loginMode, browser, platform = process.platform) {
   const normalizedMode = String(loginMode || "auto").trim().toLowerCase() || "auto";
-  const normalizedBrowser = normalizeBrowserName(browser || "default");
+  const normalizedBrowser = resolveBrowserChoice(browser, platform);
   if (normalizedMode !== "auto") {
     return normalizedMode;
   }
-  if (platform === "win32" && ["chrome", "chromium", "edge", "msedge"].includes(normalizedBrowser)) {
+  if (platform === "win32" && ["chrome", "chromium", "msedge"].includes(normalizedBrowser)) {
     return "managed-profile";
   }
   return "auto";
@@ -335,8 +420,9 @@ function sleep(ms) {
 }
 
 async function fetchCursorWorkosIdFromManagedProfile({ browser, userDataDir, platform = process.platform }) {
+  const managedBrowser = resolveBrowserChoice(browser, platform);
   const candidates = await readManagedProfileCookieCandidates({
-    browser,
+    browser: managedBrowser,
     userDataDir,
     cookieName: WORKOS_ID_COOKIE_NAME,
     platform,
@@ -363,13 +449,18 @@ export async function fetchCursorSessionTokenViaBrowser({
     throw new Error(`cursor login mode not yet supported in Node: ${resolvedMode}`);
   }
 
-  const managedDir = String(userDataDir || "").trim() || _defaultManagedProfileDir(browser, platform);
+  const managedBrowser = resolveBrowserChoice(browser, platform);
+  if (!["chrome", "chromium", "msedge"].includes(managedBrowser)) {
+    throw new Error(`managed-profile requires Chromium browser, got: ${managedBrowser}`);
+  }
+
+  const managedDir = String(userDataDir || "").trim() || _defaultManagedProfileDir(managedBrowser, platform);
   fs.mkdirSync(managedDir, { recursive: true });
-  await openBrowser({ url: usageUrl, browser, userDataDir: managedDir });
+  await openBrowser({ url: usageUrl, browser: managedBrowser, userDataDir: managedDir });
 
   const deadline = Date.now() + Math.max(30, timeoutSec) * 1000;
   while (Date.now() < deadline) {
-    const candidates = await readManagedProfileCandidates({ browser, userDataDir: managedDir });
+    const candidates = await readManagedProfileCandidates({ browser: managedBrowser, userDataDir: managedDir });
     const token = await pickToken(candidates);
     if (token) {
       return token;
@@ -406,16 +497,17 @@ export async function captureAndSaveCursorToken({
   environ = process.env,
   platform = process.platform,
 }) {
+  const managedBrowser = resolveBrowserChoice(browser, platform);
   const token = await fetchCursorSessionTokenViaBrowser({
     timeoutSec,
-    browser,
+    browser: managedBrowser,
     userDataDir,
     loginMode,
     platform,
   });
-  const managedDir = String(userDataDir || "").trim() || _defaultManagedProfileDir(browser, platform);
+  const managedDir = String(userDataDir || "").trim() || _defaultManagedProfileDir(managedBrowser, platform);
   const workosId = await fetchCursorWorkosIdFromManagedProfile({
-    browser,
+    browser: managedBrowser,
     userDataDir: managedDir,
     platform,
   });

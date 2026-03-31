@@ -124,6 +124,11 @@ def open_cursor_dashboard_login_page(browser: str = "default") -> None:
     _open_url_in_system_browser(f"{CURSOR_BASE_URL}/dashboard/usage", browser=browser)
 
 
+def resolve_cursor_login_browser_choice(browser: str = "default") -> str:
+    requested_browser = (browser or "default").strip().lower()
+    return _resolve_browser_choice(requested_browser)
+
+
 def _default_managed_profile_dir(browser: str) -> str:
     normalized = _normalize_browser_name(browser)
     slug = "edge-profile" if normalized == "msedge" else "chrome-profile"
@@ -595,6 +600,9 @@ def _resolve_browser_choice(requested: str) -> str:
 
 
 def _detect_system_default_browser() -> Optional[str]:
+    if os.name == "nt":
+        return _detect_windows_default_browser()
+
     if sys.platform != "darwin":
         return None
 
@@ -616,6 +624,68 @@ def _detect_system_default_browser() -> Optional[str]:
         "company.thebrowser.browser": "chromium",
     }
     return mapping.get(bundle_id)
+
+
+def _detect_windows_default_browser() -> Optional[str]:
+    for scheme in ("https", "http"):
+        key = (
+            r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations"
+            rf"\{scheme}\UserChoice"
+        )
+        try:
+            result = subprocess.run(
+                ["reg", "query", key, "/v", "ProgId"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            continue
+        if result.returncode != 0:
+            continue
+        prog_id = _extract_windows_progid_from_reg_query(result.stdout)
+        if not prog_id:
+            continue
+        mapped = _map_windows_progid_to_browser(prog_id)
+        if mapped:
+            return mapped
+    return None
+
+
+def _extract_windows_progid_from_reg_query(output: str) -> Optional[str]:
+    for line in output.splitlines():
+        parts = line.strip().split()
+        if len(parts) < 3:
+            continue
+        if parts[0].lower() != "progid":
+            continue
+        return parts[-1].strip().lower()
+    return None
+
+
+def _map_windows_progid_to_browser(prog_id: str) -> Optional[str]:
+    value = (prog_id or "").strip().lower()
+    if not value:
+        return None
+    mapping = {
+        "chromehtml": "chrome",
+        "microsoftedgehtm": "msedge",
+        "msedgehtm": "msedge",
+        "firefoxurl": "firefox",
+        "chromiumhtm": "chromium",
+        "bravehtml": "chromium",
+    }
+    if value in mapping:
+        return mapping[value]
+    if "edge" in value:
+        return "msedge"
+    if "chrome" in value:
+        return "chrome"
+    if "firefox" in value:
+        return "firefox"
+    if "chromium" in value:
+        return "chromium"
+    return None
 
 
 def _extract_handler_bundle_id_from_plist(path: Path) -> Optional[str]:

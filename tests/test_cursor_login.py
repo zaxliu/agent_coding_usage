@@ -218,7 +218,7 @@ def test_maybe_capture_windows_chromium_managed_profile_falls_back_to_manual_pro
 
     def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
         capture_called["count"] += 1
-        assert browser == "edge"
+        assert browser == "msedge"
         assert login_mode == "managed-profile"
         raise RuntimeError("cookie timeout")
 
@@ -226,7 +226,7 @@ def test_maybe_capture_windows_chromium_managed_profile_falls_back_to_manual_pro
 
     def _fake_prompt(browser, automatic_capture_failed):  # noqa: ANN001, ANN201
         prompt_called["count"] += 1
-        assert browser == "edge"
+        assert browser == "msedge"
         assert automatic_capture_failed is True
         return None
 
@@ -339,7 +339,7 @@ def test_maybe_capture_cursor_token_windows_chromium_auto_uses_managed_profile(m
     ]
 
 
-def test_resolve_cursor_login_mode_windows_default_keeps_auto(monkeypatch):
+def test_resolve_cursor_login_mode_windows_default_uses_managed_profile(monkeypatch):
     monkeypatch.setattr(
         main,
         "os",
@@ -350,8 +350,9 @@ def test_resolve_cursor_login_mode_windows_default_keeps_auto(monkeypatch):
             popen=main.os.popen,
         ),
     )
+    monkeypatch.setattr(main, "resolve_cursor_login_browser_choice", lambda browser: "chrome")
 
-    assert main._resolve_cursor_login_mode("auto", "default") == "auto"
+    assert main._resolve_cursor_login_mode("auto", "default") == "managed-profile"
 
 
 def test_collect_parser_accepts_cursor_login_mode():
