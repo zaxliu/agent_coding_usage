@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from llm_usage.models import UsageEvent
 
@@ -21,6 +21,7 @@ from .base import BaseCollector, CollectOutput
 
 _CHUNKED_STDOUT_PREFIX = "LLMUSAGE_CHUNKED_V1"
 _DEFAULT_STDOUT_CHUNK_SIZE = 32 * 1024
+_DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES = 600 * 1024
 
 _PROBE_SCRIPT = """
 import base64, glob, json, os, sys
@@ -94,9 +95,44 @@ start_ts = float(payload.get("start_ts", 0))
 end_ts = float(payload.get("end_ts", 0))
 max_files = int(payload.get("max_files", 0) or 0)
 max_total_bytes = int(payload.get("max_total_bytes", 0) or 0)
+stdout_page_budget_bytes = int(payload.get("stdout_page_budget_bytes") or 0)
+remote_cursor = payload.get("cursor")
 
 def log(message):
     print(message, file=sys.stderr)
+
+if remote_cursor is not None:
+    log("info: remote collect cursor present")
+
+def coerce_cursor_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+cj = 0
+cp = 0
+cf = 0
+cl = 0
+if remote_cursor is not None and isinstance(remote_cursor, dict):
+    cj = max(0, coerce_cursor_int(remote_cursor.get("job_index"), 0))
+    cp = max(0, coerce_cursor_int(remote_cursor.get("pattern_index"), 0))
+    cf = max(0, coerce_cursor_int(remote_cursor.get("file_index"), 0))
+    cl = max(0, coerce_cursor_int(remote_cursor.get("line_index"), 0))
+
+def file_is_before_resume_cursor(job_index, pattern_index, file_index):
+    if remote_cursor is None:
+        return False
+    return (job_index, pattern_index, file_index) < (cj, cp, cf)
+
+def jsonl_resume_line_index(job_index, pattern_index, file_index):
+    if remote_cursor is None:
+        return 0
+    if (job_index, pattern_index, file_index) == (cj, cp, cf):
+        return cl
+    return 0
 
 def _emit_chunked_payload(payload_obj):
     raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
@@ -485,13 +521,15 @@ def apply_copilot_delta(state, delta):
             target.append(value)
     return root
 
-def extract_copilot_vscode_events_from_jsonl_text(text, fallback_time, source_ref):
+def extract_copilot_vscode_events_from_jsonl_text(text, fallback_time, source_ref, start_line_index=0):
     state = {}
     saw_delta = False
     out = []
     idx = 0
     for raw_line in text.splitlines():
         idx += 1
+        if (idx - 1) < start_line_index:
+            continue
         line = raw_line.strip()
         if not line:
             continue
@@ -511,7 +549,18 @@ def extract_copilot_vscode_events_from_jsonl_text(text, fallback_time, source_re
         return extract_copilot_vscode_events(state, fallback_time, source_ref)
     return out
 
-def append_event(out, event_time, model, input_tokens, cache_tokens, output_tokens, session_fingerprint, source_ref):
+def build_resume_cursor(job_index, pattern_index, file_index, source_ref, path_is_jsonl):
+    # line_index: for .jsonl path:line refs, 0-based physical line index of the resume point (next line to read).
+    line_index = 0
+    if path_is_jsonl:
+        ref = str(source_ref)
+        if ":" in ref:
+            tail = ref.rsplit(":", 1)[-1]
+            if tail.isdigit():
+                line_index = max(0, int(tail) - 1)
+    return {"job_index": job_index, "pattern_index": pattern_index, "file_index": file_index, "line_index": line_index}
+
+def append_event(out, cursors, event_time, model, input_tokens, cache_tokens, output_tokens, session_fingerprint, source_ref, resume_cursor):
     if event_time is None:
         return
     ts = event_time.timestamp()
@@ -529,19 +578,21 @@ def append_event(out, event_time, model, input_tokens, cache_tokens, output_toke
             "source_ref": source_ref,
         }
     )
+    cursors.append(resume_cursor)
 
 events = []
+event_resume_cursors = []
 warnings = []
 seen = set()
 processed_files = 0
 total_bytes = 0
-for spec in jobs:
+for job_index, spec in enumerate(jobs):
     active_tool = spec.get("tool", "unknown")
     patterns = spec.get("patterns", [])
-    for pattern in patterns:
+    for pattern_index, pattern in enumerate(patterns):
         try:
             log("info: expanding pattern tool=" + active_tool + " pattern=" + pattern)
-            for path in glob.glob(os.path.expanduser(pattern), recursive=True):
+            for file_index, path in enumerate(sorted(glob.glob(os.path.expanduser(pattern), recursive=True))):
                 dedupe_key = active_tool + "\\0" + path
                 if dedupe_key in seen or not os.path.isfile(path):
                     continue
@@ -555,14 +606,16 @@ for spec in jobs:
                     continue
                 if stat.st_mtime < start_ts:
                     continue
+                if file_is_before_resume_cursor(job_index, pattern_index, file_index):
+                    continue
                 if max_files > 0 and processed_files >= max_files:
                     warnings.append("stopped after reaching max_files=" + str(max_files))
-                    _emit_chunked_payload({"events": events, "warnings": warnings})
+                    _emit_chunked_payload({"events": events, "warnings": warnings, "next_cursor": None})
                     raise SystemExit(0)
                 file_size = int(stat.st_size)
                 if max_total_bytes > 0 and total_bytes + file_size > max_total_bytes:
                     warnings.append("stopped after reaching max_total_bytes=" + str(max_total_bytes))
-                    _emit_chunked_payload({"events": events, "warnings": warnings})
+                    _emit_chunked_payload({"events": events, "warnings": warnings, "next_cursor": None})
                     raise SystemExit(0)
                 seen.add(dedupe_key)
                 processed_files += 1
@@ -586,12 +639,19 @@ for spec in jobs:
                     codex_model_hint = None
                     if lower.endswith('.jsonl'):
                         if active_tool == "copilot_vscode":
-                            for item in extract_copilot_vscode_events_from_jsonl_text(text, fallback_time, path):
-                                append_event(events, *item)
+                            start_li = jsonl_resume_line_index(job_index, pattern_index, file_index)
+                            for item in extract_copilot_vscode_events_from_jsonl_text(
+                                text, fallback_time, path, start_li
+                            ):
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, item[6], True)
+                                append_event(events, event_resume_cursors, *item, rc)
                             continue
+                        start_li = jsonl_resume_line_index(job_index, pattern_index, file_index)
                         idx = 0
                         for raw_line in text.splitlines():
                             idx += 1
+                            if (idx - 1) < start_li:
+                                continue
                             line = raw_line.strip()
                             if not line:
                                 continue
@@ -606,7 +666,8 @@ for spec in jobs:
                                     session_fingerprint,
                                     path + ":" + str(idx),
                                 ):
-                                    append_event(events, *item)
+                                    rc = build_resume_cursor(job_index, pattern_index, file_index, item[6], True)
+                                    append_event(events, event_resume_cursors, *item, rc)
                                 continue
                             if active_tool == "copilot_vscode":
                                 for item in extract_copilot_vscode_events(
@@ -614,7 +675,8 @@ for spec in jobs:
                                     fallback_time,
                                     path + ":" + str(idx),
                                 ):
-                                    append_event(events, *item)
+                                    rc = build_resume_cursor(job_index, pattern_index, file_index, item[6], True)
+                                    append_event(events, event_resume_cursors, *item, rc)
                                 continue
                             if active_tool == "codex":
                                 turn_model = extract_codex_turn_model(obj)
@@ -630,8 +692,10 @@ for spec in jobs:
                                 model = extract_model(obj)
                                 if model == "unknown" and codex_model_hint:
                                     model = codex_model_hint
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, path + ":" + str(idx), True)
                                 append_event(
                                     events,
+                                    event_resume_cursors,
                                     event_time,
                                     model,
                                     input_tokens,
@@ -639,6 +703,7 @@ for spec in jobs:
                                     output_tokens,
                                     session_fingerprint,
                                     path + ":" + str(idx),
+                                    rc,
                                 )
                                 continue
                             local_seen = set()
@@ -658,8 +723,10 @@ for spec in jobs:
                                 if dedupe_key in local_seen:
                                     continue
                                 local_seen.add(dedupe_key)
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, path + ":" + str(idx), True)
                                 append_event(
                                     events,
+                                    event_resume_cursors,
                                     event_time,
                                     extract_model(candidate),
                                     input_tokens,
@@ -667,6 +734,7 @@ for spec in jobs:
                                     output_tokens,
                                     session_fingerprint,
                                     path + ":" + str(idx),
+                                    rc,
                                 )
                     elif lower.endswith('.json'):
                         try:
@@ -690,8 +758,10 @@ for spec in jobs:
                                 model = extract_model(candidate)
                                 if model == "unknown" and codex_model_hint:
                                     model = codex_model_hint
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, path, False)
                                 append_event(
                                     events,
+                                    event_resume_cursors,
                                     event_time,
                                     model,
                                     input_tokens,
@@ -699,13 +769,16 @@ for spec in jobs:
                                     output_tokens,
                                     session_fingerprint,
                                     path,
+                                    rc,
                                 )
                         elif active_tool == "copilot_cli":
                             for item in extract_copilot_cli_events(obj, fallback_time, session_fingerprint, path):
-                                append_event(events, *item)
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, item[6], False)
+                                append_event(events, event_resume_cursors, *item, rc)
                         elif active_tool == "copilot_vscode":
                             for item in extract_copilot_vscode_events(obj, fallback_time, path):
-                                append_event(events, *item)
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, item[6], False)
+                                append_event(events, event_resume_cursors, *item, rc)
                         else:
                             local_seen = set()
                             for candidate, parent_key in walk_json_nodes(obj):
@@ -724,8 +797,10 @@ for spec in jobs:
                                 if dedupe_key in local_seen:
                                     continue
                                 local_seen.add(dedupe_key)
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, path, False)
                                 append_event(
                                     events,
+                                    event_resume_cursors,
                                     event_time,
                                     extract_model(candidate),
                                     input_tokens,
@@ -733,12 +808,39 @@ for spec in jobs:
                                     output_tokens,
                                     session_fingerprint,
                                     path,
+                                    rc,
                                 )
                 except Exception as exc:
                     warnings.append(active_tool + ": failed reading " + path + ": " + str(exc))
         except Exception:
             pass
-_emit_chunked_payload({"events": events, "warnings": warnings})
+next_cursor = None
+if stdout_page_budget_bytes > 0:
+
+    def _page_json_bytes(ev, wn, nc):
+        # Must match _emit_chunked_payload: same object shape and json.dumps settings.
+        return len(json.dumps({"events": ev, "warnings": wn, "next_cursor": nc}, separators=(",", ":")).encode("utf-8"))
+
+    def _cursor_at(k):
+        if k >= len(events):
+            return None
+        return event_resume_cursors[k]
+
+    if _page_json_bytes(events, warnings, None) > stdout_page_budget_bytes:
+        # Choose the largest k such that events[:k] plus serialized next_cursor fits (next_cursor points at event k).
+        chosen_k = None
+        for k in range(len(events), -1, -1):
+            nc = _cursor_at(k) if k < len(events) else None
+            if _page_json_bytes(events[:k], warnings, nc) <= stdout_page_budget_bytes:
+                chosen_k = k
+                next_cursor = nc if k < len(events) else None
+                break
+        if chosen_k is None:
+            chosen_k = 0
+            next_cursor = None
+            warnings.append("remote collect: stdout_page_budget_bytes too small to emit a resumable page")
+        events = events[:chosen_k]
+_emit_chunked_payload({"events": events, "warnings": warnings, "next_cursor": next_cursor})
 """
 ).replace("__REMOTE_PARSE_TIME_HELPER__", _REMOTE_PARSE_TIME_HELPER).replace(
     "__CHUNKED_CHUNK_SIZE__", str(_DEFAULT_STDOUT_CHUNK_SIZE)
@@ -829,43 +931,56 @@ class RemoteFileCollector(BaseCollector):
             return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: no remote python interpreter found"])
         self._log_progress(f"采集：使用远端解释器 {python_cmd}")
 
-        payload, error = self._run_python_script(python_cmd, _COLLECT_SCRIPT)
-        if error:
-            return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: {error}"])
-
-        raw_events = payload.get("events")
-        if not isinstance(raw_events, list):
-            return CollectOutput(
-                events=[],
-                warnings=[f"{self.source_name}/{self.name}: remote collect returned invalid payload"],
-            )
-
         events: list[UsageEvent] = []
-        warnings.extend(
-            f"{self.source_name}/{self.name}: {warning}"
-            for warning in payload.get("warnings", [])
-            if isinstance(warning, str) and warning.strip()
-        )
-        for item in raw_events:
-            if not isinstance(item, dict):
-                continue
-            event_time = _parse_datetime_value(item.get("event_time"))
-            if event_time is None:
-                continue
-            if start <= event_time <= end:
-                events.append(
-                    UsageEvent(
-                        tool=str(item.get("tool") or self.name),
-                        model=str(item.get("model") or "unknown"),
-                        event_time=event_time,
-                        input_tokens=_coerce_int(item.get("input_tokens")),
-                        cache_tokens=_coerce_int(item.get("cache_tokens")),
-                        output_tokens=_coerce_int(item.get("output_tokens")),
-                        session_fingerprint=_optional_str(item.get("session_fingerprint")),
-                        source_ref=_optional_str(item.get("source_ref")),
-                        source_host_hash=self.source_host_hash,
-                    )
+        request_cursor: Optional[dict[str, Any]] = None
+        while True:
+            payload, error = self._run_python_script(
+                python_cmd, _COLLECT_SCRIPT, cursor=request_cursor, use_page_payload=True
+            )
+            if error:
+                return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: {error}"])
+
+            raw_events = payload.get("events")
+            if not isinstance(raw_events, list):
+                return CollectOutput(
+                    events=[],
+                    warnings=[f"{self.source_name}/{self.name}: remote collect returned invalid payload"],
                 )
+
+            warnings.extend(
+                f"{self.source_name}/{self.name}: {warning}"
+                for warning in payload.get("warnings", [])
+                if isinstance(warning, str) and warning.strip()
+            )
+            for item in raw_events:
+                if not isinstance(item, dict):
+                    continue
+                event_time = _parse_datetime_value(item.get("event_time"))
+                if event_time is None:
+                    continue
+                if start <= event_time <= end:
+                    events.append(
+                        UsageEvent(
+                            tool=str(item.get("tool") or self.name),
+                            model=str(item.get("model") or "unknown"),
+                            event_time=event_time,
+                            input_tokens=_coerce_int(item.get("input_tokens")),
+                            cache_tokens=_coerce_int(item.get("cache_tokens")),
+                            output_tokens=_coerce_int(item.get("output_tokens")),
+                            session_fingerprint=_optional_str(item.get("session_fingerprint")),
+                            source_ref=_optional_str(item.get("source_ref")),
+                            source_host_hash=self.source_host_hash,
+                        )
+                    )
+
+            next_cursor = payload.get("next_cursor")
+            if next_cursor is None:
+                break
+            if request_cursor is not None and _remote_cursor_tuple(next_cursor) == _remote_cursor_tuple(request_cursor):
+                warnings.append(f"{self.source_name}/{self.name}: remote pagination cursor did not advance")
+                return CollectOutput(events=events, warnings=warnings)
+            request_cursor = next_cursor
+
         if not events:
             warnings.append(f"{self.source_name}/{self.name}: no usage events in selected time range")
         return CollectOutput(events=events, warnings=warnings)
@@ -896,17 +1011,32 @@ class RemoteFileCollector(BaseCollector):
                 self._log_progress(f"探测未命中：{label} stdout={preview}")
         return None, None
 
-    def _run_python_script(self, python_cmd: str, script: str) -> tuple[dict, Optional[str]]:
-        command, script_input = self._python_stdin_command(python_cmd, script)
+    def _run_python_script(
+        self,
+        python_cmd: str,
+        script: str,
+        cursor: Optional[dict[str, Any]] = None,
+        *,
+        use_page_payload: bool = False,
+    ) -> tuple[dict, Optional[str]]:
+        command, script_input = self._python_stdin_command(python_cmd, script, cursor=cursor)
         self._log_progress("执行远端脚本（单次 SSH）")
         completed, error = self._ssh_run_python_command(command, input_text=script_input)
         if error:
             return {}, error
-        payload, discarded, chunked_error = _extract_remote_payload_with_fallbacks(completed.stdout)
-        if chunked_error:
+        if use_page_payload:
+            payload, discarded, parse_error = _extract_remote_page_payload(completed.stdout)
+        else:
+            payload, discarded, parse_error = _extract_remote_payload_with_fallbacks(completed.stdout)
+        if parse_error:
+            if use_page_payload and self._should_fallback_to_uploaded_script(completed.stdout, completed.stderr):
+                self._log_progress("检测到远端网关会吞掉 stdin 脚本，回退为上传临时脚本执行")
+                return self._run_python_script_via_uploaded_file(
+                    python_cmd, script, cursor=cursor, use_page_payload=use_page_payload
+                )
             self._log_non_json_debug(completed.stdout, completed.stderr)
-            self._log_progress(chunked_error)
-            return {}, chunked_error
+            self._log_progress(parse_error)
+            return {}, parse_error
         if discarded:
             for line in discarded.splitlines():
                 text = line.strip()
@@ -915,24 +1045,38 @@ class RemoteFileCollector(BaseCollector):
         if payload is None:
             if self._should_fallback_to_uploaded_script(completed.stdout, completed.stderr):
                 self._log_progress("检测到远端网关会吞掉 stdin 脚本，回退为上传临时脚本执行")
-                return self._run_python_script_via_uploaded_file(python_cmd, script)
+                return self._run_python_script_via_uploaded_file(
+                    python_cmd, script, cursor=cursor, use_page_payload=use_page_payload
+                )
             self._log_non_json_debug(completed.stdout, completed.stderr)
+            if use_page_payload:
+                return {}, "remote pagination payload: could not extract JSON from remote stdout"
             return {}, "remote command returned non-JSON output"
         if not isinstance(payload, dict):
             return {}, "remote command returned invalid JSON payload"
         return payload, None
 
-    def _build_remote_payload(self) -> dict[str, object]:
-        return {
+    def _build_remote_payload(self, cursor: Optional[dict[str, Any]] = None) -> dict[str, object]:
+        payload: dict[str, object] = {
             "jobs": [{"tool": job.tool, "patterns": job.patterns} for job in self.jobs],
             "start_ts": self._active_start.timestamp(),
             "end_ts": self._active_end.timestamp(),
             "max_files": self.max_files,
             "max_total_bytes": self.max_total_bytes,
+            "stdout_page_budget_bytes": _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES,
         }
+        if cursor is not None:
+            payload["cursor"] = cursor
+        return payload
 
-    def _python_stdin_command(self, python_cmd: str, script: str) -> tuple[list[str], str]:
-        payload = base64.b64encode(json.dumps(self._build_remote_payload()).encode("utf-8")).decode("ascii")
+    def _remote_collect_payload_b64(self, cursor: Optional[dict[str, Any]] = None) -> str:
+        """Base64 stdin/upload payload for the remote collect script (same contract as stdin and uploaded-file paths)."""
+        return base64.b64encode(json.dumps(self._build_remote_payload(cursor)).encode("utf-8")).decode("ascii")
+
+    def _python_stdin_command(
+        self, python_cmd: str, script: str, cursor: Optional[dict[str, Any]] = None
+    ) -> tuple[list[str], str]:
+        payload = self._remote_collect_payload_b64(cursor)
         bootstrap = (
             "import sys;"
             "PAYLOAD_B64=sys.stdin.readline().rstrip('\\n');"
@@ -941,10 +1085,17 @@ class RemoteFileCollector(BaseCollector):
         remote_command = f"{_shell_quote(python_cmd)} -c {_shell_quote(bootstrap)}"
         return ["sh", "-lc", remote_command], payload + "\n" + script
 
-    def _run_python_script_via_uploaded_file(self, python_cmd: str, script: str) -> tuple[dict, Optional[str]]:
+    def _run_python_script_via_uploaded_file(
+        self,
+        python_cmd: str,
+        script: str,
+        cursor: Optional[dict[str, Any]] = None,
+        *,
+        use_page_payload: bool = False,
+    ) -> tuple[dict, Optional[str]]:
         remote_base = f"/tmp/llm_usage_{os.getpid()}_{next(tempfile._get_candidate_names())}"
         remote_script = f"{remote_base}.py"
-        combined_script = self._build_uploaded_remote_script(script)
+        combined_script = self._build_uploaded_remote_script(script, cursor=cursor)
         self._log_progress(f"上传远端脚本 -> {remote_script}")
         previous_connection_sharing = self._use_connection_sharing
         self._use_connection_sharing = False
@@ -964,11 +1115,14 @@ class RemoteFileCollector(BaseCollector):
             if completed.stderr.strip():
                 for line in completed.stderr.strip().splitlines():
                     self._log_progress(f"remote stderr: {line}")
-            payload, discarded, chunked_error = _extract_remote_payload_with_fallbacks(completed.stdout)
-            if chunked_error:
+            if use_page_payload:
+                payload, discarded, parse_error = _extract_remote_page_payload(completed.stdout)
+            else:
+                payload, discarded, parse_error = _extract_remote_payload_with_fallbacks(completed.stdout)
+            if parse_error:
                 self._log_non_json_debug(completed.stdout, completed.stderr)
-                self._log_progress(chunked_error)
-                return {}, chunked_error
+                self._log_progress(parse_error)
+                return {}, parse_error
             if discarded:
                 for line in discarded.splitlines():
                     text = line.strip()
@@ -984,8 +1138,8 @@ class RemoteFileCollector(BaseCollector):
             self._ssh_remove_file(remote_script)
             self._use_connection_sharing = previous_connection_sharing
 
-    def _build_uploaded_remote_script(self, script: str) -> str:
-        payload = base64.b64encode(json.dumps(self._build_remote_payload()).encode("utf-8")).decode("ascii")
+    def _build_uploaded_remote_script(self, script: str, cursor: Optional[dict[str, Any]] = None) -> str:
+        payload = self._remote_collect_payload_b64(cursor)
         return f"PAYLOAD_B64 = {payload!r}\n" + script.lstrip()
 
     def _ssh_write_text(self, remote_path: str, content: str) -> Optional[str]:
@@ -1573,6 +1727,51 @@ def _extract_remote_payload_with_fallbacks(
             return None, discarded, error
         return parsed, discarded, None
     payload, discarded = _extract_json_payload_legacy(stdout)
+    return payload, discarded, None
+
+
+def _remote_cursor_tuple(cursor: dict[str, Any]) -> tuple[int, int, int, int]:
+    return (
+        int(cursor.get("job_index", 0)),
+        int(cursor.get("pattern_index", 0)),
+        int(cursor.get("file_index", 0)),
+        int(cursor.get("line_index", 0)),
+    )
+
+
+def _is_valid_remote_cursor(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    for key in ("job_index", "pattern_index", "file_index", "line_index"):
+        raw = value.get(key)
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            return False
+        if raw < 0:
+            return False
+    return True
+
+
+def _extract_remote_page_payload(
+    stdout: str,
+) -> tuple[Optional[dict[str, object]], str, Optional[str]]:
+    """Parse remote stdout and validate one paginated collect page payload."""
+    payload, discarded, chunked_error = _extract_remote_payload_with_fallbacks(stdout)
+    if chunked_error is not None:
+        return None, discarded, chunked_error
+    if payload is None:
+        return None, discarded, "remote pagination payload: could not extract JSON from remote stdout"
+    if not isinstance(payload, dict):
+        return None, discarded, "remote pagination payload: JSON root must be an object"
+    if "events" not in payload or not isinstance(payload["events"], list):
+        return None, discarded, "remote pagination payload invalid: events must be a list"
+    if "warnings" not in payload or not isinstance(payload["warnings"], list):
+        return None, discarded, "remote pagination payload invalid: warnings must be a list"
+    if "next_cursor" not in payload:
+        return None, discarded, "remote pagination payload missing next_cursor"
+    if not _is_valid_remote_cursor(payload["next_cursor"]):
+        return None, discarded, "remote pagination returned invalid cursor"
     return payload, discarded, None
 
 
