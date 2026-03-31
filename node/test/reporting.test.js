@@ -36,40 +36,164 @@ function captureLogs(fn) {
   return lines;
 }
 
-test("printTerminalReport groups rows by day tool model like the Python CLI", () => {
+test("printTerminalReport(rows, { hostLabels }) renders a Host column", () => {
   const lines = captureLogs(() =>
-    printTerminalReport([
-      row({
-        source_host_hash: "source-a",
-        input_tokens_sum: 10,
-        cache_tokens_sum: 6,
-        output_tokens_sum: 8,
-      }),
-      row({
-        source_host_hash: "source-b",
-        input_tokens_sum: 5,
-        cache_tokens_sum: 3,
-        output_tokens_sum: 6,
-      }),
-    ]),
+    printTerminalReport([row({ source_host_hash: "any-hash" })], {
+      hostLabels: { "any-hash": "local" },
+    }),
   );
 
-  assert.match(lines[0], /日期/u);
-  assert.match(lines[0], /工具/u);
-  assert.match(lines[0], /模型/u);
-  assert.match(lines[0], /输入/u);
-  assert.match(lines[0], /缓存/u);
-  assert.match(lines[0], /输出/u);
-  assert.doesNotMatch(lines[0], /来源/u);
+  assert.match(lines[0], /\bHost\b/u);
+});
+
+test("printTerminalReport keeps different source_host_hash values as separate terminal rows", () => {
+  const lines = captureLogs(() =>
+    printTerminalReport(
+      [
+        row({
+          source_host_hash: "local-hash",
+          input_tokens_sum: 10,
+          cache_tokens_sum: 2,
+          output_tokens_sum: 3,
+        }),
+        row({
+          source_host_hash: "remote-hash",
+          input_tokens_sum: 5,
+          cache_tokens_sum: 7,
+          output_tokens_sum: 11,
+        }),
+      ],
+      {
+        hostLabels: { "local-hash": "local", "remote-hash": "alice@host-a" },
+      },
+    ),
+  );
+  const localRowColumns = lines[2]?.split(" | ");
+  const remoteRowColumns = lines[3]?.split(" | ");
+
+  assert.equal(lines.length, 4);
+  assert.equal(localRowColumns[1]?.trim(), "local");
+  assert.equal(localRowColumns[4]?.trim(), "10");
+  assert.equal(remoteRowColumns[1]?.trim(), "alice@host-a");
+  assert.equal(remoteRowColumns[4]?.trim(), "5");
+});
+
+test("printTerminalReport renders provided host labels local and alice@host-a", () => {
+  const lines = captureLogs(() =>
+    printTerminalReport(
+      [
+        row({ source_host_hash: "local-hash" }),
+        row({ source_host_hash: "remote-hash" }),
+      ],
+      {
+        hostLabels: { "local-hash": "local", "remote-hash": "alice@host-a" },
+      },
+    ),
+  );
+
+  assert.match(lines[2], /\blocal\b/u);
+  assert.match(lines[3], /alice@host-a/u);
+});
+
+test("printTerminalReport falls back to the first 8 characters of source_host_hash for unknown hosts", () => {
+  const lines = captureLogs(() =>
+    printTerminalReport([row({ source_host_hash: "abcdef1234567890" })], {
+      hostLabels: {},
+    }),
+  );
+
+  const cells = lines[2].split(" | ");
+  assert.equal(cells[1].trim(), "abcdef12");
+  assert.doesNotMatch(lines[2], /abcdef1234567890/u);
+});
+
+test("printTerminalReport renders local in the Host column when source_host_hash is empty", () => {
+  const lines = captureLogs(() =>
+    printTerminalReport([row()], {
+      hostLabels: {},
+    }),
+  );
+  const cells = lines[2].split(" | ");
+
+  assert.equal(cells[1].trim(), "local");
+});
+
+test("printTerminalReport does not truncate long model names", () => {
+  const longModel = "gpt-5.4-codex-with-a-very-long-suffix-for-dynamic-width";
+  const lines = captureLogs(() =>
+    printTerminalReport([row({ model: longModel })], {
+      hostLabels: {},
+    }),
+  );
+  const dataRow = lines[2];
+  assert.ok(dataRow.includes(longModel));
+});
+
+test("printTerminalReport uses seven columns and dynamic widths for header, divider, and rows", () => {
+  const lines = captureLogs(() =>
+    printTerminalReport(
+      [
+        row({ source_host_hash: "short-hash", tool: "codex", model: "gpt-5" }),
+        row({ source_host_hash: "long-hash", tool: "codex", model: "gpt-5" }),
+      ],
+      {
+        hostLabels: {
+          "short-hash": "local",
+          "long-hash": "very-long-host-label@example.internal",
+        },
+      },
+    ),
+  );
+
+  const header = lines[0];
+  const divider = lines[1];
+  const firstRow = lines[2];
+  const secondRow = lines[3];
+  const headerColumns = header.split(" | ");
+  const dividerColumns = divider.split("-+-");
+  const firstRowColumns = firstRow.split(" | ");
+  const secondRowColumns = secondRow.split(" | ");
+
+  assert.equal(headerColumns.length, 7);
+  assert.equal(dividerColumns.length, 7);
+  assert.equal(firstRowColumns.length, 7);
+  assert.equal(secondRowColumns.length, 7);
+  assert.equal(headerColumns[1].trim(), "Host");
+  assert.equal(dividerColumns[1].length, "very-long-host-label@example.internal".length);
+  assert.equal(firstRowColumns[1].trim(), "very-long-host-label@example.internal");
+  assert.equal(secondRowColumns[1].trim(), "local");
+  // Sorted by (date_local, source_host_hash, tool, model); "long-hash" < "short-hash" lexicographically.
+  assert.match(firstRow, /very-long-host-label@example\.internal/u);
+  assert.match(secondRow, /\blocal\b/u);
+});
+
+test("printTerminalReport merges duplicate rows that share date, host, tool, and model", () => {
+  const lines = captureLogs(() =>
+    printTerminalReport(
+      [
+        row({
+          source_host_hash: "remote-hash",
+          input_tokens_sum: 10,
+          cache_tokens_sum: 2,
+          output_tokens_sum: 3,
+        }),
+        row({
+          source_host_hash: "remote-hash",
+          input_tokens_sum: 5,
+          cache_tokens_sum: 7,
+          output_tokens_sum: 11,
+        }),
+      ],
+      { hostLabels: { "remote-hash": "alice@host-a" } },
+    ),
+  );
+  const cells = lines[2].split(" | ");
+
   assert.equal(lines.length, 3);
-  assert.match(lines[2], /2026-03-29/u);
-  assert.match(lines[2], /codex/u);
-  assert.match(lines[2], /gpt-5/u);
-  assert.match(lines[2], /15/u);
-  assert.match(lines[2], /9/u);
-  assert.match(lines[2], /14/u);
-  assert.doesNotMatch(lines[2], /source-a/u);
-  assert.doesNotMatch(lines[2], /source-b/u);
+  assert.equal(cells[1].trim(), "alice@host-a");
+  assert.equal(cells[4].trim(), "15");
+  assert.equal(cells[5].trim(), "9");
+  assert.equal(cells[6].trim(), "14");
 });
 
 test("writeCsvReport keeps original rows", () => {

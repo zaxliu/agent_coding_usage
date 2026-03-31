@@ -498,8 +498,8 @@ def test_cmd_collect_triggers_maybe_capture(monkeypatch):
             None,
         )[-1],
     )
-    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
-    monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
+    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], [], {}))
+    monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
     monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
 
@@ -534,8 +534,8 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
             None,
         )[-1],
     )
-    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
-    monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
+    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], [], {}))
+    monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
     monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
@@ -599,9 +599,10 @@ def test_cmd_collect_suppresses_cursor_probe_warning_when_cursor_rows_exist(monk
                 )
             ],
             [],
+            {},
         ),
     )
-    monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
+    monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
     monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
     monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))
@@ -626,8 +627,8 @@ def test_cmd_collect_keeps_cursor_probe_warning_when_no_cursor_rows(monkeypatch)
         "_maybe_capture_cursor_token",
         lambda timeout_sec, browser, user_data_dir, login_mode="auto", lookback_days=None: "cursor warning",
     )
-    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], []))
-    monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
+    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([], [], {}))
+    monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
     monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
     monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args)))

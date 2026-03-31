@@ -31,7 +31,7 @@ from llm_usage.identity import hash_source_host, hash_user
 from llm_usage.interaction import confirm_save_temporary_remote, run_config_editor, select_remotes
 from llm_usage.offline_bundle import OfflineBundleError, read_offline_bundle, write_offline_bundle
 from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
-from llm_usage.remotes import append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
+from llm_usage.remotes import RemoteHostConfig, append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
 from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
 from llm_usage.sinks.feishu_bitable import (
@@ -129,6 +129,22 @@ def _required_org_username() -> str:
     os.environ["ORG_USERNAME"] = username
     print("info: 已将 ORG_USERNAME 写入 .env")
     return username
+
+
+def _build_terminal_host_labels(username: str, salt: str, remote_configs: list[RemoteHostConfig]) -> dict[str, str]:
+    labels: dict[str, str] = {hash_source_host(username, "local", salt): "local"}
+    for config in remote_configs:
+        labels[hash_source_host(username, config.source_label, salt)] = config.source_label
+    return labels
+
+
+def _terminal_host_labels_for_report() -> dict[str, str]:
+    """Resolve Host column labels when identity env is present; otherwise empty (hash-prefix / local fallback)."""
+    username = os.getenv("ORG_USERNAME", "").strip()
+    salt = os.getenv("HASH_SALT", "").strip()
+    if not username or not salt:
+        return {}
+    return _build_terminal_host_labels(username, salt, parse_remote_configs_from_env())
 
 
 def _collect_all(lookback_days: int, collectors: list[BaseCollector]) -> tuple[list, list[str]]:
@@ -233,7 +249,7 @@ def cmd_export_bundle(args: argparse.Namespace) -> int:
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
         login_mode=getattr(args, "cursor_login_mode", "auto"),
     )
-    rows, warnings = _build_aggregates(args)
+    rows, warnings, _host_labels = _build_aggregates(args)
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
     output_path = Path(getattr(args, "output", "") or _default_bundle_output_path()).expanduser()
@@ -558,7 +574,7 @@ def _save_temporary_remotes(args: argparse.Namespace, remotes: list, configured_
             print(f"info: 已将临时远端保存到 .env：{alias}")
 
 
-def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str]]:
+def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str], dict[str, str]]:
     _load_runtime_env()
     username = _required_org_username()
     salt = _required_env("HASH_SALT")
@@ -585,7 +601,8 @@ def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str]]:
     rows = aggregate_events(events, user_hash=user_hash, timezone_name=timezone_name)
     if temporary_remotes:
         _save_temporary_remotes(args, temporary_remotes, [config.alias for config in configured_remotes])
-    return rows, warnings
+    host_labels = _build_terminal_host_labels(username, salt, selected_configs)
+    return rows, warnings, host_labels
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
@@ -596,14 +613,14 @@ def cmd_collect(args: argparse.Namespace) -> int:
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
         login_mode=getattr(args, "cursor_login_mode", "auto"),
     )
-    rows, warnings = _build_aggregates(args)
+    rows, warnings, host_labels = _build_aggregates(args)
     print(f"env: {_env_path()}")
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
     if warnings:
         _print_warnings(warnings)
 
-    print_terminal_report(rows)
+    print_terminal_report(rows, host_labels=host_labels)
     path = write_csv_report(rows, _reports_dir())
     print(f"csv: {path}")
     return 0
@@ -617,7 +634,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         print(f"env: {_env_path()}")
         if warnings:
             _print_warnings(warnings)
-        print_terminal_report(rows)
+        print_terminal_report(rows, host_labels=_terminal_host_labels_for_report())
         return _sync_rows_to_feishu(rows, dry_run=getattr(args, "dry_run", False))
 
     cursor_probe_warning = _maybe_capture_cursor_token(
@@ -627,14 +644,14 @@ def cmd_sync(args: argparse.Namespace) -> int:
         user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
         login_mode=getattr(args, "cursor_login_mode", "auto"),
     )
-    rows, warnings = _build_aggregates(args)
+    rows, warnings, host_labels = _build_aggregates(args)
     print(f"env: {_env_path()}")
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
     if warnings:
         _print_warnings(warnings)
 
-    print_terminal_report(rows)
+    print_terminal_report(rows, host_labels=host_labels)
     csv_path = write_csv_report(rows, _reports_dir())
     print(f"csv: {csv_path}")
     return _sync_rows_to_feishu(rows, dry_run=getattr(args, "dry_run", False))
@@ -813,7 +830,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Collect usage from local and selected remote sources.\n"
             "\n"
-            "Terminal output is grouped by date + tool + model for easier reading.\n"
+            "Terminal output is grouped by date + host + tool + model for easier reading.\n"
             "The written reports/usage_report.csv keeps the original aggregated rows."
         ),
         epilog=(
@@ -963,7 +980,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Collect usage from local and selected remote sources, print a grouped terminal summary, "
             "write reports/usage_report.csv, then upsert the original aggregated rows to Feishu.\n"
             "\n"
-            "Terminal output is grouped by date + tool + model for easier reading.\n"
+            "Terminal output is grouped by date + host + tool + model for easier reading.\n"
             "CSV output and Feishu upserts keep the original aggregated rows.\n"
             "\n"
             "Use --from-bundle to upload rows from an offline bundle instead of collecting live data."

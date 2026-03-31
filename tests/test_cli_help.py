@@ -30,7 +30,7 @@ def test_collect_help_describes_terminal_grouping_and_csv_behavior(capsys):
         parser.parse_args(["collect", "--help"])
 
     help_text = capsys.readouterr().out
-    assert "date + tool + model" in help_text.lower()
+    assert "date + host + tool + model" in help_text.lower()
     assert "reports/usage_report.csv" in help_text
     assert "original aggregated rows" in help_text.lower()
     assert "--ui {auto,tui,cli,none}" in help_text
@@ -45,7 +45,7 @@ def test_sync_help_describes_terminal_grouping_and_feishu_behavior(capsys):
         parser.parse_args(["sync", "--help"])
 
     help_text = capsys.readouterr().out
-    assert "date + tool + model" in help_text.lower()
+    assert "date + host + tool + model" in help_text.lower()
     assert "upsert" in help_text.lower()
     assert "feishu" in help_text.lower()
     assert "original aggregated rows" in help_text.lower()

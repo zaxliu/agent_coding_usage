@@ -184,6 +184,22 @@ test("export-bundle writes bundle that sync --from-bundle can dry-run", () => {
   assert.doesNotMatch(replay.result.stdout, /Feishu Upsert/u);
 });
 
+test("sync --from-bundle --dry-run does not require identity env vars for host-label fallback", () => {
+  const exported = runCli(["export-bundle", "--ui", "none", "--lookback-days", "30"]);
+  assert.equal(exported.result.status, 0, exported.result.stderr || exported.result.stdout);
+  const bundlePath = exported.result.stdout.match(/bundle: (.*\.zip)/u)?.[1]?.trim();
+  assert.equal(typeof bundlePath, "string");
+  assert.equal(fs.existsSync(bundlePath), true);
+
+  const replay = runCli(["sync", "--from-bundle", bundlePath, "--dry-run"], {
+    ORG_USERNAME: "",
+    HASH_SALT: "",
+  });
+  assert.equal(replay.result.status, 0, replay.result.stderr || replay.result.stdout);
+  assert.match(replay.result.stdout, /\bHost\b/u);
+  assert.doesNotMatch(replay.result.stderr, /missing env var/u);
+});
+
 test("collect warns that configured remotes are ignored in local-first Node mode", () => {
   const { result } = runCli(
     ["collect", "--ui", "none", "--lookback-days", "30"],
