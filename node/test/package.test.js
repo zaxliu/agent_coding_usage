@@ -36,12 +36,15 @@ test("package includes a pack validation script and a narrow published file list
     "src/runtime/cursor-login.js",
     "src/runtime/env.js",
     "src/runtime/feishu.js",
+    "src/runtime/offline-bundle.js",
     "src/runtime/remotes.js",
     "src/runtime/reporting.js",
     "src/runtime/ui.js",
     "README.md",
     "LICENSE",
   ]);
+  assert.equal(packageJson.files.includes("src/runtime/interaction.js"), false);
+  assert.equal(packageJson.files.includes("src/runtime/state.js"), false);
 });
 
 test("package readme and license files exist", () => {

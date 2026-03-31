@@ -4,7 +4,11 @@
 
 当前 npm 包能力：
 
+- `init`：初始化运行时 `.env` 与 `reports/`
+- `whoami`：输出当前匿名身份与各来源哈希
+- `import-config`：一次性导入旧仓库根目录下的 `.env` / `reports/runtime_state.json`
 - 本地采集与聚合
+- `export-bundle`：导出离线 bundle，供后续联网机器上传
 - Cursor 本地日志 + 网页仪表盘采集
 - Cursor 登录辅助：`auto|managed-profile|manual`
 - 终端报表与 CSV 输出
@@ -13,6 +17,7 @@
 当前限制：
 
 - 远端 SSH 采集暂未在 Node 版本中实现；检测到远端配置时会提示并忽略
+- 远端相关的 `REMOTE_*` 配置当前仅用于兼容现有配置和 `whoami` 哈希查看，不参与 Node 本地采集
 
 ## 安装
 
@@ -23,9 +28,13 @@ npm install -g @llm-usage-horizon/llm-usage-node
 ## 命令
 
 ```bash
+llm-usage-node init
+llm-usage-node whoami
 llm-usage-node doctor
 llm-usage-node collect --ui none
+llm-usage-node export-bundle
 llm-usage-node sync --ui none
+llm-usage-node sync --from-bundle /path/to/offline.zip --dry-run
 ```
 
 Cursor 相关常用参数：

@@ -53,6 +53,7 @@ llm-usage sync --ui auto
 
 当前 Node 版本特性：
 
+- 已补齐 `init`、`whoami`、`import-config`、`export-bundle` 和 `sync --from-bundle`
 - 本地采集、聚合、报表输出、飞书同步均可直接由 Node 执行
 - 运行本地命令时不再依赖 Python collector bridge
 - 远端 SSH 采集暂未在 Node 版本中实现；检测到远端配置时会提示并忽略
@@ -62,8 +63,13 @@ llm-usage sync --ui auto
 ```bash
 cd node
 node --test
+node ./bin/llm-usage-node.js init
+node ./bin/llm-usage-node.js whoami
+node ./bin/llm-usage-node.js import-config --from /path/to/old/repo --dry-run
 node ./bin/llm-usage-node.js doctor
 node ./bin/llm-usage-node.js collect --ui none
+node ./bin/llm-usage-node.js export-bundle
+node ./bin/llm-usage-node.js sync --from-bundle /tmp/offline.zip --dry-run
 ```
 
 ## 最小配置

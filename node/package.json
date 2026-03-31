@@ -34,6 +34,7 @@
     "src/runtime/cursor-login.js",
     "src/runtime/env.js",
     "src/runtime/feishu.js",
+    "src/runtime/offline-bundle.js",
     "src/runtime/remotes.js",
     "src/runtime/reporting.js",
     "src/runtime/ui.js",
@@ -45,11 +46,17 @@
     "test": "node --test",
     "pack:check": "env NPM_CONFIG_CACHE=/tmp/llm-usage-npm-cache npm pack --dry-run",
     "parity": "node --test test/parity.test.js",
+    "init": "node ./bin/llm-usage-node.js init",
+    "whoami": "node ./bin/llm-usage-node.js whoami",
     "doctor": "node ./bin/llm-usage-node.js doctor",
     "collect": "node ./bin/llm-usage-node.js collect",
+    "export-bundle": "node ./bin/llm-usage-node.js export-bundle",
     "sync": "node ./bin/llm-usage-node.js sync"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
   }
 }

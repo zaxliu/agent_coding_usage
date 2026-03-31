@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 reports/
+.worktrees/
 .DS_Store
 dist/
 *.egg-info/
