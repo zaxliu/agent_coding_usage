@@ -6,7 +6,12 @@ import { banner, info, section } from "./ui.js";
 function groupTerminalRows(rows) {
   const buckets = new Map();
   for (const row of rows) {
-    const key = JSON.stringify([row.date_local, row.tool, row.model]);
+    const key = JSON.stringify([
+      row.date_local,
+      row.source_host_hash ?? "",
+      row.tool,
+      row.model,
+    ]);
     const current = buckets.get(key) || {
       input_tokens_sum: 0,
       cache_tokens_sum: 0,
@@ -22,28 +27,42 @@ function groupTerminalRows(rows) {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([, bucket]) => ({
       ...bucket.sample,
-      source_host_hash: "",
       input_tokens_sum: bucket.input_tokens_sum,
       cache_tokens_sum: bucket.cache_tokens_sum,
       output_tokens_sum: bucket.output_tokens_sum,
     }));
 }
 
-export function printTerminalReport(rows) {
-  const headers = ["日期", "工具", "模型", "输入", "缓存", "输出"];
-  const widths = [10, 10, 28, 10, 10, 10];
+function hostLabel(sourceHostHash, hostLabels) {
+  const hash = sourceHostHash ?? "";
+  if (!hash) {
+    return "local";
+  }
+  return hostLabels[hash] || hash.slice(0, 8);
+}
+
+export function printTerminalReport(rows, { hostLabels = {} } = {}) {
+  const headers = ["日期", "Host", "工具", "模型", "输入", "缓存", "输出"];
+  const grouped = groupTerminalRows(rows);
+  const renderedRows = grouped.map((row) => [
+    row.date_local,
+    hostLabel(row.source_host_hash, hostLabels),
+    row.tool,
+    String(row.model),
+    String(row.input_tokens_sum),
+    String(row.cache_tokens_sum),
+    String(row.output_tokens_sum),
+  ]);
+  const widths = headers.map((header, index) =>
+    Math.max(
+      header.length,
+      ...renderedRows.map((cells) => String(cells[index]).length),
+    ),
+  );
   console.log(headers.map((value, index) => value.padEnd(widths[index])).join(" | "));
   console.log(widths.map((width) => "-".repeat(width)).join("-+-"));
-  for (const row of groupTerminalRows(rows)) {
-    const data = [
-      row.date_local,
-      row.tool,
-      row.model.slice(0, 28),
-      String(row.input_tokens_sum),
-      String(row.cache_tokens_sum),
-      String(row.output_tokens_sum),
-    ];
-    console.log(data.map((value, index) => value.padEnd(widths[index])).join(" | "));
+  for (const data of renderedRows) {
+    console.log(data.map((value, index) => String(value).padEnd(widths[index])).join(" | "));
   }
 }
 

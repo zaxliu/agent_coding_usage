@@ -44,7 +44,7 @@ def test_cmd_export_bundle_writes_bundle_and_prints_path(monkeypatch, tmp_path):
     calls: dict[str, object] = {}
     output_lines: list[str] = []
 
-    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([_row()], ["warn-a"]))
+    monkeypatch.setattr(main, "_build_aggregates", lambda args: ([_row()], ["warn-a"], {}))
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
     monkeypatch.setattr(
         main,
@@ -98,17 +98,58 @@ def test_cmd_sync_from_bundle_rejects_online_collection_flags(monkeypatch):
         )
 
 
+def test_cmd_sync_from_bundle_dry_run_without_identity_uses_empty_host_labels(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _capture_print(rows, **kwargs):  # noqa: ANN001, ANN201
+        captured["rows"] = rows
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(main, "read_offline_bundle", lambda path: ([_row()], [], {"row_count": 1}))
+    monkeypatch.setattr(main, "print_terminal_report", _capture_print)
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: None)
+    monkeypatch.delenv("ORG_USERNAME", raising=False)
+    monkeypatch.delenv("HASH_SALT", raising=False)
+
+    exit_code = main.cmd_sync(
+        Namespace(
+            from_bundle="/tmp/offline.zip",
+            dry_run=True,
+            lookback_days=None,
+            ui="auto",
+            cursor_login_timeout_sec=600,
+            cursor_login_browser="default",
+            cursor_login_user_data_dir="",
+            cursor_login_mode="auto",
+        )
+    )
+
+    assert exit_code == 0
+    assert len(captured["rows"]) == 1
+    assert captured["kwargs"].get("host_labels") == {}
+
+
 def test_cmd_sync_from_bundle_dry_run_skips_feishu_credentials(monkeypatch):
     output_lines: list[str] = []
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: ([_row(tool="cursor")], ["warn-a"], {"row_count": 1}))
-    monkeypatch.setattr(main, "print_terminal_report", lambda rows: output_lines.append(f"rows:{len(rows)}"))
-    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: output_lines.append(" ".join(str(v) for v in args)))
     monkeypatch.setattr(
         main,
-        "_required_env",
-        lambda name: (_ for _ in ()).throw(AssertionError(f"_required_env should not be called for {name}")),
+        "print_terminal_report",
+        lambda rows, **kwargs: output_lines.append(f"rows:{len(rows)}"),
     )
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: output_lines.append(" ".join(str(v) for v in args)))
+    monkeypatch.setenv("ORG_USERNAME", "alice")
+    monkeypatch.setenv("HASH_SALT", "team-salt")
+    feishu_calls: list[str] = []
+
+    def _track_required_env(name: str) -> str:
+        if name.startswith("FEISHU_"):
+            feishu_calls.append(name)
+        return main.os.environ[name]
+
+    monkeypatch.setattr(main, "_required_env", _track_required_env)
 
     exit_code = main.cmd_sync(
         Namespace(
@@ -126,6 +167,7 @@ def test_cmd_sync_from_bundle_dry_run_skips_feishu_credentials(monkeypatch):
     assert exit_code == 0
     assert "rows:1" in output_lines
     assert any("warn: warn-a" == line for line in output_lines)
+    assert feishu_calls == []
 
 
 def test_cmd_sync_from_bundle_upserts_original_rows(monkeypatch):
@@ -134,7 +176,9 @@ def test_cmd_sync_from_bundle_upserts_original_rows(monkeypatch):
 
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: (rows, [], {"row_count": 2}))
-    monkeypatch.setattr(main, "print_terminal_report", lambda rows: None)
+    monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
+    monkeypatch.setenv("ORG_USERNAME", "alice")
+    monkeypatch.setenv("HASH_SALT", "team-salt")
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
     monkeypatch.setenv("FEISHU_TABLE_ID", "tbl")
     monkeypatch.setenv("FEISHU_BOT_TOKEN", "bot")

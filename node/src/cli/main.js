@@ -188,6 +188,21 @@ function remoteCollectionWarnings() {
   ];
 }
 
+function buildTerminalHostLabels() {
+  const username = getEnv("ORG_USERNAME");
+  const salt = getEnv("HASH_SALT");
+  if (!username || !salt) {
+    return {};
+  }
+  const labels = {
+    [hashSourceHost(username, "local", salt)]: "local",
+  };
+  for (const config of parseRemoteConfigsFromEnv()) {
+    labels[hashSourceHost(username, config.source_label, salt)] = config.source_label;
+  }
+  return labels;
+}
+
 async function buildAggregates(lookbackDays) {
   const localPayload = await collectLocalUsage(lookbackDays);
   const username = requiredEnv("ORG_USERNAME");
@@ -319,7 +334,7 @@ async function runCollect(lookbackDays, uiMode, options) {
   });
   const { rows, warnings } = await buildAggregates(lookbackDays);
   printWarnings(warnings);
-  printTerminalReport(rows);
+  printTerminalReport(rows, { hostLabels: buildTerminalHostLabels() });
   const csvPath = writeCsvReport(rows, getReportsDir());
   console.log(info(`csv: ${csvPath}`));
   return 0;
@@ -381,7 +396,7 @@ async function runSync(lookbackDays, uiMode, options) {
   if (options.fromBundle) {
     const { rows, warnings } = await readOfflineBundle(options.fromBundle);
     printWarnings(warnings);
-    printTerminalReport(rows);
+    printTerminalReport(rows, { hostLabels: buildTerminalHostLabels() });
     return syncRowsToFeishu(rows, options.dryRun);
   }
 
@@ -396,7 +411,7 @@ async function runSync(lookbackDays, uiMode, options) {
   });
   const { rows, warnings } = await buildAggregates(lookbackDays);
   printWarnings(warnings);
-  printTerminalReport(rows);
+  printTerminalReport(rows, { hostLabels: buildTerminalHostLabels() });
   const csvPath = writeCsvReport(rows, getReportsDir());
   console.log(info(`csv: ${csvPath}`));
   return syncRowsToFeishu(rows, options.dryRun);

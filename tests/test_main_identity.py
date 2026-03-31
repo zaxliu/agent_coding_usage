@@ -115,7 +115,7 @@ def test_build_aggregates_passes_runtime_passwords_to_remote_collectors(monkeypa
     monkeypatch.setattr(main, "_collect_all", lambda lookback_days, collectors: ([], []))
     monkeypatch.setattr(main, "aggregate_events", lambda events, user_hash, timezone_name: [])
 
-    rows, warnings = main._build_aggregates(Namespace(ui="cli"))
+    rows, warnings, _host_labels = main._build_aggregates(Namespace(ui="cli"))
 
     assert rows == []
     assert warnings == []
@@ -165,7 +165,7 @@ def test_build_aggregates_prefers_cli_lookback_over_env(monkeypatch):
     monkeypatch.setattr(main, "_collect_all", _fake_collect_all)
     monkeypatch.setattr(main, "aggregate_events", lambda events, user_hash, timezone_name: [])
 
-    rows, warnings = main._build_aggregates(Namespace(ui="cli", lookback_days=30))
+    rows, warnings, _host_labels = main._build_aggregates(Namespace(ui="cli", lookback_days=30))
 
     assert rows == []
     assert warnings == []
@@ -192,7 +192,7 @@ def test_build_aggregates_uses_30_day_default_when_env_invalid(monkeypatch):
     monkeypatch.setattr(main, "_collect_all", _fake_collect_all)
     monkeypatch.setattr(main, "aggregate_events", lambda events, user_hash, timezone_name: [])
 
-    rows, warnings = main._build_aggregates(Namespace(ui="cli", lookback_days=None))
+    rows, warnings, _host_labels = main._build_aggregates(Namespace(ui="cli", lookback_days=None))
 
     assert rows == []
     assert warnings == []
