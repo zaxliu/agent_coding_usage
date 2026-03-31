@@ -146,6 +146,19 @@ def _emit_chunked_payload(payload_obj):
         print(prefix + " CHUNK index=" + str(index) + " data=" + chunk)
     print(prefix + " END")
 
+def _chunked_wire_bytes(payload_obj):
+    raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = base64.b64encode(raw).decode("ascii")
+    chunk_size = __CHUNKED_CHUNK_SIZE__
+    chunks = [blob[i : i + chunk_size] for i in range(0, len(blob), chunk_size)] or [""]
+    prefix = __CHUNKED_STDOUT_PREFIX__
+    total = len((prefix + " BEGIN total_chunks=" + str(len(chunks)) + " total_bytes=" + str(len(raw)) + " sha256=" + digest + "\\n").encode("utf-8"))
+    for index, chunk in enumerate(chunks):
+        total += len((prefix + " CHUNK index=" + str(index) + " data=" + chunk + "\\n").encode("utf-8"))
+    total += len((prefix + " END\\n").encode("utf-8"))
+    return total
+
 log("info: remote script started jobs=" + str(len(jobs)))
 
 def coerce_int(value):
@@ -817,21 +830,21 @@ for job_index, spec in enumerate(jobs):
 next_cursor = None
 if stdout_page_budget_bytes > 0:
 
-    def _page_json_bytes(ev, wn, nc):
-        # Must match _emit_chunked_payload: same object shape and json.dumps settings.
-        return len(json.dumps({"events": ev, "warnings": wn, "next_cursor": nc}, separators=(",", ":")).encode("utf-8"))
+    def _page_wire_bytes(ev, wn, nc):
+        # Must match _emit_chunked_payload: same object shape, chunking, and stdout framing.
+        return _chunked_wire_bytes({"events": ev, "warnings": wn, "next_cursor": nc})
 
     def _cursor_at(k):
         if k >= len(events):
             return None
         return event_resume_cursors[k]
 
-    if _page_json_bytes(events, warnings, None) > stdout_page_budget_bytes:
-        # Choose the largest k such that events[:k] plus serialized next_cursor fits (next_cursor points at event k).
+    if _page_wire_bytes(events, warnings, None) > stdout_page_budget_bytes:
+        # Choose the largest k such that events[:k] plus next_cursor fits within the full chunked stdout budget.
         chosen_k = None
         for k in range(len(events), -1, -1):
             nc = _cursor_at(k) if k < len(events) else None
-            if _page_json_bytes(events[:k], warnings, nc) <= stdout_page_budget_bytes:
+            if _page_wire_bytes(events[:k], warnings, nc) <= stdout_page_budget_bytes:
                 chosen_k = k
                 next_cursor = nc if k < len(events) else None
                 break

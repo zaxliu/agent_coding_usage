@@ -1432,6 +1432,17 @@ def _serialized_remote_page_bytes(parsed: dict) -> int:
     )
 
 
+def _chunked_wire_stdout_bytes(parsed: dict) -> int:
+    framed = remote_file._encode_chunked_stdout_payload(
+        {
+            "events": parsed["events"],
+            "warnings": parsed["warnings"],
+            "next_cursor": parsed["next_cursor"],
+        }
+    )
+    return len((framed + "\n").encode("utf-8"))
+
+
 def test_remote_collect_script_respects_budget_including_serialized_next_cursor(tmp_path):
     """Trimmed page JSON (events + warnings + non-null next_cursor) must stay within stdout_page_budget_bytes."""
     lines = []
@@ -1499,6 +1510,50 @@ def test_remote_collect_script_respects_budget_including_serialized_next_cursor(
     assert len(parsed_650["events"]) < 12
 
 
+def test_remote_collect_script_respects_budget_for_chunked_wire_stdout(tmp_path):
+    """Chunked stdout framing must also fit within stdout_page_budget_bytes, not just the raw JSON page."""
+    lines = []
+    for i in range(12):
+        lines.append(
+            json.dumps(
+                {
+                    "created_at": "2026-03-08T01:02:03Z",
+                    "model": "m",
+                    "usage": {"input_tokens": 100 + i, "output_tokens": 2, "cache_read_input_tokens": 0},
+                }
+            )
+        )
+    fake_file = tmp_path / "wire-budget.jsonl"
+    file_mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
+    fake_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    fake_file.touch()
+    __import__("os").utime(fake_file, (file_mtime, file_mtime))
+
+    for budget in (900, 1200, 1600):
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "jobs": [{"tool": "claude_code", "patterns": [str(fake_file)]}],
+                    "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
+                    "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
+                    "max_files": 100,
+                    "max_total_bytes": 1024 * 1024,
+                    "stdout_page_budget_bytes": budget,
+                    "cursor": None,
+                }
+            ).encode("utf-8")
+        ).decode("ascii")
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
+
+        parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
+        assert error is None
+        assert parsed is not None
+        assert _chunked_wire_stdout_bytes(parsed) <= budget
+
+
 def test_remote_collect_script_resumes_jsonl_from_line_cursor(tmp_path):
     """With a non-null cursor, skip earlier physical lines in the current JSONL file (0-based line_index)."""
     lines = []
@@ -1562,32 +1617,41 @@ def test_remote_collect_script_next_cursor_reflects_file_index_after_sorted_glob
     for path in (tmp_path / "a.jsonl", tmp_path / "z.jsonl"):
         __import__("os").utime(path, (mtime, mtime))
 
-    budget = 420
-    payload = base64.b64encode(
-        json.dumps(
-            {
-                "jobs": [{"tool": "claude_code", "patterns": [str(tmp_path / "*.jsonl")]}],
-                "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
-                "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
-                "max_files": 100,
-                "max_total_bytes": 1024 * 1024,
-                "stdout_page_budget_bytes": budget,
-                "cursor": None,
-            }
-        ).encode("utf-8")
-    ).decode("ascii")
+    parsed = None
+    budget = None
+    for candidate_budget in (700, 800, 900, 1000, 1100, 1200):
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "jobs": [{"tool": "claude_code", "patterns": [str(tmp_path / "*.jsonl")]}],
+                    "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
+                    "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
+                    "max_files": 100,
+                    "max_total_bytes": 1024 * 1024,
+                    "stdout_page_budget_bytes": candidate_budget,
+                    "cursor": None,
+                }
+            ).encode("utf-8")
+        ).decode("ascii")
 
-    stdout = io.StringIO()
-    with redirect_stdout(stdout):
-        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
 
-    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
-    assert error is None
+        parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
+        assert error is None
+        assert parsed is not None
+        if len(parsed["events"]) == 1 and parsed["next_cursor"] is not None:
+            budget = candidate_budget
+            break
+
     assert parsed is not None
+    assert budget is not None
     assert len(parsed["events"]) == 1
     assert parsed["next_cursor"] is not None
     assert parsed["next_cursor"]["file_index"] == 1
     assert parsed["next_cursor"]["line_index"] == 0
+    assert _chunked_wire_stdout_bytes(parsed) <= budget
 
 
 def test_build_uploaded_remote_script_includes_cursor_in_payload(tmp_path):
@@ -1630,39 +1694,56 @@ def test_remote_collect_script_next_cursor_reflects_pattern_index_across_pattern
     for path in (tmp_path / "first.jsonl", tmp_path / "second.jsonl"):
         __import__("os").utime(path, (mtime, mtime))
 
-    # Large enough that one event from first.jsonl plus next_cursor fits, but not the full 25-event run.
-    budget = 520
-    payload = base64.b64encode(
-        json.dumps(
-            {
-                "jobs": [
-                    {
-                        "tool": "claude_code",
-                        "patterns": [str(tmp_path / "first.jsonl"), str(tmp_path / "second.jsonl")],
-                    }
-                ],
-                "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
-                "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
-                "max_files": 100,
-                "max_total_bytes": 1024 * 1024,
-                "stdout_page_budget_bytes": budget,
-                "cursor": None,
-            }
-        ).encode("utf-8")
-    ).decode("ascii")
+    # Pick the smallest budget in a tight range that still allows one event from first.jsonl
+    # plus a resume cursor into the second pattern when counted as chunked stdout.
+    parsed = None
+    budget = None
+    for candidate_budget in (700, 800, 900, 1000, 1100, 1200):
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "tool": "claude_code",
+                            "patterns": [str(tmp_path / "first.jsonl"), str(tmp_path / "second.jsonl")],
+                        }
+                    ],
+                    "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
+                    "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
+                    "max_files": 100,
+                    "max_total_bytes": 1024 * 1024,
+                    "stdout_page_budget_bytes": candidate_budget,
+                    "cursor": None,
+                }
+            ).encode("utf-8")
+        ).decode("ascii")
 
-    stdout = io.StringIO()
-    with redirect_stdout(stdout):
-        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
 
-    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
-    assert error is None
+        parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
+        assert error is None
+        assert parsed is not None
+        next_cursor = parsed["next_cursor"]
+        if (
+            len(parsed["events"]) >= 1
+            and isinstance(next_cursor, dict)
+            and next_cursor["pattern_index"] == 1
+            and next_cursor["file_index"] == 0
+            and next_cursor["line_index"] == 0
+        ):
+            budget = candidate_budget
+            break
+
     assert parsed is not None
+    assert budget is not None
     assert parsed["next_cursor"] is not None
     assert parsed["next_cursor"]["pattern_index"] == 1
     assert parsed["next_cursor"]["file_index"] == 0
     assert parsed["next_cursor"]["line_index"] == 0
     assert _serialized_remote_page_bytes(parsed) <= budget
+    assert _chunked_wire_stdout_bytes(parsed) <= budget
 
 
 def test_remote_file_collector_reports_chunked_stdout_corruption(monkeypatch):
