@@ -23,8 +23,19 @@ function withPlatform(platform, fn) {
   }
 }
 
+function withHomedir(home, fn) {
+  const descriptor = Object.getOwnPropertyDescriptor(os, "homedir");
+  Object.defineProperty(os, "homedir", { value: () => home });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(os, "homedir", descriptor);
+  }
+}
+
 test("prepareRuntimePaths resolves macOS native defaults", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "llm-usage-home-"));
+  const hostHome = fs.mkdtempSync(path.join(os.tmpdir(), "llm-usage-host-home-"));
   const originalHome = process.env.HOME;
   const originalEnvFile = process.env.LLM_USAGE_ENV_FILE;
   const originalDataDir = process.env.LLM_USAGE_DATA_DIR;
@@ -33,13 +44,15 @@ test("prepareRuntimePaths resolves macOS native defaults", async () => {
   delete process.env.LLM_USAGE_DATA_DIR;
   resetRuntimePathsCache();
 
-  await withPlatform("darwin", async () => {
-    const resolved = await prepareRuntimePaths(path.join(home, "repo"));
-    assert.equal(resolved.envPath, path.join(home, "Library", "Application Support", "llm-usage", ".env"));
-    assert.equal(
-      resolved.runtimeStatePath,
-      path.join(home, "Library", "Application Support", "llm-usage", "runtime_state.json"),
-    );
+  await withHomedir(hostHome, async () => {
+    await withPlatform("darwin", async () => {
+      const resolved = await prepareRuntimePaths(path.join(home, "repo"));
+      assert.equal(resolved.envPath, path.join(home, "Library", "Application Support", "llm-usage", ".env"));
+      assert.equal(
+        resolved.runtimeStatePath,
+        path.join(home, "Library", "Application Support", "llm-usage", "runtime_state.json"),
+      );
+    });
   });
 
   process.env.HOME = originalHome;

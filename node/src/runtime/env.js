@@ -13,18 +13,36 @@ const APP_NAME = "llm-usage";
 const ACCEPT_ANSWERS = new Set(["y", "yes", "是", "确认"]);
 let runtimePathsCache = new Map();
 
+function platformHomeDir(platform = process.platform) {
+  if (platform === "darwin") {
+    return String(process.env.HOME || "").trim() || os.homedir();
+  }
+  if (platform === "win32") {
+    const userProfile = String(process.env.USERPROFILE || "").trim();
+    if (userProfile) {
+      return userProfile;
+    }
+    const homeDrive = String(process.env.HOMEDRIVE || "").trim();
+    const homePath = String(process.env.HOMEPATH || "").trim();
+    if (homeDrive && homePath) {
+      return path.join(homeDrive, homePath);
+    }
+  }
+  return os.homedir();
+}
+
 function configDir() {
   const envFile = String(process.env.LLM_USAGE_ENV_FILE || "").trim();
   if (envFile) {
     return path.dirname(path.resolve(envFile));
   }
   if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Application Support", APP_NAME);
+    return path.join(platformHomeDir("darwin"), "Library", "Application Support", APP_NAME);
   }
   if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), APP_NAME);
+    return path.join(process.env.APPDATA || path.join(platformHomeDir("win32"), "AppData", "Roaming"), APP_NAME);
   }
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), APP_NAME);
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(platformHomeDir(), ".config"), APP_NAME);
 }
 
 function dataDir() {
@@ -33,12 +51,12 @@ function dataDir() {
     return path.resolve(override);
   }
   if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Application Support", APP_NAME);
+    return path.join(platformHomeDir("darwin"), "Library", "Application Support", APP_NAME);
   }
   if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), APP_NAME);
+    return path.join(process.env.APPDATA || path.join(platformHomeDir("win32"), "AppData", "Roaming"), APP_NAME);
   }
-  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), APP_NAME);
+  return path.join(process.env.XDG_DATA_HOME || path.join(platformHomeDir(), ".local", "share"), APP_NAME);
 }
 
 async function resolveFilePath(label, preferredPath, legacyPath, { allowLegacy = true } = {}) {
