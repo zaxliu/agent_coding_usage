@@ -18,9 +18,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_pyproject_includes_pypi_metadata():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
+    setuptools_cfg = pyproject["tool"]["setuptools"]
 
     assert project["readme"] == "README.md"
-    assert project["license"] == "MIT"
+    assert project["license"] == {"text": "MIT"}
     assert project["authors"] == [{"name": "Lewis"}]
     assert project["keywords"] == ["llm", "usage", "cli", "feishu"]
     assert "Homepage" in project["urls"]
@@ -29,7 +30,7 @@ def test_pyproject_includes_pypi_metadata():
     assert "Programming Language :: Python :: 3" in project["classifiers"]
     assert "Programming Language :: Python :: 3.9" in project["classifiers"]
     assert not any(classifier.startswith("License ::") for classifier in project["classifiers"])
-    assert project["license-files"] == ["LICENSE"]
+    assert setuptools_cfg["license-files"] == ["LICENSE"]
 
 
 def test_release_script_builds_only_python_distributions():
