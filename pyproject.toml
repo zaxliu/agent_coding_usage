@@ -7,12 +7,11 @@ name = "llm-usage-horizon"
 version = "0.1.2"
 description = "Local LLM coding usage collector and Feishu Bitable sync"
 readme = "README.md"
-license = "MIT"
+license = { text = "MIT" }
 authors = [
   {name = "Lewis"},
 ]
 requires-python = ">=3.9"
-license-files = ["LICENSE"]
 keywords = ["llm", "usage", "cli", "feishu"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -46,6 +45,7 @@ llm-usage = "llm_usage.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+license-files = ["LICENSE"]
 
 [tool.setuptools.package-data]
 llm_usage = ["resources/*.env"]
