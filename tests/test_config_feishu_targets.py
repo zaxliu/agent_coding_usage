@@ -111,6 +111,37 @@ def test_interactive_add_duplicate_named_target_is_rejected(tmp_path: Path):
     assert exit_code == 0
 
 
+def test_interactive_named_target_edit_accepts_target_name(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "FEISHU_TARGETS=myself\n"
+        "FEISHU_MYSELF_APP_TOKEN=\n",
+        encoding="utf-8",
+    )
+    exit_code = run_config_editor(
+        env_path=env_path,
+        stdin=_TTYStringIO("2\n2\ne\nmyself\n1\nnamed-token\nb\nb\nb\ns\n"),
+        stdout=_TTYStringIO(),
+    )
+    assert exit_code == 0
+    m = _env_map(env_path)
+    assert m["FEISHU_MYSELF_APP_TOKEN"] == "named-token"
+
+
+def test_interactive_add_named_target_enters_detail_immediately(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("ORG_USERNAME=u\n", encoding="utf-8")
+    exit_code = run_config_editor(
+        env_path=env_path,
+        stdin=_TTYStringIO("2\n2\na\nteam_b\n1\nteam-token\nb\nb\nb\ns\n"),
+        stdout=_TTYStringIO(),
+    )
+    assert exit_code == 0
+    m = _env_map(env_path)
+    assert m["FEISHU_TARGETS"] == "team_b"
+    assert m["FEISHU_TEAM_B_APP_TOKEN"] == "team-token"
+
+
 def test_save_preserves_named_target_keys_when_feishu_targets_list_is_invalid(tmp_path: Path):
     env_path = tmp_path / ".env"
     original = (

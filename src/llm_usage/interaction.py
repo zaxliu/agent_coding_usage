@@ -591,14 +591,19 @@ def _edit_feishu_named_targets_menu(draft: ConfigDraft, stdin: TextIO, stdout: T
                 stdout.write(f"{err}\n")
                 continue
             normalized = normalize_feishu_target_name(name_raw)
-            draft.feishu_named_targets.append(FeishuTargetDraft(name=normalized))
+            target = FeishuTargetDraft(name=normalized)
+            draft.feishu_named_targets.append(target)
             draft.dirty = True
+            if _edit_feishu_target_detail(target, stdin=stdin, stdout=stdout):
+                draft.dirty = True
             continue
         if answer == "e":
-            index = _read_menu_index("Edit which target: ", len(draft.feishu_named_targets), stdin=stdin, stdout=stdout)
-            if index is None:
+            target = _read_feishu_target_selection(
+                "Edit which target: ", draft.feishu_named_targets, stdin=stdin, stdout=stdout
+            )
+            if target is None:
                 continue
-            if _edit_feishu_target_detail(draft.feishu_named_targets[index], stdin=stdin, stdout=stdout):
+            if _edit_feishu_target_detail(target, stdin=stdin, stdout=stdout):
                 draft.dirty = True
             continue
         if answer == "d":
@@ -608,6 +613,29 @@ def _edit_feishu_named_targets_menu(draft: ConfigDraft, stdin: TextIO, stdout: T
             draft.feishu_named_targets.pop(index)
             draft.dirty = True
             continue
+
+
+def _read_feishu_target_selection(
+    prompt_text: str,
+    targets: list[FeishuTargetDraft],
+    stdin: TextIO,
+    stdout: TextIO,
+) -> Optional[FeishuTargetDraft]:
+    if not targets:
+        return None
+    raw = _read_line(prompt_text, stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        index = int(raw) - 1
+        if 0 <= index < len(targets):
+            return targets[index]
+        return None
+    want = raw.lower()
+    for target in targets:
+        if target.name == want:
+            return target
+    return None
 
 
 def _edit_feishu_target_detail(target: FeishuTargetDraft, stdin: TextIO, stdout: TextIO) -> bool:
