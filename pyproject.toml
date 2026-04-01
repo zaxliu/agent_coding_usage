@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-usage-horizon"
-version = "0.1.3"
+version = "0.1.4"
 description = "Local LLM coding usage collector and Feishu Bitable sync"
 readme = "README.md"
 license = { text = "MIT" }
