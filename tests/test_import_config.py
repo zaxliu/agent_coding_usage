@@ -74,6 +74,7 @@ def test_top_level_help_shows_import_config_command(capsys):
 
 
 def test_resolve_file_path_prompt_quotes_migration_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths.sys, "platform", "darwin")
     legacy_root = tmp_path / "repo with space" / "odd'chars"
     legacy_root.mkdir(parents=True)
     legacy_env = legacy_root / ".env"

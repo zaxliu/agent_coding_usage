@@ -163,7 +163,7 @@ def _parse_env_line(raw: str) -> EnvLine:
     return EnvLine(kind="entry", raw=raw, key=key, value=_parse_env_value(value))
 
 
-def _split_env_content(content: str) -> tuple[list[str], str, bool]:
+def _split_env_content(content: str) -> tuple[list[EnvLine], str, bool]:
     if not content:
         return [], "\n", True
 
@@ -205,7 +205,7 @@ def load_env_document(path: Path) -> EnvDocument:
 
 def save_env_document(path: Path, document: EnvDocument) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(document.render(), encoding="utf-8")
+    path.write_bytes(document.render().encode("utf-8"))
 
 
 def load_dotenv(path: Path) -> None:

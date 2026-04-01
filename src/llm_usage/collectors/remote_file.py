@@ -1309,6 +1309,44 @@ class RemoteFileCollector(BaseCollector):
         stderr_buffer = b""
         stdout_bytes = 0
         next_progress = self._STDOUT_PROGRESS_STEP_BYTES
+        stdin_bytes = input_text.encode("utf-8")
+        if os.name == "nt":
+            try:
+                try:
+                    stdout_data, stderr_data = process.communicate(input=stdin_bytes, timeout=self.timeout_sec)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if allow_retry and self._disable_connection_sharing("ssh session timed out while using connection sharing"):
+                        return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
+                    return None, "remote command timed out"
+                stdout_data = stdout_data or b""
+                stderr_data = stderr_data or b""
+                stdout_text = stdout_data.decode("utf-8", errors="replace")
+                stderr_text = stderr_data.decode("utf-8", errors="replace")
+                if stderr_text.strip():
+                    for line in stderr_text.strip().splitlines():
+                        stderr_lines.append(line)
+                        self._log_progress(f"remote stderr: {line}")
+                if stdout_data:
+                    stdout_bytes = len(stdout_data)
+                    if stdout_bytes >= next_progress:
+                        self._log_progress(f"remote stdout received {stdout_bytes} bytes")
+                    self._log_progress(f"remote stdout complete {stdout_bytes} bytes")
+                if process.returncode != 0:
+                    if allow_retry and self._maybe_disable_connection_sharing_from_text(stderr_text):
+                        return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
+                    if self._should_fallback_to_uploaded_script(stdout_text, stderr_text):
+                        return subprocess.CompletedProcess(command, process.returncode, stdout_text, stderr_text), None
+                    return None, stderr_text.strip() or stdout_text.strip() or "remote command failed"
+                return subprocess.CompletedProcess(command, process.returncode, stdout_text, stderr_text), None
+            finally:
+                stdout_handle.close()
+                Path(stdout_handle.name).unlink(missing_ok=True)
+
         deadline = time.monotonic() + self.timeout_sec
         selector = selectors.DefaultSelector()
         if process.stdout is not None:
@@ -1316,7 +1354,6 @@ class RemoteFileCollector(BaseCollector):
         if process.stderr is not None:
             selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         if process.stdin is not None:
-            stdin_bytes = input_text.encode("utf-8")
             process.stdin.write(stdin_bytes)
             process.stdin.close()
         try:

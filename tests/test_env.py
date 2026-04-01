@@ -14,9 +14,8 @@ from llm_usage.env import (
 
 def test_load_env_document_preserves_raw_round_trip_and_parses_values(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text(
-        "# Identity\nORG_USERNAME='alice'\n   \n# Extra\nCUSTOM_FLAG=1 # comment\n",
-        encoding="utf-8",
+    env_path.write_bytes(
+        b"# Identity\nORG_USERNAME='alice'\n   \n# Extra\nCUSTOM_FLAG=1 # comment\n",
     )
 
     document = load_env_document(env_path)
@@ -41,7 +40,7 @@ def test_load_env_document_preserves_crlf_newlines(tmp_path: Path):
 
 def test_load_env_document_preserves_missing_trailing_newline(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text("ORG_USERNAME=alice\nCUSTOM_FLAG=1", encoding="utf-8")
+    env_path.write_bytes(b"ORG_USERNAME=alice\nCUSTOM_FLAG=1")
 
     document = load_env_document(env_path)
 

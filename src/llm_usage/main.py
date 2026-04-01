@@ -410,6 +410,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     root = _repo_root()
     env_example = root / ".env.example"
+    env_example.parent.mkdir(parents=True, exist_ok=True)
     if not env_example.exists():
         env_example.write_text(
             "\n".join(

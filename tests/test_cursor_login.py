@@ -49,6 +49,16 @@ def test_maybe_capture_skips_when_token_exists(monkeypatch):
 def test_maybe_capture_refreshes_expired_token(monkeypatch):
     monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "expired")
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="posix",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
 
     class _Collector:
         def probe(self):  # noqa: ANN201
@@ -102,6 +112,16 @@ def test_maybe_capture_uses_local_files_without_browser(monkeypatch):
 def test_maybe_capture_triggers_browser_when_local_logs_have_no_events(monkeypatch):
     monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="posix",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
 
     class _Collector:
         def probe(self):  # noqa: ANN201
@@ -133,6 +153,16 @@ def test_maybe_capture_triggers_browser_when_local_logs_have_no_events(monkeypat
 def test_maybe_capture_triggers_browser_when_needed(monkeypatch):
     monkeypatch.setenv("CURSOR_WEB_SESSION_TOKEN", "")
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(
+        main,
+        "os",
+        SimpleNamespace(
+            name="posix",
+            getenv=main.os.getenv,
+            environ=main.os.environ,
+            popen=main.os.popen,
+        ),
+    )
 
     class _Collector:
         def probe(self):  # noqa: ANN201
