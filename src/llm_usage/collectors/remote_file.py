@@ -22,6 +22,8 @@ from .base import BaseCollector, CollectOutput
 _CHUNKED_STDOUT_PREFIX = "LLMUSAGE_CHUNKED_V1"
 _DEFAULT_STDOUT_CHUNK_SIZE = 32 * 1024
 _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES = 600 * 1024
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_PYPROJECT_PATH = _PROJECT_ROOT / "pyproject.toml"
 
 _PROBE_SCRIPT = """
 import base64, glob, json, os, sys
@@ -999,6 +1001,8 @@ class RemoteFileCollector(BaseCollector):
         return CollectOutput(events=events, warnings=warnings)
 
     def _discover_python(self) -> tuple[Optional[str], Optional[str]]:
+        required_version = _remote_python_minimum_version()
+        found_candidate = False
         for remote_args in _python_discovery_commands():
             try:
                 completed = self._run_ssh_with_optional_fallback(remote_args, timeout=15)
@@ -1018,11 +1022,57 @@ class RemoteFileCollector(BaseCollector):
                 continue
             python_cmd = _extract_python_command(completed.stdout)
             if python_cmd:
+                found_candidate = True
+                version, error = self._probe_python_version(python_cmd)
+                if error:
+                    return None, error
+                if version is None:
+                    if _is_explicit_python3_command(python_cmd):
+                        self._log_progress(f"探测：无法确认 {python_cmd} 版本，沿用该解释器")
+                        return python_cmd, None
+                    self._log_progress(f"探测失败：无法确认 {python_cmd} 的版本")
+                    continue
+                if version < required_version:
+                    self._log_progress(
+                        "探测命中但版本不满足："
+                        f"{python_cmd} requires >="
+                        f"{required_version[0]}.{required_version[1]}, "
+                        f"got {version[0]}.{version[1]}"
+                    )
+                    continue
                 return python_cmd, None
             preview = _preview_text(completed.stdout)
             if preview:
                 self._log_progress(f"探测未命中：{label} stdout={preview}")
+        if found_candidate:
+            return None, f"no remote python interpreter found matching >={required_version[0]}.{required_version[1]}"
         return None, None
+
+    def _probe_python_version(self, python_cmd: str) -> tuple[Optional[tuple[int, int]], Optional[str]]:
+        try:
+            completed = self._run_ssh_with_optional_fallback(
+                _python_version_probe_command(python_cmd),
+                timeout=15,
+            )
+        except ValueError as exc:
+            return None, str(exc)
+        if completed is None:
+            self._log_progress(f"探测失败：{python_cmd} version probe timed out")
+            return None, None
+        if completed.returncode != 0:
+            stderr_preview = _preview_text(completed.stderr)
+            stdout_preview = _preview_text(completed.stdout)
+            if stderr_preview:
+                self._log_progress(f"探测失败：{python_cmd} version probe rc={completed.returncode} stderr={stderr_preview}")
+            elif stdout_preview:
+                self._log_progress(f"探测失败：{python_cmd} version probe rc={completed.returncode} stdout={stdout_preview}")
+            return None, None
+        version = _extract_python_version(completed.stdout)
+        if version is None:
+            preview = _preview_text(completed.stdout)
+            if preview:
+                self._log_progress(f"探测失败：{python_cmd} version probe stdout={preview}")
+        return version, None
 
     def _run_python_script(
         self,
@@ -1609,6 +1659,13 @@ def _extract_python_command(stdout: str) -> Optional[str]:
     return None
 
 
+def _extract_python_version(stdout: str) -> Optional[tuple[int, int]]:
+    match = re.search(r"(\d+)\.(\d+)", stdout)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 def _python_discovery_commands() -> list[list[str]]:
     discover = (
         "command -v python3 >/dev/null 2>&1 && command -v python3 || "
@@ -1628,11 +1685,35 @@ def _python_discovery_commands() -> list[list[str]]:
     ]
 
 
+def _python_version_probe_command(python_cmd: str) -> list[str]:
+    probe = "import sys; print('%s.%s' % (sys.version_info[0], sys.version_info[1]))"
+    return ["sh", "-lc", f"{_shell_quote(python_cmd)} -c {_shell_quote(probe)}"]
+
+
 def _is_python_command(value: str) -> bool:
     if value in {"python3", "python"}:
         return True
     basename = os.path.basename(value)
     return basename in {"python3", "python"}
+
+
+def _is_explicit_python3_command(value: str) -> bool:
+    return value == "python3" or os.path.basename(value) == "python3"
+
+
+def _remote_python_minimum_version() -> tuple[int, int]:
+    text = _PYPROJECT_PATH.read_text(encoding="utf-8")
+    match = re.search(r'(?m)^\s*requires-python\s*=\s*"([^"]+)"\s*$', text)
+    if not match:
+        raise RuntimeError(f"Unable to determine remote Python minimum version from {_PYPROJECT_PATH}")
+    requires_python = match.group(1).strip()
+    lower_bound = re.fullmatch(r">=\s*(\d+)\.(\d+)", requires_python)
+    if not lower_bound:
+        raise RuntimeError(
+            "Unsupported requires-python specifier for remote discovery: "
+            f"{requires_python!r}"
+        )
+    return int(lower_bound.group(1)), int(lower_bound.group(2))
 
 
 def _encode_chunked_stdout_payload(

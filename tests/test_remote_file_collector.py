@@ -37,6 +37,8 @@ def test_remote_file_collector_supports_python_fallback(tmp_path):
         calls.append(cmd)
         if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python")
+        if cmd[:1] == ["ssh"] and "sys.version_info" in _remote_command(cmd):
+            return _Completed(stdout="3.9.0\n")
         if cmd[:1] == ["ssh"] and input is not None:
             assert input is not None
             return _Completed(stdout=json.dumps({"matches": 1}))
@@ -58,7 +60,7 @@ def test_remote_file_collector_supports_python_fallback(tmp_path):
     assert "ControlMaster=auto" in calls[1]
     assert "ControlPersist=5m" in calls[1]
     assert "ControlPath=/tmp/llm-usage-ssh-%C" in calls[1]
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert "BatchMode=yes" not in calls[1]
 
 
@@ -728,7 +730,7 @@ def test_remote_file_collector_writes_collect_payload_with_limits(tmp_path):
     ok, _msg = collector.probe()
 
     assert ok
-    payload = _extract_stdin_payload(inputs[1])
+    payload = _extract_stdin_payload(next(item for item in inputs if item is not None))
     assert payload["jobs"] == [{"tool": "claude_code", "patterns": ["~/.claude/**/*.jsonl"]}]
     assert payload["max_files"] == 12
     assert payload["max_total_bytes"] == 3456
@@ -760,7 +762,7 @@ def test_remote_file_collector_collect_writes_requested_time_window(tmp_path):
 
     collector.collect(start=start, end=end)
 
-    payload = _extract_stdin_payload(inputs[1])
+    payload = _extract_stdin_payload(next(item for item in inputs if item is not None))
     assert payload["start_ts"] == start.timestamp()
     assert payload["end_ts"] == end.timestamp()
 
@@ -885,7 +887,13 @@ def test_remote_file_collector_combines_multiple_jobs_into_single_remote_call(tm
     )
 
     assert [event.tool for event in out.events] == ["codex", "claude_code"]
-    execution_calls = [cmd for cmd in commands if cmd[:1] == ["ssh"] and "command -v python3" not in _remote_command(cmd)]
+    execution_calls = [
+        cmd
+        for cmd in commands
+        if cmd[:1] == ["ssh"]
+        and "command -v python3" not in _remote_command(cmd)
+        and "sys.version_info" not in _remote_command(cmd)
+    ]
     assert len(execution_calls) == 1
 
 
@@ -1744,6 +1752,84 @@ def test_remote_collect_script_next_cursor_reflects_pattern_index_across_pattern
     assert parsed["next_cursor"]["line_index"] == 0
     assert _serialized_remote_page_bytes(parsed) <= budget
     assert _chunked_wire_stdout_bytes(parsed) <= budget
+
+
+def test_remote_file_collector_skips_python2_candidate_and_uses_later_python3():
+    """Skip a python2.7 path, then accept a later python3 from common-path discovery."""
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        calls.append((cmd, input))
+        if cmd[:1] != ["ssh"]:
+            return _Completed()
+        rc = _remote_command(cmd)
+        # Forward-compatible: version probe before accepting a candidate (implementation TBD).
+        if "version_info" in rc or "sys.version_info" in rc:
+            if "/usr/bin/python3" in rc:
+                return _Completed(stdout="3.12.0\n")
+            if "/usr/bin/python" in rc and "/usr/bin/python3" not in rc:
+                return _Completed(stdout="2.7.18\n")
+        if "command -v python3" in rc and "for candidate in" not in rc:
+            return _Completed(stdout="/usr/bin/python\n")
+        if "for candidate in /usr/bin/python3" in rc:
+            return _Completed(stdout="/usr/bin/python3\n")
+        if input is not None and "import base64, glob, json, os, sys" in input:
+            return _Completed(stdout=json.dumps({"matches": 1}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+    ok, msg = collector.probe()
+    assert ok
+    assert "remote files detected" in msg
+    probe_ssh = [
+        cmd
+        for cmd, input_text in calls
+        if cmd[:1] == ["ssh"] and input_text and "import base64, glob, json, os, sys" in input_text
+    ]
+    assert len(probe_ssh) == 1
+    assert "/usr/bin/python3" in _remote_command(probe_ssh[0])
+
+
+def test_remote_file_collector_errors_when_all_remote_python_candidates_are_too_old(tmp_path):
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        calls.append((cmd, input))
+        if cmd[:1] != ["ssh"]:
+            return _Completed()
+        rc = _remote_command(cmd)
+        if "version_info" in rc or "sys.version_info" in rc:
+            return _Completed(stdout="3.8.10\n")
+        if "command -v python3" in rc and "for candidate in" not in rc:
+            return _Completed(stdout="/usr/bin/python3\n")
+        if "for candidate in /usr/bin/python3" in rc:
+            return _Completed(stdout="")
+        if input is not None and "import base64, glob, json, os, sys" in input:
+            return _Completed(stdout=json.dumps({"matches": 1}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+    ok, msg = collector.probe()
+    assert ok is False
+    assert ">=3.9" in msg
+
+
+def test_remote_python_minimum_version_matches_pyproject_requirement():
+    assert remote_file._remote_python_minimum_version() == (3, 9)
 
 
 def test_remote_file_collector_reports_chunked_stdout_corruption(monkeypatch):
