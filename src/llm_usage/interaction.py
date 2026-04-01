@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Callable, Optional, TextIO
 
 from llm_usage.env import EnvDocument, load_env_document, save_env_document
+from llm_usage.feishu_targets import (
+    _parse_feishu_targets_list,
+    normalize_feishu_target_name,
+    resolve_feishu_targets_from_env,
+)
 from llm_usage.remotes import (
     RemoteDraft,
     RemoteHostConfig,
@@ -36,10 +41,22 @@ class RemoteSelectionResult:
 
 
 @dataclass
+class FeishuTargetDraft:
+    name: str
+    app_token: str = ""
+    table_id: str = ""
+    app_id: str = ""
+    app_secret: str = ""
+    bot_token: str = ""
+
+
+@dataclass
 class ConfigDraft:
     document: EnvDocument
     values: dict[str, str]
     remotes: list[RemoteDraft]
+    feishu_named_targets: list[FeishuTargetDraft] = field(default_factory=list)
+    feishu_named_targets_parse_ok: bool = True
     dirty: bool = False
 
     @classmethod
@@ -52,7 +69,16 @@ class ConfigDraft:
                 continue
             values[line.key] = line.value or ""
         remotes = drafts_from_env_document(document)
-        return cls(document=document, values=values, remotes=remotes)
+        feishu_named, parsed_ok = _load_feishu_named_targets(document, values)
+        if parsed_ok:
+            _strip_feishu_named_keys_from_values(values, feishu_named)
+        return cls(
+            document=document,
+            values=values,
+            remotes=remotes,
+            feishu_named_targets=feishu_named,
+            feishu_named_targets_parse_ok=parsed_ok,
+        )
 
 
 BASIC_KEYS = [
@@ -88,6 +114,228 @@ ADVANCED_KEYS = [
 ]
 
 KNOWN_CONFIG_KEYS = BASIC_KEYS + FEISHU_KEYS + CURSOR_KEYS + ADVANCED_KEYS
+
+_FEISHU_NAMED_FIELD_SUFFIXES = ("APP_TOKEN", "TABLE_ID", "APP_ID", "APP_SECRET", "BOT_TOKEN")
+_LEGACY_FEISHU_KEYS = frozenset(FEISHU_KEYS)
+
+
+def parse_named_feishu_key(key: str) -> Optional[tuple[str, str]]:
+    """If ``key`` is a named-target prefixed Feishu key, return (normalized_name, field_suffix)."""
+    if key == "FEISHU_TARGETS":
+        return None
+    if key in _LEGACY_FEISHU_KEYS:
+        return None
+    for suffix in _FEISHU_NAMED_FIELD_SUFFIXES:
+        suf = "_" + suffix
+        if key.endswith(suf) and key.startswith("FEISHU_"):
+            middle = key[len("FEISHU_") : -len(suf)]
+            if not middle:
+                return None
+            return middle.lower(), suffix
+    return None
+
+
+def _feishu_prefix_for_target_name(name: str) -> str:
+    return f"FEISHU_{name.upper()}_"
+
+
+def _feishu_target_draft_from_document(document: EnvDocument, name: str) -> FeishuTargetDraft:
+    pfx = _feishu_prefix_for_target_name(name)
+    return FeishuTargetDraft(
+        name=name,
+        app_token=(document.get(f"{pfx}APP_TOKEN") or "").strip(),
+        table_id=(document.get(f"{pfx}TABLE_ID") or "").strip(),
+        app_id=(document.get(f"{pfx}APP_ID") or "").strip(),
+        app_secret=(document.get(f"{pfx}APP_SECRET") or "").strip(),
+        bot_token=(document.get(f"{pfx}BOT_TOKEN") or "").strip(),
+    )
+
+
+def _load_feishu_named_targets(document: EnvDocument, values: dict[str, str]) -> tuple[list[FeishuTargetDraft], bool]:
+    raw = (values.get("FEISHU_TARGETS") or "").strip()
+    if not raw:
+        return [], True
+    try:
+        names = list(_parse_feishu_targets_list(raw))
+    except RuntimeError:
+        return [], False
+    return [_feishu_target_draft_from_document(document, n) for n in names], True
+
+
+def _strip_feishu_named_keys_from_values(values: dict[str, str], targets: list[FeishuTargetDraft]) -> None:
+    values.pop("FEISHU_TARGETS", None)
+    for t in targets:
+        pfx = _feishu_prefix_for_target_name(t.name)
+        for suf in _FEISHU_NAMED_FIELD_SUFFIXES:
+            values.pop(f"{pfx}{suf}", None)
+
+
+def _is_feishu_managed_key_for_preserve(key: str) -> bool:
+    if key == "FEISHU_TARGETS":
+        return True
+    return parse_named_feishu_key(key) is not None
+
+
+def apply_feishu_named_targets_to_document(document: EnvDocument, targets: list[FeishuTargetDraft]) -> None:
+    """Rewrite ``FEISHU_TARGETS`` and ``FEISHU_<NAME>_*`` keys; remove stale prefixed keys."""
+    keys_to_delete: list[str] = []
+    for line in document.lines:
+        if line.kind != "entry" or line.key is None:
+            continue
+        parsed = parse_named_feishu_key(line.key)
+        if parsed is None:
+            continue
+        name, _ = parsed
+        if name not in {t.name for t in targets}:
+            keys_to_delete.append(line.key)
+    for key in keys_to_delete:
+        document.delete(key)
+
+    names = [t.name for t in targets]
+    if not names:
+        document.delete("FEISHU_TARGETS")
+    else:
+        document.set("FEISHU_TARGETS", ",".join(names))
+
+    for t in targets:
+        pfx = _feishu_prefix_for_target_name(t.name)
+        document.set(f"{pfx}APP_TOKEN", t.app_token)
+        document.set(f"{pfx}TABLE_ID", t.table_id)
+        document.set(f"{pfx}APP_ID", t.app_id)
+        document.set(f"{pfx}APP_SECRET", t.app_secret)
+        document.set(f"{pfx}BOT_TOKEN", t.bot_token)
+
+
+def _env_mapping_from_path(env_path: Path) -> dict[str, str]:
+    doc = load_env_document(env_path)
+    return {line.key: line.value or "" for line in doc.lines if line.kind == "entry" and line.key}
+
+
+def feishu_config_list_targets(env_path: Path, stdout: TextIO) -> int:
+    m = _env_mapping_from_path(env_path)
+    for t in resolve_feishu_targets_from_env(m):
+        stdout.write(f"{t.name}\n")
+    return 0
+
+
+def feishu_config_show_target(env_path: Path, name: str, stdout: TextIO) -> int:
+    m = _env_mapping_from_path(env_path)
+    want = name.strip().lower()
+    for t in resolve_feishu_targets_from_env(m):
+        if t.name == want:
+            stdout.write(f"name={t.name}\n")
+            stdout.write(f"app_token={t.app_token}\n")
+            stdout.write(f"table_id={t.table_id}\n")
+            stdout.write(f"app_id={t.app_id}\n")
+            stdout.write(f"app_secret={t.app_secret}\n")
+            stdout.write(f"bot_token={t.bot_token}\n")
+            stdout.write(f"inherited_auth={t.inherited_auth}\n")
+            return 0
+    stdout.write(f"error: unknown Feishu target {name!r}\n")
+    return 1
+
+
+def feishu_config_add_target(env_path: Path, name: str, stdout: TextIO) -> int:
+    try:
+        normalized = normalize_feishu_target_name(name)
+    except RuntimeError as exc:
+        stdout.write(f"error: {exc}\n")
+        return 1
+    draft = ConfigDraft.from_document(load_env_document(env_path))
+    if not draft.feishu_named_targets_parse_ok:
+        stdout.write("error: FEISHU_TARGETS is invalid; fix it before editing named Feishu targets\n")
+        return 1
+    if any(t.name == normalized for t in draft.feishu_named_targets):
+        stdout.write(f"error: duplicate Feishu target name: {normalized!r}\n")
+        return 1
+    draft.feishu_named_targets.append(FeishuTargetDraft(name=normalized))
+    draft.dirty = True
+    _save_config_draft(env_path, draft)
+    stdout.write(f"info: added Feishu target {normalized!r}\n")
+    return 0
+
+
+def feishu_config_delete_target(env_path: Path, name: str, stdout: TextIO) -> int:
+    want = name.strip().lower()
+    if want == "default":
+        stdout.write("error: cannot delete the legacy default target via this command\n")
+        return 1
+    draft = ConfigDraft.from_document(load_env_document(env_path))
+    if not draft.feishu_named_targets_parse_ok:
+        stdout.write("error: FEISHU_TARGETS is invalid; fix it before editing named Feishu targets\n")
+        return 1
+    before = len(draft.feishu_named_targets)
+    draft.feishu_named_targets = [t for t in draft.feishu_named_targets if t.name != want]
+    if len(draft.feishu_named_targets) == before:
+        stdout.write(f"error: unknown named Feishu target {name!r}\n")
+        return 1
+    draft.dirty = True
+    _save_config_draft(env_path, draft)
+    stdout.write(f"info: deleted Feishu target {want!r}\n")
+    return 0
+
+
+def feishu_config_set_target(
+    env_path: Path,
+    name: str,
+    stdout: TextIO,
+    *,
+    app_token: Optional[str] = None,
+    table_id: Optional[str] = None,
+    app_id: Optional[str] = None,
+    app_secret: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> int:
+    if all(value is None for value in (app_token, table_id, app_id, app_secret, bot_token)):
+        stdout.write("error: no Feishu fields specified for update\n")
+        return 2
+    want = name.strip().lower()
+    draft = ConfigDraft.from_document(load_env_document(env_path))
+    if want == "default":
+        for key, val in (
+            ("FEISHU_APP_TOKEN", app_token),
+            ("FEISHU_TABLE_ID", table_id),
+            ("FEISHU_APP_ID", app_id),
+            ("FEISHU_APP_SECRET", app_secret),
+            ("FEISHU_BOT_TOKEN", bot_token),
+        ):
+            if val is not None:
+                draft.values[key] = val
+        draft.dirty = True
+        _save_config_draft(env_path, draft)
+        stdout.write("info: updated legacy default Feishu keys\n")
+        return 0
+
+    try:
+        normalized = normalize_feishu_target_name(name)
+    except RuntimeError as exc:
+        stdout.write(f"error: {exc}\n")
+        return 1
+    if not draft.feishu_named_targets_parse_ok:
+        stdout.write("error: FEISHU_TARGETS is invalid; fix it before editing named Feishu targets\n")
+        return 1
+    target: Optional[FeishuTargetDraft] = None
+    for t in draft.feishu_named_targets:
+        if t.name == normalized:
+            target = t
+            break
+    if target is None:
+        stdout.write(f"error: unknown named Feishu target {name!r}\n")
+        return 1
+    if app_token is not None:
+        target.app_token = app_token
+    if table_id is not None:
+        target.table_id = table_id
+    if app_id is not None:
+        target.app_id = app_id
+    if app_secret is not None:
+        target.app_secret = app_secret
+    if bot_token is not None:
+        target.bot_token = bot_token
+    draft.dirty = True
+    _save_config_draft(env_path, draft)
+    stdout.write(f"info: updated Feishu target {normalized!r}\n")
+    return 0
 
 
 def can_use_tui() -> bool:
@@ -191,7 +439,7 @@ def run_config_editor(
             _edit_key_menu(draft, "Basic", BASIC_KEYS, stdin=stdin, stdout=stdout)
             continue
         if answer == "2":
-            _edit_key_menu(draft, "Feishu", FEISHU_KEYS, stdin=stdin, stdout=stdout)
+            _edit_feishu_menu(draft, env_path, stdin=stdin, stdout=stdout)
             continue
         if answer == "3":
             _edit_key_menu(draft, "Cursor", CURSOR_KEYS, stdin=stdin, stdout=stdout)
@@ -230,12 +478,176 @@ def _save_config_draft(env_path: Path, draft: ConfigDraft) -> None:
         if line.kind == "entry" and line.key is not None and not line.key.startswith("REMOTE_")
     }
     for key in existing_non_remote_keys - set(draft.values):
+        if _is_feishu_managed_key_for_preserve(key):
+            continue
         draft.document.delete(key)
     for key, value in draft.values.items():
         draft.document.set(key, value)
     apply_remote_drafts_to_document(draft.document, draft.remotes)
+    if draft.feishu_named_targets_parse_ok:
+        apply_feishu_named_targets_to_document(draft.document, draft.feishu_named_targets)
     save_env_document(env_path, draft.document)
     draft.dirty = False
+
+
+def _overlay_env_file_for_feishu_cli(env_path: Path) -> None:
+    """Apply ``env_path`` entries to ``os.environ`` so Feishu helpers match on-disk config."""
+    import os
+
+    doc = load_env_document(env_path)
+    for line in doc.lines:
+        if line.kind == "entry" and line.key is not None and line.value is not None:
+            os.environ[line.key] = line.value
+
+
+def _run_feishu_doctor_from_menu(env_path: Path, stdout: TextIO) -> None:
+    _overlay_env_file_for_feishu_cli(env_path)
+    from argparse import Namespace
+
+    from llm_usage import main as main_mod
+
+    args = Namespace(feishu_target=[], all_feishu_targets=True)
+    try:
+        rc = main_mod.run_feishu_doctor(args)
+        if rc != 0:
+            stdout.write(f"info: feishu doctor exited with code {rc}\n")
+    except RuntimeError as exc:
+        stdout.write(f"error: {exc}\n")
+
+
+def _run_feishu_init_schema_from_menu(env_path: Path, stdout: TextIO) -> None:
+    _overlay_env_file_for_feishu_cli(env_path)
+    from argparse import Namespace
+
+    from llm_usage import main as main_mod
+
+    args = Namespace(feishu_target=[], all_feishu_targets=True)
+    try:
+        targets = main_mod._resolve_feishu_sync_selection(args)  # noqa: SLF001
+    except RuntimeError as exc:
+        stdout.write(f"error: {exc}\n")
+        return
+    if not targets:
+        stdout.write("warn: no Feishu targets configured\n")
+        return
+    try:
+        main_mod.ensure_feishu_schema_for_targets(dry_run=False, targets=targets)
+    except RuntimeError as exc:
+        stdout.write(f"error: {exc}\n")
+
+
+def _edit_feishu_menu(draft: ConfigDraft, env_path: Path, stdin: TextIO, stdout: TextIO) -> None:
+    while True:
+        stdout.write("Feishu\n")
+        stdout.write("  1. Default target (legacy FEISHU_* keys)\n")
+        stdout.write("  2. Named targets (FEISHU_TARGETS)\n")
+        stdout.write("  3. Doctor current Feishu targets (saved .env)\n")
+        stdout.write("  4. Initialize Feishu schema (saved .env)\n")
+        stdout.write("  b. Back\n")
+        answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
+        if answer == "b" or answer == "":
+            return
+        if answer == "1":
+            _edit_key_menu(draft, "Feishu default (legacy)", FEISHU_KEYS, stdin=stdin, stdout=stdout)
+            continue
+        if answer == "2":
+            _edit_feishu_named_targets_menu(draft, stdin=stdin, stdout=stdout)
+            continue
+        if answer == "3":
+            _run_feishu_doctor_from_menu(env_path, stdout)
+            continue
+        if answer == "4":
+            _run_feishu_init_schema_from_menu(env_path, stdout)
+            continue
+
+
+def _validate_new_feishu_target_name(raw: str, existing: list[FeishuTargetDraft]) -> Optional[str]:
+    try:
+        normalized = normalize_feishu_target_name(raw)
+    except RuntimeError as exc:
+        return str(exc)
+    if any(t.name == normalized for t in existing):
+        return f"duplicate Feishu target name: {normalized!r}"
+    return None
+
+
+def _edit_feishu_named_targets_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO) -> None:
+    while True:
+        stdout.write("Named Feishu targets\n")
+        for index, target in enumerate(draft.feishu_named_targets, start=1):
+            preview = target.app_token[:24] + ("..." if len(target.app_token) > 24 else "")
+            stdout.write(f"  {index}. {target.name} app_token={preview}\n")
+        stdout.write("  a. Add target\n")
+        stdout.write("  e. Edit target\n")
+        stdout.write("  d. Delete target\n")
+        stdout.write("  b. Back\n")
+        answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
+        if answer == "b" or answer == "":
+            return
+        if answer == "a":
+            name_raw = _read_line("Target name: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
+            err = _validate_new_feishu_target_name(name_raw, draft.feishu_named_targets)
+            if err:
+                stdout.write(f"{err}\n")
+                continue
+            normalized = normalize_feishu_target_name(name_raw)
+            draft.feishu_named_targets.append(FeishuTargetDraft(name=normalized))
+            draft.dirty = True
+            continue
+        if answer == "e":
+            index = _read_menu_index("Edit which target: ", len(draft.feishu_named_targets), stdin=stdin, stdout=stdout)
+            if index is None:
+                continue
+            if _edit_feishu_target_detail(draft.feishu_named_targets[index], stdin=stdin, stdout=stdout):
+                draft.dirty = True
+            continue
+        if answer == "d":
+            index = _read_menu_index("Delete which target: ", len(draft.feishu_named_targets), stdin=stdin, stdout=stdout)
+            if index is None:
+                continue
+            draft.feishu_named_targets.pop(index)
+            draft.dirty = True
+            continue
+
+
+def _edit_feishu_target_detail(target: FeishuTargetDraft, stdin: TextIO, stdout: TextIO) -> bool:
+    changed = False
+    while True:
+        stdout.write(f"Feishu target [{target.name}]\n")
+        stdout.write(f"  1. APP_TOKEN = {target.app_token}\n")
+        stdout.write(f"  2. TABLE_ID = {target.table_id}\n")
+        stdout.write(f"  3. APP_ID = {target.app_id}\n")
+        stdout.write(f"  4. APP_SECRET = {target.app_secret}\n")
+        stdout.write(f"  5. BOT_TOKEN = {target.bot_token}\n")
+        stdout.write("  b. Back\n")
+        answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
+        if answer == "b" or answer == "":
+            return changed
+        if answer == "1":
+            v = _read_line("APP_TOKEN: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
+            if v != target.app_token:
+                target.app_token = v
+                changed = True
+        elif answer == "2":
+            v = _read_line("TABLE_ID: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
+            if v != target.table_id:
+                target.table_id = v
+                changed = True
+        elif answer == "3":
+            v = _read_line("APP_ID: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
+            if v != target.app_id:
+                target.app_id = v
+                changed = True
+        elif answer == "4":
+            v = _read_line("APP_SECRET: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
+            if v != target.app_secret:
+                target.app_secret = v
+                changed = True
+        elif answer == "5":
+            v = _read_line("BOT_TOKEN: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
+            if v != target.bot_token:
+                target.bot_token = v
+                changed = True
 
 
 def _edit_key_menu(

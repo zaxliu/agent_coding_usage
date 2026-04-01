@@ -404,7 +404,7 @@ def test_run_config_editor_edits_grouped_non_remote_key(tmp_path: Path):
 
     exit_code = run_config_editor(
         env_path=env_path,
-        stdin=_TTYStringIO("2\n1\nnew-token\ns\n"),
+        stdin=_TTYStringIO("2\n1\n1\nnew-token\nb\ns\n"),
         stdout=_TTYStringIO(),
     )
 

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Optional
 
 from llm_usage.aggregation import aggregate_events
+from llm_usage.feishu_schema import feishu_schema_warnings
+from llm_usage.feishu_targets import FeishuTargetConfig, resolve_feishu_targets_from_env, select_feishu_targets
 from llm_usage.collectors import (
     BaseCollector,
     build_claude_collector,
@@ -28,7 +30,16 @@ from llm_usage.cursor_login import (
 )
 from llm_usage.env import load_dotenv, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
-from llm_usage.interaction import confirm_save_temporary_remote, run_config_editor, select_remotes
+from llm_usage.interaction import (
+    confirm_save_temporary_remote,
+    feishu_config_add_target,
+    feishu_config_delete_target,
+    feishu_config_list_targets,
+    feishu_config_set_target,
+    feishu_config_show_target,
+    run_config_editor,
+    select_remotes,
+)
 from llm_usage.offline_bundle import OfflineBundleError, read_offline_bundle, write_offline_bundle
 from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
 from llm_usage.remotes import RemoteHostConfig, append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
@@ -36,6 +47,8 @@ from llm_usage.reporting import print_terminal_report, write_csv_report
 from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
 from llm_usage.sinks.feishu_bitable import (
     FeishuBitableClient,
+    create_missing_feishu_fields,
+    fetch_bitable_field_type_map,
     fetch_first_table_id,
     fetch_tenant_access_token,
 )
@@ -193,25 +206,113 @@ def _print_warnings(warnings: list[str]) -> None:
         print(f"warn: {warning}")
 
 
-def _sync_rows_to_feishu(rows: list, *, dry_run: bool = False) -> int:
-    if dry_run:
-        print("dry-run: bundle validated and upload skipped")
+def _add_feishu_target_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--feishu-target",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Select a named Feishu target (repeatable). Default target is used when omitted.",
+    )
+    parser.add_argument(
+        "--all-feishu-targets",
+        action="store_true",
+        help="Apply to every configured Feishu target (cannot combine with --feishu-target).",
+    )
+
+
+def _resolve_feishu_sync_selection(args: argparse.Namespace) -> list[FeishuTargetConfig]:
+    targets = resolve_feishu_targets_from_env()
+    names = list(getattr(args, "feishu_target", None) or [])
+    all_t = bool(getattr(args, "all_feishu_targets", False))
+    if all_t and names:
+        raise RuntimeError("cannot combine --all-feishu-targets with --feishu-target")
+    try:
+        return select_feishu_targets(
+            targets,
+            selected_names=names if names else None,
+            select_all=all_t,
+            default_only=not all_t and len(names) == 0,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _feishu_bot_token_for_target(target: FeishuTargetConfig) -> str:
+    bot = target.bot_token.strip()
+    if bot:
+        return bot
+    app_id = target.app_id.strip()
+    app_secret = target.app_secret.strip()
+    if not app_id or not app_secret:
+        raise RuntimeError(f"missing Feishu app credentials for target {target.name!r}")
+    return fetch_tenant_access_token(app_id=app_id, app_secret=app_secret)
+
+
+def _feishu_table_id_for_target(target: FeishuTargetConfig, bot_token: str) -> str:
+    table_id = target.table_id.strip()
+    if table_id:
+        return table_id
+    app_token = target.app_token.strip()
+    if not app_token:
+        raise RuntimeError(f"missing FEISHU_APP_TOKEN for target {target.name!r}")
+    tid = fetch_first_table_id(app_token=app_token, bot_token=bot_token)
+    print(f"info: FEISHU_TABLE_ID empty for target {target.name!r}, auto-selected first table: {tid}")
+    return tid
+
+
+def run_feishu_doctor(args: argparse.Namespace) -> int:
+    targets = _resolve_feishu_sync_selection(args)
+    if not targets:
+        print("warn: no Feishu targets configured")
         return 0
+    for target in targets:
+        print(f"feishu[{target.name}]: checking...")
+        try:
+            bot_token = _feishu_bot_token_for_target(target)
+            table_id = _feishu_table_id_for_target(target, bot_token)
+            field_map = fetch_bitable_field_type_map(
+                app_token=target.app_token.strip(),
+                table_id=table_id,
+                bot_token=bot_token,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(f"target {target.name}: {exc}") from exc
+        for msg in feishu_schema_warnings(field_map):
+            print(f"warn: {msg}")
+    return 0
 
-    app_token = _required_env("FEISHU_APP_TOKEN")
-    table_id = os.getenv("FEISHU_TABLE_ID", "").strip()
-    bot_token = os.getenv("FEISHU_BOT_TOKEN", "").strip()
-    if not bot_token:
-        app_id = _required_env("FEISHU_APP_ID")
-        app_secret = _required_env("FEISHU_APP_SECRET")
-        bot_token = fetch_tenant_access_token(app_id=app_id, app_secret=app_secret)
-    if not table_id:
-        table_id = fetch_first_table_id(app_token=app_token, bot_token=bot_token)
-        print(f"info: FEISHU_TABLE_ID empty, auto-selected first table: {table_id}")
 
-    client = FeishuBitableClient(app_token=app_token, table_id=table_id, bot_token=bot_token)
+def ensure_feishu_schema_for_targets(*, dry_run: bool, targets: list[FeishuTargetConfig]) -> None:
+    for target in targets:
+        print(f"feishu[{target.name}]: ensuring bitable columns...")
+        bot_token = _feishu_bot_token_for_target(target)
+        table_id = _feishu_table_id_for_target(target, bot_token)
+        client = FeishuBitableClient(
+            app_token=target.app_token.strip(),
+            table_id=table_id,
+            bot_token=bot_token,
+        )
+        created = create_missing_feishu_fields(client, dry_run=dry_run)
+        if created:
+            action = "would create" if dry_run else "created"
+            print(f"info: {action} columns for {target.name}: {', '.join(created)}")
+        else:
+            print(f"info: no missing columns for {target.name}")
+
+
+def _sync_rows_to_single_feishu_target(rows: list, target: FeishuTargetConfig) -> int:
+    bot_token = _feishu_bot_token_for_target(target)
+    table_id = _feishu_table_id_for_target(target, bot_token)
+    client = FeishuBitableClient(
+        app_token=target.app_token.strip(),
+        table_id=table_id,
+        bot_token=bot_token,
+    )
     result = client.upsert(rows)
-    print(f"飞书同步完成：新增={result.created} 更新={result.updated} 失败={result.failed}")
+    print(
+        f"飞书同步完成（{target.name}）：新增={result.created} 更新={result.updated} 失败={result.failed}"
+    )
     if result.warning_samples:
         for item in result.warning_samples:
             print(f"warn: {item}")
@@ -220,6 +321,40 @@ def _sync_rows_to_feishu(rows: list, *, dry_run: bool = False) -> int:
         for item in result.error_samples:
             print(f"warn: {item}")
     return 0 if result.failed == 0 else 2
+
+
+def _sync_rows_to_feishu_targets(
+    rows: list,
+    *,
+    dry_run: bool = False,
+    feishu_target: Optional[list[str]] = None,
+    all_feishu_targets: bool = False,
+) -> int:
+    if dry_run:
+        print("dry-run: bundle validated and upload skipped")
+        return 0
+
+    class _Args:
+        pass
+
+    sel = _Args()
+    sel.feishu_target = feishu_target or []
+    sel.all_feishu_targets = all_feishu_targets
+    try:
+        targets = _resolve_feishu_sync_selection(sel)
+    except RuntimeError as exc:
+        print(f"error: {exc}")
+        return 1
+    if not targets:
+        print("error: no Feishu targets configured")
+        return 1
+
+    exit_code = 0
+    for target in targets:
+        code = _sync_rows_to_single_feishu_target(rows, target)
+        if exit_code == 0 and code != 0:
+            exit_code = code
+    return exit_code
 
 
 def _validate_sync_bundle_args(args: argparse.Namespace) -> None:
@@ -267,7 +402,12 @@ def cmd_export_bundle(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_init(_: argparse.Namespace) -> int:
+def cmd_init(args: argparse.Namespace) -> int:
+    has_feishu_target_flags = bool(getattr(args, "feishu_target", None)) or getattr(args, "all_feishu_targets", False)
+    if has_feishu_target_flags and not getattr(args, "feishu_bitable_schema", False):
+        print("error: --feishu-target and --all-feishu-targets require --feishu-bitable-schema")
+        return 2
+
     root = _repo_root()
     env_example = root / ".env.example"
     if not env_example.exists():
@@ -335,10 +475,33 @@ def cmd_init(_: argparse.Namespace) -> int:
     print(f"初始化完成：{env_path}")
     print(f"报告目录：{reports_dir}")
     print("下一步：补全配置后运行 `llm-usage doctor` 和 `llm-usage sync`")
+
+    if getattr(args, "feishu_bitable_schema", False):
+        _load_runtime_env()
+        try:
+            targets = _resolve_feishu_sync_selection(args)
+        except RuntimeError as exc:
+            print(f"error: {exc}")
+            return 1
+        if not targets:
+            print("warn: no Feishu targets configured")
+            return 0
+        ensure_feishu_schema_for_targets(dry_run=getattr(args, "dry_run", False), targets=targets)
     return 0
 
 
-def cmd_doctor(_: argparse.Namespace) -> int:
+def cmd_doctor(args: argparse.Namespace) -> int:
+    has_target_flags = bool(getattr(args, "feishu_target", None)) or getattr(args, "all_feishu_targets", False)
+    if has_target_flags and not getattr(args, "feishu", False):
+        print("error: --feishu-target and --all-feishu-targets require --feishu")
+        return 2
+    if getattr(args, "feishu", False):
+        _load_runtime_env()
+        try:
+            return run_feishu_doctor(args)
+        except RuntimeError as exc:
+            print(f"error: {exc}")
+            return 1
     _load_runtime_env()
     print(f"env: {_env_path()}")
     missing = not os.getenv("ORG_USERNAME", "").strip()
@@ -376,8 +539,39 @@ def cmd_whoami(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_config(_: argparse.Namespace) -> int:
+def cmd_config(args: argparse.Namespace) -> int:
     env_path = _ensure_env_file_exists()
+    shortcut_flags = sum(
+        [
+            bool(getattr(args, "list_feishu_targets", False)),
+            getattr(args, "show_feishu_target", None) is not None,
+            getattr(args, "add_feishu_target", None) is not None,
+            getattr(args, "delete_feishu_target", None) is not None,
+            getattr(args, "set_feishu_target", None) is not None,
+        ]
+    )
+    if shortcut_flags > 1:
+        print("error: use at most one Feishu config shortcut flag at a time")
+        return 2
+    if getattr(args, "list_feishu_targets", False):
+        return feishu_config_list_targets(env_path, sys.stdout)
+    if getattr(args, "show_feishu_target", None) is not None:
+        return feishu_config_show_target(env_path, args.show_feishu_target, sys.stdout)
+    if getattr(args, "add_feishu_target", None) is not None:
+        return feishu_config_add_target(env_path, args.add_feishu_target, sys.stdout)
+    if getattr(args, "delete_feishu_target", None) is not None:
+        return feishu_config_delete_target(env_path, args.delete_feishu_target, sys.stdout)
+    if getattr(args, "set_feishu_target", None) is not None:
+        return feishu_config_set_target(
+            env_path,
+            args.set_feishu_target,
+            sys.stdout,
+            app_token=getattr(args, "set_feishu_app_token", None),
+            table_id=getattr(args, "set_feishu_table_id", None),
+            app_id=getattr(args, "set_feishu_app_id", None),
+            app_secret=getattr(args, "set_feishu_app_secret", None),
+            bot_token=getattr(args, "set_feishu_bot_token", None),
+        )
     return run_config_editor(env_path)
 
 
@@ -635,7 +829,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if warnings:
             _print_warnings(warnings)
         print_terminal_report(rows, host_labels=_terminal_host_labels_for_report())
-        return _sync_rows_to_feishu(rows, dry_run=getattr(args, "dry_run", False))
+        return _sync_rows_to_feishu_targets(
+            rows,
+            dry_run=getattr(args, "dry_run", False),
+            feishu_target=getattr(args, "feishu_target", None) or [],
+            all_feishu_targets=getattr(args, "all_feishu_targets", False),
+        )
 
     cursor_probe_warning = _maybe_capture_cursor_token(
         lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
@@ -654,7 +853,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
     print_terminal_report(rows, host_labels=host_labels)
     csv_path = write_csv_report(rows, _reports_dir())
     print(f"csv: {csv_path}")
-    return _sync_rows_to_feishu(rows, dry_run=getattr(args, "dry_run", False))
+    return _sync_rows_to_feishu_targets(
+        rows,
+        dry_run=getattr(args, "dry_run", False),
+        feishu_target=getattr(args, "feishu_target", None) or [],
+        all_feishu_targets=getattr(args, "all_feishu_targets", False),
+    )
 
 
 def _import_config_plan(source_root: Path, runtime_paths, force: bool) -> tuple[list[tuple[Path, Path, str]], list[str]]:
@@ -740,7 +944,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser(
+    init_parser = sub.add_parser(
         "init",
         help="Initialize runtime .env and report folders",
         description=(
@@ -750,6 +954,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=_HelpFormatter,
     )
+    _add_feishu_target_arguments(init_parser)
+    init_parser.add_argument(
+        "--feishu-bitable-schema",
+        action="store_true",
+        help="Ensure required Bitable columns exist for selected Feishu targets (additive only)",
+    )
+    init_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --feishu-bitable-schema, skip API calls and do not create columns",
+    )
+    init_parser.set_defaults(feishu_bitable_schema=False, feishu_target=[], all_feishu_targets=False)
     doctor_parser = sub.add_parser(
         "doctor",
         help="Check required config and available data sources",
@@ -769,6 +985,13 @@ def build_parser() -> argparse.ArgumentParser:
             f"defaults to {DEFAULT_LOOKBACK_DAYS} if neither is set."
         ),
     )
+    doctor_parser.add_argument(
+        "--feishu",
+        action="store_true",
+        help="Check Feishu Bitable connectivity, auth, and required columns for selected targets",
+    )
+    _add_feishu_target_arguments(doctor_parser)
+    doctor_parser.set_defaults(feishu=False, feishu_target=[], all_feishu_targets=False)
     sub.add_parser(
         "whoami",
         help="Show ORG_USERNAME, user_hash, and per-host source hashes",
@@ -778,16 +1001,84 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=_HelpFormatter,
     )
-    sub.add_parser(
+    config_parser = sub.add_parser(
         "config",
         help="Open the interactive menu editor for the active runtime .env",
         description=(
             "Open the interactive menu editor for the active runtime .env.\n"
             "\n"
             "This is the preferred menu-based flow for editing configuration, including remote "
-            "hosts and other grouped settings, because changes stay in memory until you save."
+            "hosts and other grouped settings, because changes stay in memory until you save.\n"
+            "\n"
+            "Non-interactive shortcuts list or edit Feishu targets without opening the full menu."
         ),
         formatter_class=_HelpFormatter,
+    )
+    config_parser.add_argument(
+        "--list-feishu-targets",
+        action="store_true",
+        help="Print resolved Feishu target names (legacy default plus named targets) and exit",
+    )
+    config_parser.add_argument(
+        "--show-feishu-target",
+        metavar="NAME",
+        default=None,
+        help="Print resolved fields for a Feishu target (NAME may be default) and exit",
+    )
+    config_parser.add_argument(
+        "--add-feishu-target",
+        metavar="NAME",
+        default=None,
+        help="Append a named Feishu target to FEISHU_TARGETS and exit",
+    )
+    config_parser.add_argument(
+        "--delete-feishu-target",
+        metavar="NAME",
+        default=None,
+        help="Remove a named Feishu target and its FEISHU_<NAME>_* keys and exit",
+    )
+    config_parser.add_argument(
+        "--set-feishu-target",
+        metavar="NAME",
+        default=None,
+        help="Update env fields for a Feishu target (use NAME default for legacy keys)",
+    )
+    config_parser.add_argument(
+        "--app-token",
+        dest="set_feishu_app_token",
+        default=None,
+        help="With --set-feishu-target, set APP_TOKEN (or FEISHU_APP_TOKEN when NAME is default)",
+    )
+    config_parser.add_argument(
+        "--table-id",
+        dest="set_feishu_table_id",
+        default=None,
+        help="With --set-feishu-target, set TABLE_ID (or FEISHU_TABLE_ID when NAME is default)",
+    )
+    config_parser.add_argument(
+        "--app-id",
+        dest="set_feishu_app_id",
+        default=None,
+        help="With --set-feishu-target, set APP_ID (or FEISHU_APP_ID when NAME is default)",
+    )
+    config_parser.add_argument(
+        "--app-secret",
+        dest="set_feishu_app_secret",
+        default=None,
+        help="With --set-feishu-target, set APP_SECRET (or FEISHU_APP_SECRET when NAME is default)",
+    )
+    config_parser.add_argument(
+        "--bot-token",
+        dest="set_feishu_bot_token",
+        default=None,
+        help="With --set-feishu-target, set BOT_TOKEN (or FEISHU_BOT_TOKEN when NAME is default)",
+    )
+    config_parser.set_defaults(
+        list_feishu_targets=False,
+        show_feishu_target=None,
+        add_feishu_target=None,
+        delete_feishu_target=None,
+        set_feishu_target=None,
     )
     import_parser = sub.add_parser(
         "import-config",
@@ -1057,6 +1348,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate rows and print the terminal summary without uploading to Feishu",
     )
+    _add_feishu_target_arguments(sync_parser)
+    sync_parser.set_defaults(feishu_target=[], all_feishu_targets=False)
     return parser
 
 

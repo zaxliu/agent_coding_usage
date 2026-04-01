@@ -1,22 +1,13 @@
 from __future__ import annotations
 
+from .feishu_schema import REQUIRED_FEISHU_FIELDS, field_names
 from .models import AggregateRecord
 
 
-UPLOAD_FIELDS = {
-    "date_local",
-    "user_hash",
-    "source_host_hash",
-    "tool",
-    "model",
-    "input_tokens_sum",
-    "cache_tokens_sum",
-    "output_tokens_sum",
-    "row_key",
-    "updated_at",
-}
+UPLOAD_FIELD_ORDER = tuple(field_names(REQUIRED_FEISHU_FIELDS))
+UPLOAD_FIELDS = set(UPLOAD_FIELD_ORDER)
 
 
 def to_feishu_fields(row: AggregateRecord) -> dict[str, object]:
     raw = row.__dict__.copy()
-    return {k: raw[k] for k in UPLOAD_FIELDS}
+    return {k: raw[k] for k in UPLOAD_FIELD_ORDER}

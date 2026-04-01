@@ -1,3 +1,5 @@
+import { REQUIRED_FEISHU_FIELDS } from "./feishu-schema.js";
+
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 function delay(ms) {
@@ -142,6 +144,11 @@ export async function fetchFirstTableId({ appToken, botToken, timeoutMs = DEFAUL
   return tableId;
 }
 
+export async function fetchBitableFieldTypeMap({ appToken, tableId, botToken, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  const client = new FeishuBitableClient({ appToken, tableId, botToken, timeoutMs });
+  return client.fetchFieldTypeMap();
+}
+
 export class FeishuBitableClient {
   constructor({ appToken, tableId, botToken, timeoutMs = DEFAULT_TIMEOUT_MS }) {
     this.appToken = appToken;
@@ -199,6 +206,15 @@ export class FeishuBitableClient {
       pageToken = data.page_token;
     }
     return out;
+  }
+
+  async createField({ fieldName, type }) {
+    const url = `https://open.feishu.cn/open-apis/bitable/v1/apps/${this.appToken}/tables/${this.tableId}/fields`;
+    await requestJson("POST", url, {
+      token: this.botToken,
+      body: { field_name: fieldName, type },
+      timeoutMs: this.timeoutMs,
+    });
   }
 
   filterFieldsForTable(fields, fieldTypeMap) {
@@ -294,4 +310,24 @@ export class FeishuBitableClient {
 
     return { created, updated, failed, error_samples, warning_samples };
   }
+}
+
+export async function createMissingFeishuFields(
+  client,
+  { specs = REQUIRED_FEISHU_FIELDS, dryRun = false } = {},
+) {
+  const fieldTypeMap = await client.fetchFieldTypeMap();
+  const created = [];
+  for (const spec of specs) {
+    if (fieldTypeMap.has(spec.name)) {
+      continue;
+    }
+    if (dryRun) {
+      created.push(spec.name);
+      continue;
+    }
+    await client.createField({ fieldName: spec.name, type: spec.feishuType() });
+    created.push(spec.name);
+  }
+  return created;
 }

@@ -226,6 +226,8 @@ test("sync help shows from-bundle support", () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /--from/u);
   assert.match(result.stdout, /--dry-run/u);
+  assert.match(result.stdout, /--feishu-target/u);
+  assert.match(result.stdout, /--all-feishu-targets/u);
 });
 
 test("collect help shows Cursor login options", () => {
@@ -242,4 +244,46 @@ test("collect help shows Cursor login options", () => {
   assert.match(result.stdout, /--cursor-login-browser/u);
   assert.match(result.stdout, /--cursor-login-user-data-dir/u);
   assert.match(result.stdout, /--cursor-login-timeout-sec/u);
+});
+
+test("doctor help shows Feishu target options", () => {
+  const result = spawnSync(nodeBin, [cliPath, "doctor", "--help"], {
+    cwd: path.resolve(testDir, ".."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: nodeBinDir,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /--feishu/u);
+  assert.match(result.stdout, /--feishu-target/u);
+  assert.match(result.stdout, /--all-feishu-targets/u);
+});
+
+test("init help shows Feishu schema options", () => {
+  const result = spawnSync(nodeBin, [cliPath, "init", "--help"], {
+    cwd: path.resolve(testDir, ".."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: nodeBinDir,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /--feishu-bitable-schema/u);
+  assert.match(result.stdout, /--feishu-target/u);
+  assert.match(result.stdout, /--all-feishu-targets/u);
+});
+
+test("doctor rejects Feishu target flags without --feishu", () => {
+  const { result } = runCli(["doctor", "--feishu-target", "team_b"]);
+  assert.equal(result.status, 2, result.stderr || result.stdout);
+  assert.match(result.stdout, /require --feishu/u);
+});
+
+test("init rejects Feishu target flags without --feishu-bitable-schema", () => {
+  const { result } = runCli(["init", "--feishu-target", "team_b"]);
+  assert.equal(result.status, 2, result.stderr || result.stdout);
+  assert.match(result.stdout, /require --feishu-bitable-schema/u);
 });

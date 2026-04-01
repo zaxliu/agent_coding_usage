@@ -52,6 +52,8 @@ def test_sync_help_describes_terminal_grouping_and_feishu_behavior(capsys):
     assert "--lookback-days LOOKBACK_DAYS" in help_text
     assert "none disables remotes" in help_text.lower()
     assert "--from-bundle FROM_BUNDLE" in help_text
+    assert "--feishu-target" in help_text
+    assert "--all-feishu-targets" in help_text
 
 
 def test_init_help_describes_bootstrap_behavior(capsys):
@@ -64,6 +66,8 @@ def test_init_help_describes_bootstrap_behavior(capsys):
     assert "active runtime .env" in help_text.lower()
     assert "reports directory" in help_text.lower()
     assert "30" in help_text
+    assert "--feishu-bitable-schema" in help_text
+    assert "--dry-run" in help_text
 
 
 def test_doctor_help_describes_validation_behavior(capsys):
@@ -77,6 +81,9 @@ def test_doctor_help_describes_validation_behavior(capsys):
     assert "probe local collectors" in help_text.lower()
     assert "remote collectors" in help_text.lower()
     assert "--lookback-days LOOKBACK_DAYS" in help_text
+    assert "--feishu" in help_text
+    assert "--feishu-target" in help_text
+    assert "--all-feishu-targets" in help_text
 
 
 def test_whoami_help_describes_hash_output(capsys):
@@ -136,3 +143,8 @@ def test_config_help_describes_menu_based_runtime_env_editing(capsys):
     assert "interactive menu editor" in help_text.lower()
     assert "active runtime .env" in help_text.lower()
     assert "preferred" in help_text.lower()
+    assert "--list-feishu-targets" in help_text
+    assert "--show-feishu-target" in help_text
+    assert "--add-feishu-target" in help_text
+    assert "--delete-feishu-target" in help_text
+    assert "--set-feishu-target" in help_text

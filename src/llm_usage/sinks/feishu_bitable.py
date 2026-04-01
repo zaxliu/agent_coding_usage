@@ -8,6 +8,7 @@ from typing import Optional
 
 import requests
 
+from llm_usage.feishu_schema import REQUIRED_FEISHU_FIELDS, FeishuFieldSpec
 from llm_usage.models import AggregateRecord
 from llm_usage.privacy import to_feishu_fields
 
@@ -140,6 +141,22 @@ def fetch_first_table_id(
     return table_id
 
 
+def fetch_bitable_field_type_map(
+    app_token: str,
+    table_id: str,
+    bot_token: str,
+    request_timeout_sec: int = 20,
+) -> dict[str, int]:
+    """List field names and API type ints for a Bitable table."""
+    client = FeishuBitableClient(
+        app_token=app_token,
+        table_id=table_id,
+        bot_token=bot_token,
+        request_timeout_sec=request_timeout_sec,
+    )
+    return client._fetch_field_type_map()
+
+
 class FeishuBitableClient:
     def __init__(
         self,
@@ -238,6 +255,10 @@ class FeishuBitableClient:
             if not isinstance(page_token, str) or not page_token:
                 break
         return out
+
+    def create_field(self, field_name: str, field_type: int) -> None:
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
+        self._request("POST", url, json={"field_name": field_name, "type": field_type})
 
     def _normalize_datetime_value(self, value: object) -> object:
         if isinstance(value, (int, float)):
@@ -357,3 +378,23 @@ class FeishuBitableClient:
             error_samples=error_samples,
             warning_samples=warning_samples,
         )
+
+
+def create_missing_feishu_fields(
+    client: FeishuBitableClient,
+    *,
+    specs: tuple[FeishuFieldSpec, ...] = REQUIRED_FEISHU_FIELDS,
+    dry_run: bool = False,
+) -> list[str]:
+    """Create only columns that are missing. Does not alter or remove existing fields."""
+    field_map = client._fetch_field_type_map()
+    created: list[str] = []
+    for spec in specs:
+        if spec.name in field_map:
+            continue
+        if dry_run:
+            created.append(spec.name)
+            continue
+        client.create_field(spec.name, spec.feishu_type())
+        created.append(spec.name)
+    return created

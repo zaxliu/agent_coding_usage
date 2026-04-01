@@ -474,6 +474,13 @@ username@username@host_server_ip@host_jumpserver_ip
 
 ## 飞书多维表格同步
 
+兼容性说明：
+
+- 旧版单目标 `.env` 配置无需修改即可继续使用
+- 不带新的目标选择参数时，`sync` 仍只上传到默认目标
+
+### 单目标配置（兼容旧版）
+
 需要的环境变量：
 
 - `FEISHU_APP_TOKEN`
@@ -482,18 +489,103 @@ username@username@host_server_ip@host_jumpserver_ip
 - `FEISHU_APP_SECRET`
 - `FEISHU_BOT_TOKEN`，可选；若提供则直接作为 bearer token 使用
 
-建议在目标表中创建以下字段：
+示例：
 
-- `date_local`
-- `user_hash`
-- `source_host_hash`
-- `tool`
-- `model`
-- `input_tokens_sum`
-- `cache_tokens_sum`
-- `output_tokens_sum`
-- `row_key`
-- `updated_at`
+```dotenv
+FEISHU_APP_TOKEN=app_default
+FEISHU_TABLE_ID=tbl_default
+FEISHU_APP_ID=cli_default
+FEISHU_APP_SECRET=sec_default
+FEISHU_BOT_TOKEN=
+```
+
+### 多目标配置
+
+新增 `FEISHU_TARGETS` 和每个目标的 `FEISHU_<TARGET>_*` 键：
+
+```dotenv
+FEISHU_APP_TOKEN=app_default
+FEISHU_TABLE_ID=tbl_default
+FEISHU_APP_ID=cli_default
+FEISHU_APP_SECRET=sec_default
+
+FEISHU_TARGETS=team_b,finance
+
+FEISHU_TEAM_B_APP_TOKEN=app_team_b
+FEISHU_TEAM_B_TABLE_ID=tbl_team_b
+
+FEISHU_FINANCE_APP_TOKEN=app_finance
+FEISHU_FINANCE_TABLE_ID=
+FEISHU_FINANCE_APP_ID=cli_finance
+FEISHU_FINANCE_APP_SECRET=sec_finance
+```
+
+规则：
+
+- named target 会继承顶层 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_BOT_TOKEN`（若对应前缀键为空）
+- named target 不继承 `FEISHU_APP_TOKEN`
+- 某个 target 的 `TABLE_ID` 为空时，会为该 target 自动选择第一个表
+
+### 检查目标表结构
+
+可以只读检查目标表是否可访问、以及标准字段是否齐全：
+
+```bash
+llm-usage doctor --feishu
+llm-usage doctor --feishu --feishu-target team_b
+llm-usage doctor --feishu --all-feishu-targets
+```
+
+说明：
+
+- 缺失字段和类型不匹配会显示为 warning
+- 认证失败、无权限、无法读取字段列表等会返回非零退出码
+
+### 初始化目标表结构
+
+可以按标准 schema 自动补齐缺失字段：
+
+```bash
+llm-usage init --feishu-bitable-schema --dry-run
+llm-usage init --feishu-bitable-schema --feishu-target finance
+llm-usage init --feishu-bitable-schema --all-feishu-targets
+```
+
+说明：
+
+- 该命令只会创建缺失字段
+- 不会删除字段
+- 不会重命名字段
+- 不会修改已有字段类型
+
+### 同步到一个或多个目标表
+
+```bash
+llm-usage sync
+llm-usage sync --feishu-target team_b
+llm-usage sync --feishu-target team_b --feishu-target finance
+llm-usage sync --all-feishu-targets
+```
+
+默认行为：
+
+- 不带目标参数时，只同步到默认目标
+- `--all-feishu-targets` 才会显式 fan-out 到所有目标
+
+### 标准字段参考
+
+| 字段名 | 作用 | 推荐类型 | 说明 |
+| --- | --- | --- | --- |
+| `date_local` | 聚合日期 | 日期时间 | 当前实现会按日期/时间字符串做兼容归一化 |
+| `user_hash` | 脱敏后的用户标识 | 文本 | 与 `whoami` 输出一致 |
+| `source_host_hash` | 脱敏后的主机标识 | 文本 | 区分 local 和远端来源 |
+| `tool` | 工具名称 | 文本 | 例如 `codex`、`cursor` |
+| `model` | 模型名称 | 文本 | 原始聚合维度之一 |
+| `input_tokens_sum` | 输入 tokens | 数字 | 聚合求和 |
+| `cache_tokens_sum` | cache tokens | 数字 | 聚合求和 |
+| `output_tokens_sum` | 输出 tokens | 数字 | 聚合求和 |
+| `row_key` | 幂等 upsert 键 | 文本 | 用于在飞书侧定位已存在记录 |
+| `updated_at` | 最近更新时间 | 日期时间 | sync 会按毫秒时间戳归一化 |
 
 注意：
 

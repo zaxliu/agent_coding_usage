@@ -121,6 +121,80 @@ def test_upsert_preserves_result_counts(monkeypatch):
     assert requests[1][1].endswith("/batch_update")
 
 
+def test_upsert_warns_for_missing_remote_fields(monkeypatch):
+    client = FeishuBitableClient(app_token="a", table_id="t", bot_token="x")
+    monkeypatch.setattr(client, "fetch_existing_row_keys", lambda: {})
+    monkeypatch.setattr(client, "_fetch_field_type_map", lambda: {"row_key": 1, "updated_at": 5})
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *args, **kwargs: {"data": {"records": [{"record_id": "rec-1"}]}},
+    )
+
+    row = AggregateRecord(
+        date_local="2026-03-08",
+        user_hash="u",
+        source_host_hash="s",
+        tool="codex",
+        model="m",
+        input_tokens_sum=1,
+        cache_tokens_sum=0,
+        output_tokens_sum=1,
+        row_key="key-1",
+        updated_at="2026-03-08T00:00:00+00:00",
+    )
+
+    result = client.upsert([row])
+
+    assert "飞书表缺少字段，已跳过：date_local" in result.warning_samples
+
+
+def test_upsert_warns_when_remote_table_missing_standard_field(monkeypatch):
+    client = FeishuBitableClient(app_token="a", table_id="t", bot_token="x")
+    monkeypatch.setattr(client, "fetch_existing_row_keys", lambda: {})
+    # All standard upload fields except cache_tokens_sum (still upserts other fields).
+    monkeypatch.setattr(
+        client,
+        "_fetch_field_type_map",
+        lambda: {
+            "date_local": 5,
+            "user_hash": 1,
+            "source_host_hash": 1,
+            "tool": 1,
+            "model": 1,
+            "input_tokens_sum": 2,
+            "output_tokens_sum": 2,
+            "row_key": 1,
+            "updated_at": 5,
+        },
+    )
+
+    def _fake_request(method, url, **kwargs):  # noqa: ANN001, ANN201
+        if url.endswith("/batch_create"):
+            return {"data": {"records": [{"record_id": "rec-1"}]}}
+        return {}
+
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    rows = [
+        AggregateRecord(
+            date_local="2026-03-08",
+            user_hash="u",
+            source_host_hash="s",
+            tool="codex",
+            model="m",
+            input_tokens_sum=1,
+            cache_tokens_sum=9,
+            output_tokens_sum=1,
+            row_key="key-1",
+            updated_at="2026-03-08T00:00:00+00:00",
+        )
+    ]
+    result = client.upsert(rows)
+    assert result.failed == 0
+    assert any("cache_tokens_sum" in w and "缺少字段" in w for w in result.warning_samples)
+
+
 def test_request_prefers_feishu_json_error_over_generic_http_error(monkeypatch):
     client = FeishuBitableClient(app_token="a", table_id="t", bot_token="x")
 

@@ -58,6 +58,25 @@ def test_fetch_first_table_id_raises_on_empty_items(monkeypatch):
         raise AssertionError("expected RuntimeError")
 
 
+def test_fetch_bitable_field_type_map_uses_fields_endpoint(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class _Client:
+        def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
+            self.app_token = app_token
+            self.table_id = table_id
+            self.bot_token = bot_token
+
+        def _fetch_field_type_map(self):  # noqa: ANN201
+            calls.append((self.app_token, self.table_id))
+            return {"row_key": 1}
+
+    monkeypatch.setattr(feishu_bitable, "FeishuBitableClient", _Client)
+    out = feishu_bitable.fetch_bitable_field_type_map("a", "t", "b")
+    assert out == {"row_key": 1}
+    assert calls == [("a", "t")]
+
+
 def test_fetch_first_table_id_permission_error_includes_hint(monkeypatch):
     def _fake_get(url, headers, params, timeout):  # noqa: ANN001, ANN201
         return _Resp({"code": 91403, "msg": "Forbidden: no permission to access this table"})
