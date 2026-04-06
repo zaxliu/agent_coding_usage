@@ -22,8 +22,7 @@ from .base import BaseCollector, CollectOutput
 _CHUNKED_STDOUT_PREFIX = "LLMUSAGE_CHUNKED_V1"
 _DEFAULT_STDOUT_CHUNK_SIZE = 32 * 1024
 _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES = 600 * 1024
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_PYPROJECT_PATH = _PROJECT_ROOT / "pyproject.toml"
+_PACKAGE_NAME = "llm-usage-horizon"
 
 _PROBE_SCRIPT = """
 import base64, glob, json, os, sys
@@ -1739,11 +1738,15 @@ def _is_explicit_python3_command(value: str) -> bool:
 
 
 def _remote_python_minimum_version() -> tuple[int, int]:
-    text = _PYPROJECT_PATH.read_text(encoding="utf-8")
-    match = re.search(r'(?m)^\s*requires-python\s*=\s*"([^"]+)"\s*$', text)
-    if not match:
-        raise RuntimeError(f"Unable to determine remote Python minimum version from {_PYPROJECT_PATH}")
-    requires_python = match.group(1).strip()
+    from importlib.metadata import metadata as _pkg_metadata
+
+    meta = _pkg_metadata(_PACKAGE_NAME)
+    requires_python = (meta.get("Requires-Python") or "").strip()
+    if not requires_python:
+        raise RuntimeError(
+            f"Unable to determine remote Python minimum version: "
+            f"package {_PACKAGE_NAME!r} has no Requires-Python metadata"
+        )
     lower_bound = re.fullmatch(r">=\s*(\d+)\.(\d+)", requires_python)
     if not lower_bound:
         raise RuntimeError(
