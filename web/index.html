@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LLM Usage Console</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">Local Console</p>
+        <h1>LLM Usage</h1>
+        <p class="lede">Configure sources, run collect or sync, and inspect the latest report from your browser.</p>
+      </header>
+      <section class="grid">
+        <section class="card">
+          <h2>Runtime</h2>
+          <pre id="runtime">Loading…</pre>
+        </section>
+        <section class="card">
+          <h2>Actions</h2>
+          <div class="actions">
+            <button data-action="doctor">Doctor</button>
+            <button data-action="collect">Collect</button>
+            <button data-action="sync-preview">Sync Preview</button>
+            <button data-action="sync">Sync</button>
+            <button data-action="save-config">Save Config</button>
+          </div>
+        </section>
+      </section>
+      <section class="grid">
+        <section class="card">
+          <h2>Config</h2>
+          <label>ORG_USERNAME <input id="org-username"></label>
+          <label>HASH_SALT <input id="hash-salt"></label>
+          <label>TIMEZONE <input id="timezone"></label>
+          <label>LOOKBACK_DAYS <input id="lookback-days"></label>
+          <label>FEISHU_APP_TOKEN <input id="feishu-app-token"></label>
+        </section>
+        <section class="card">
+          <h2>Latest Results</h2>
+          <pre id="results">Loading…</pre>
+        </section>
+      </section>
+      <section class="card">
+        <h2>Jobs</h2>
+        <pre id="jobs">No jobs yet.</pre>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+  </html>

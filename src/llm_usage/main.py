@@ -938,6 +938,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  llm-usage config\n"
             "  llm-usage collect --ui auto\n"
             "  llm-usage sync --ui cli\n"
+            "  llm-usage web --no-open\n"
             "  llm-usage export-bundle --output /tmp/offline.zip\n"
             "  llm-usage import-config --from /path/to/legacy/repo\n"
         ),
@@ -1081,6 +1082,15 @@ def build_parser() -> argparse.ArgumentParser:
         delete_feishu_target=None,
         set_feishu_target=None,
     )
+    web_parser = sub.add_parser(
+        "web",
+        help="Start the local web console",
+        description="Start the local web console for config, collect, sync, and result browsing.",
+        formatter_class=_HelpFormatter,
+    )
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
+    web_parser.add_argument("--port", type=int, default=0, help="Port to bind; 0 selects a free port")
+    web_parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically")
     import_parser = sub.add_parser(
         "import-config",
         help="One-time migration of legacy .env and runtime state into runtime paths",
@@ -1357,6 +1367,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "web":
+        from llm_usage.web import cmd_web
+
+        return cmd_web(args)
     cmd_map = {
         "init": cmd_init,
         "doctor": cmd_doctor,

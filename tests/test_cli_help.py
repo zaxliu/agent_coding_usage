@@ -21,6 +21,7 @@ def test_top_level_help_shows_examples_and_commands(capsys):
     assert "whoami" in help_text
     assert "config" in help_text
     assert "export-bundle" in help_text
+    assert "web" in help_text
 
 
 def test_collect_help_describes_terminal_grouping_and_csv_behavior(capsys):

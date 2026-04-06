@@ -20,6 +20,7 @@
 
 - `llm-usage collect`：采集并汇总本地 + 已选远端数据，输出终端表格和 `reports/usage_report.csv`
 - `llm-usage sync`：在 `collect` 基础上，将聚合结果同步到飞书多维表格
+- `llm-usage web`：启动本地 Web 控制台，编辑配置、执行 collect/sync 并浏览最新结果
 - `llm-usage export-bundle`：采集并生成离线 bundle，拷回联网机器后可用 `sync --from-bundle` 上传
 - `llm-usage doctor`：检查配置和各采集器可用性
 - `llm-usage init`：生成 `.env`、`.env.example` 和 `reports/`
@@ -39,6 +40,7 @@ llm-usage config
 
 llm-usage doctor
 llm-usage collect --ui auto
+llm-usage web --no-open
 ```
 
 如果你要同步到飞书，再补全飞书相关环境变量后执行：
@@ -122,8 +124,24 @@ llm-usage --help
 - `llm-usage config`
 - `llm-usage collect --ui auto`
 - `llm-usage sync --ui cli`
+- `llm-usage web --no-open`
 - `llm-usage export-bundle --output /tmp/offline.zip`
 - `llm-usage import-config --from /path/to/legacy/repo`
+
+### `llm-usage web`
+
+行为：
+
+- 启动仅监听本机的 Web 控制台
+- 浏览最近一次 `reports/usage_report.csv`
+- 在浏览器中编辑当前运行时 `.env`
+- 触发 `doctor`、`collect`、`sync preview` 和 `sync`
+
+常用参数：
+
+- `--host HOST`：绑定地址，默认 `127.0.0.1`
+- `--port PORT`：绑定端口，默认自动选择
+- `--no-open`：启动后不自动打开浏览器
 
 ### `llm-usage init`
 

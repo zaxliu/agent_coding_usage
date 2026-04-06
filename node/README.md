@@ -9,6 +9,7 @@
 - `import-config`：一次性导入旧仓库根目录下的 `.env` / `reports/runtime_state.json`
 - 本地采集与聚合
 - `export-bundle`：导出离线 bundle，供后续联网机器上传
+- `web`：启动本地 Web 控制台，编辑配置、执行 collect/sync 并浏览最新结果
 - Cursor 本地日志 + 网页仪表盘采集
 - Cursor 登录辅助：`auto|managed-profile|manual`
 - 终端报表与 CSV 输出
@@ -34,6 +35,7 @@ llm-usage-node doctor
 llm-usage-node collect --ui none
 llm-usage-node export-bundle
 llm-usage-node sync --ui none
+llm-usage-node web --no-open
 llm-usage-node sync --from-bundle /path/to/offline.zip --dry-run
 ```
 

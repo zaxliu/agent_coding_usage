@@ -33,6 +33,7 @@ import { readOfflineBundle, writeOfflineBundle } from "../runtime/offline-bundle
 import { parseRemoteConfigsFromEnv } from "../runtime/remotes.js";
 import { printDoctorReport, printSyncSummary, printTerminalReport, writeCsvReport } from "../runtime/reporting.js";
 import { info, warn } from "../runtime/ui.js";
+import { createWebServer } from "../runtime/web.js";
 
 function printHelp() {
   console.log(`Usage: llm-usage-node <command> [options]
@@ -45,10 +46,14 @@ Commands:
   sync          Collect local usage in Node and upsert rows to Feishu
   import-config Import legacy .env and runtime_state.json into active runtime paths
   export-bundle Collect usage and write an offline bundle for later upload
+  web           Start the local web console
 
 Options:
   --lookback-days N
   --ui auto|cli|none
+  --host HOST
+  --port PORT
+  --no-open
   --feishu
   --feishu-target NAME
   --all-feishu-targets
@@ -79,6 +84,9 @@ function parseArgs(argv) {
     dryRun: false,
     force: false,
     fromBundle: "",
+    host: "127.0.0.1",
+    port: 0,
+    noOpen: false,
     feishu: false,
     feishuTargets: [],
     allFeishuTargets: false,
@@ -135,6 +143,20 @@ function parseArgs(argv) {
     if (value === "--from-bundle") {
       options.fromBundle = argv[index + 1] || "";
       index += 1;
+      continue;
+    }
+    if (value === "--host") {
+      options.host = argv[index + 1] || "127.0.0.1";
+      index += 1;
+      continue;
+    }
+    if (value === "--port") {
+      options.port = Number.parseInt(argv[index + 1] || "0", 10) || 0;
+      index += 1;
+      continue;
+    }
+    if (value === "--no-open") {
+      options.noOpen = true;
       continue;
     }
     if (value === "--feishu") {
@@ -576,6 +598,7 @@ export async function main(argv) {
       command === "whoami" ||
       command === "import-config" ||
       command === "export-bundle" ||
+      command === "web" ||
       command === undefined)
   ) {
     printHelp();
@@ -611,6 +634,16 @@ export async function main(argv) {
     case "export-bundle":
       process.exitCode = await runExportBundle(lookbackDays, uiMode, options);
       return;
+    case "web": {
+      const server = await createWebServer({
+        host: options.host,
+        port: options.port,
+        openBrowser: !options.noOpen,
+      });
+      await server.start();
+      console.log(info(`web: ${server.baseUrl}`));
+      return new Promise(() => {});
+    }
     case "-h":
     case "--help":
     case undefined:
