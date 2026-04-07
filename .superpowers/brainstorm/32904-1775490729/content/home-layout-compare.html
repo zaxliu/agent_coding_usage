@@ -1,0 +1,93 @@
+<h2>Homepage Direction</h2>
+<p class="subtitle">Both keep trend first, comparison second, and move config into a separate Settings page.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. Personal Workbench</div>
+        <div class="mockup-body">
+          <div class="section">
+            <div class="label">Top band</div>
+            <div class="mock-nav">Today | 7d | 30d | Tool Filter | Model Filter</div>
+          </div>
+          <div class="section">
+            <div class="label">Primary</div>
+            <div class="placeholder" style="height:180px;">Large trend chart: input / cache / output by day</div>
+          </div>
+          <div class="section" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+            <div class="placeholder">Total tokens</div>
+            <div class="placeholder">Active days</div>
+            <div class="placeholder">Top tool</div>
+            <div class="placeholder">Top model</div>
+          </div>
+          <div class="section split">
+            <div class="mockup">
+              <div class="mockup-header">Tool share</div>
+              <div class="placeholder" style="height:140px;">Bar / donut</div>
+            </div>
+            <div class="mockup">
+              <div class="mockup-header">Model share</div>
+              <div class="placeholder" style="height:140px;">Bar / donut</div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="label">Lower half</div>
+            <div class="placeholder" style="height:140px;">Detailed table with search and sorting</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Personal Workbench</h3>
+      <p>Feels like a daily analysis cockpit. Strong on “my usage over time”, then tool/model comparison, then table.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. Hybrid Board</div>
+        <div class="mockup-body">
+          <div class="section">
+            <div class="label">Top band</div>
+            <div class="mock-nav">Runtime Status | Last Collect | Sync State | Primary Actions</div>
+          </div>
+          <div class="section split">
+            <div class="mockup">
+              <div class="mockup-header">Trend</div>
+              <div class="placeholder" style="height:180px;">Wide chart across 2/3 width</div>
+            </div>
+            <div class="mockup">
+              <div class="mockup-header">Scorecards</div>
+              <div class="placeholder" style="height:180px;">Stacked KPI blocks</div>
+            </div>
+          </div>
+          <div class="section" style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:10px;">
+            <div class="placeholder" style="height:160px;">Tool ranking</div>
+            <div class="placeholder" style="height:160px;">Model ranking</div>
+            <div class="placeholder" style="height:160px;">Host / source split</div>
+          </div>
+          <div class="section split">
+            <div class="mockup">
+              <div class="mockup-header">Recent jobs</div>
+              <div class="placeholder" style="height:120px;">Collect / sync timeline</div>
+            </div>
+            <div class="mockup">
+              <div class="mockup-header">Warnings</div>
+              <div class="placeholder" style="height:120px;">Operational panel</div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="label">Bottom</div>
+            <div class="placeholder" style="height:120px;">Compact detail table</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Hybrid Board</h3>
+      <p>More balanced between personal analysis and operator control. Trend is still top priority, but status and jobs are much more visible.</p>
+    </div>
+  </div>
+</div>
