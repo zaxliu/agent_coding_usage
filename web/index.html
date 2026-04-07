@@ -55,6 +55,7 @@
               <strong id="generated-at">等待数据</strong>
             </div>
             <div class="actions">
+              <button data-action="init">初始化</button>
               <button data-action="doctor">诊断</button>
               <button data-action="collect">采集</button>
               <button data-action="sync-preview">同步预览</button>
@@ -106,8 +107,20 @@
                 <p class="eyebrow">远端</p>
                 <h3>已配置来源</h3>
               </div>
+              <button type="button" class="button-subtle" data-action="add-remote">新增远端</button>
             </div>
             <div id="remotes-list" class="settings-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">飞书</p>
+                <h3>命名目标 (Named Targets)</h3>
+              </div>
+              <button type="button" class="button-subtle" data-action="add-feishu-target">新增目标</button>
+            </div>
+            <div id="feishu-targets-list" class="settings-list"></div>
           </section>
         </section>
 
@@ -213,6 +226,56 @@
         <div class="credential-actions">
           <button value="cancel" class="button-subtle" id="credential-cancel">取消</button>
           <button value="submit" class="button-primary" id="credential-submit">继续</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="remote-edit-modal" class="credential-modal">
+      <form method="dialog" class="credential-form" id="remote-edit-form">
+        <p class="eyebrow">远端配置</p>
+        <h3 id="remote-edit-title">编辑远端</h3>
+        <div class="form-grid">
+          <label>Alias<input id="remote-edit-alias"></label>
+          <label>SSH Host<input id="remote-edit-ssh-host"></label>
+          <label>SSH User<input id="remote-edit-ssh-user"></label>
+          <label>SSH Port<input id="remote-edit-ssh-port" type="number" value="22"></label>
+          <label>Source Label<input id="remote-edit-source-label"></label>
+          <label class="checkbox-label">
+            <input id="remote-edit-use-sshpass" type="checkbox">
+            <span>使用 sshpass</span>
+          </label>
+        </div>
+        <details class="path-details">
+          <summary>日志路径配置</summary>
+          <div class="form-grid form-grid-single">
+            <label>Claude Log Paths<input id="remote-edit-claude-paths" placeholder="逗号分隔"></label>
+            <label>Codex Log Paths<input id="remote-edit-codex-paths" placeholder="逗号分隔"></label>
+            <label>Copilot CLI Log Paths<input id="remote-edit-copilot-cli-paths" placeholder="逗号分隔"></label>
+            <label>Copilot VSCode Session Paths<input id="remote-edit-copilot-vscode-paths" placeholder="逗号分隔"></label>
+          </div>
+        </details>
+        <div class="credential-actions">
+          <button value="cancel" class="button-subtle">取消</button>
+          <button value="save" class="button-primary">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="feishu-target-edit-modal" class="credential-modal">
+      <form method="dialog" class="credential-form" id="feishu-target-edit-form">
+        <p class="eyebrow">飞书目标</p>
+        <h3 id="feishu-target-edit-title">编辑飞书目标</h3>
+        <div class="form-grid">
+          <label>名称 (Name)<input id="feishu-target-edit-name"></label>
+          <label>APP_TOKEN<input id="feishu-target-edit-app-token" type="password"></label>
+          <label>TABLE_ID<input id="feishu-target-edit-table-id"></label>
+          <label>APP_ID<input id="feishu-target-edit-app-id"></label>
+          <label>APP_SECRET<input id="feishu-target-edit-app-secret" type="password"></label>
+          <label>BOT_TOKEN<input id="feishu-target-edit-bot-token" type="password"></label>
+        </div>
+        <div class="credential-actions">
+          <button value="cancel" class="button-subtle">取消</button>
+          <button value="save" class="button-primary">保存</button>
         </div>
       </form>
     </dialog>

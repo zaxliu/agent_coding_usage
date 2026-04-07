@@ -23,6 +23,8 @@ const state = {
   pendingCredentialJobId: "",
   dismissedCredentialJobId: "",
   pendingCredentialRequest: null,
+  editingRemoteIndex: -1,
+  editingFeishuTargetIndex: -1,
 };
 
 const refs = {
@@ -43,6 +45,7 @@ const refs = {
   tableFilter: document.querySelector("#table-filter"),
   jobsList: document.querySelector("#jobs-list"),
   remotesList: document.querySelector("#remotes-list"),
+  feishuTargetsList: document.querySelector("#feishu-targets-list"),
   configSummaryList: document.querySelector("#config-summary-list"),
   settingsPanel: document.querySelector("#settings-panel"),
   settingsToggle: document.querySelector("#settings-toggle"),
@@ -55,6 +58,12 @@ const refs = {
   credentialCancel: document.querySelector("#credential-cancel"),
   credentialForm: document.querySelector("#credential-form"),
   credentialSubmit: document.querySelector("#credential-submit"),
+  remoteEditModal: document.querySelector("#remote-edit-modal"),
+  remoteEditForm: document.querySelector("#remote-edit-form"),
+  remoteEditTitle: document.querySelector("#remote-edit-title"),
+  feishuTargetEditModal: document.querySelector("#feishu-target-edit-modal"),
+  feishuTargetEditForm: document.querySelector("#feishu-target-edit-form"),
+  feishuTargetEditTitle: document.querySelector("#feishu-target-edit-title"),
 };
 
 async function getJson(url, options = {}) {
@@ -288,18 +297,151 @@ function renderRemotes(remotes = []) {
   refs.remotesList.innerHTML = remotes.length
     ? remotes
         .map(
-          (remote) => `
+          (remote, index) => `
             <article class="remote-item">
               <div class="remote-head">
-                <strong>${remote.alias}</strong>
-                <span class="pill">${remote.source_label || `${remote.ssh_user}@${remote.ssh_host}`}</span>
+                <strong>${escapeHtml(remote.alias)}</strong>
+                <span class="pill">${escapeHtml(remote.source_label || `${remote.ssh_user}@${remote.ssh_host}`)}</span>
               </div>
-              <div class="remote-meta">${remote.ssh_user}@${remote.ssh_host}:${remote.ssh_port}</div>
+              <div class="remote-meta">${escapeHtml(remote.ssh_user)}@${escapeHtml(remote.ssh_host)}:${remote.ssh_port}${remote.use_sshpass ? " (sshpass)" : ""}</div>
+              <div class="item-actions">
+                <button class="button-subtle button-small" data-action="edit-remote" data-index="${index}">编辑</button>
+                <button class="button-subtle button-small button-danger" data-action="delete-remote" data-index="${index}">删除</button>
+              </div>
             </article>
           `,
         )
         .join("")
-    : `<div class="empty-state">还没有配置远端来源。</div>`;
+    : `<div class="empty-state empty-state-compact">还没有配置远端来源。</div>`;
+  for (const btn of refs.remotesList.querySelectorAll("[data-action]")) {
+    btn.addEventListener("click", () => handleRemoteAction(btn.dataset.action, Number(btn.dataset.index)));
+  }
+}
+
+function renderFeishuTargets(targets = []) {
+  refs.feishuTargetsList.innerHTML = targets.length
+    ? targets
+        .map(
+          (target, index) => `
+            <article class="remote-item">
+              <div class="remote-head">
+                <strong>${escapeHtml(target.name)}</strong>
+                <span class="pill">${escapeHtml(target.app_token ? target.app_token.slice(0, 16) + "..." : "未配置")}</span>
+              </div>
+              <div class="remote-meta">table: ${escapeHtml(target.table_id || "-")} | app: ${escapeHtml(target.app_id || "-")}</div>
+              <div class="item-actions">
+                <button class="button-subtle button-small" data-action="edit-feishu-target" data-index="${index}">编辑</button>
+                <button class="button-subtle button-small button-danger" data-action="delete-feishu-target" data-index="${index}">删除</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state empty-state-compact">还没有配置飞书命名目标。</div>`;
+  for (const btn of refs.feishuTargetsList.querySelectorAll("[data-action]")) {
+    btn.addEventListener("click", () => handleFeishuTargetAction(btn.dataset.action, Number(btn.dataset.index)));
+  }
+}
+
+function openRemoteEditModal(remote = null, index = -1) {
+  state.editingRemoteIndex = index;
+  refs.remoteEditTitle.textContent = remote ? `编辑远端: ${remote.alias}` : "新增远端";
+  document.querySelector("#remote-edit-alias").value = remote?.alias || "";
+  document.querySelector("#remote-edit-ssh-host").value = remote?.ssh_host || "";
+  document.querySelector("#remote-edit-ssh-user").value = remote?.ssh_user || "";
+  document.querySelector("#remote-edit-ssh-port").value = remote?.ssh_port || 22;
+  document.querySelector("#remote-edit-source-label").value = remote?.source_label || "";
+  document.querySelector("#remote-edit-use-sshpass").checked = remote?.use_sshpass || false;
+  document.querySelector("#remote-edit-claude-paths").value = (remote?.claude_log_paths || []).join(",");
+  document.querySelector("#remote-edit-codex-paths").value = (remote?.codex_log_paths || []).join(",");
+  document.querySelector("#remote-edit-copilot-cli-paths").value = (remote?.copilot_cli_log_paths || []).join(",");
+  document.querySelector("#remote-edit-copilot-vscode-paths").value = (remote?.copilot_vscode_session_paths || []).join(",");
+  refs.remoteEditModal.showModal();
+}
+
+function collectRemoteFromModal() {
+  const splitPaths = (val) => val.split(",").map((s) => s.trim()).filter(Boolean);
+  return {
+    alias: document.querySelector("#remote-edit-alias").value.trim(),
+    ssh_host: document.querySelector("#remote-edit-ssh-host").value.trim(),
+    ssh_user: document.querySelector("#remote-edit-ssh-user").value.trim(),
+    ssh_port: parseInt(document.querySelector("#remote-edit-ssh-port").value, 10) || 22,
+    source_label: document.querySelector("#remote-edit-source-label").value.trim(),
+    use_sshpass: document.querySelector("#remote-edit-use-sshpass").checked,
+    claude_log_paths: splitPaths(document.querySelector("#remote-edit-claude-paths").value),
+    codex_log_paths: splitPaths(document.querySelector("#remote-edit-codex-paths").value),
+    copilot_cli_log_paths: splitPaths(document.querySelector("#remote-edit-copilot-cli-paths").value),
+    copilot_vscode_session_paths: splitPaths(document.querySelector("#remote-edit-copilot-vscode-paths").value),
+  };
+}
+
+function handleRemoteAction(action, index) {
+  const remotes = state.config?.remotes || [];
+  if (action === "edit-remote") {
+    openRemoteEditModal(remotes[index], index);
+  } else if (action === "delete-remote") {
+    if (!confirm(`确定要删除远端 "${remotes[index]?.alias}" 吗？`)) return;
+    remotes.splice(index, 1);
+    state.config.remotes = remotes;
+    renderRemotes(remotes);
+    saveCurrentConfig();
+  }
+}
+
+function openFeishuTargetEditModal(target = null, index = -1) {
+  state.editingFeishuTargetIndex = index;
+  refs.feishuTargetEditTitle.textContent = target ? `编辑飞书目标: ${target.name}` : "新增飞书目标";
+  document.querySelector("#feishu-target-edit-name").value = target?.name || "";
+  document.querySelector("#feishu-target-edit-name").readOnly = target !== null;
+  document.querySelector("#feishu-target-edit-app-token").value = target?.app_token || "";
+  document.querySelector("#feishu-target-edit-table-id").value = target?.table_id || "";
+  document.querySelector("#feishu-target-edit-app-id").value = target?.app_id || "";
+  document.querySelector("#feishu-target-edit-app-secret").value = target?.app_secret || "";
+  document.querySelector("#feishu-target-edit-bot-token").value = target?.bot_token || "";
+  refs.feishuTargetEditModal.showModal();
+}
+
+function collectFeishuTargetFromModal() {
+  return {
+    name: document.querySelector("#feishu-target-edit-name").value.trim(),
+    app_token: document.querySelector("#feishu-target-edit-app-token").value.trim(),
+    table_id: document.querySelector("#feishu-target-edit-table-id").value.trim(),
+    app_id: document.querySelector("#feishu-target-edit-app-id").value.trim(),
+    app_secret: document.querySelector("#feishu-target-edit-app-secret").value.trim(),
+    bot_token: document.querySelector("#feishu-target-edit-bot-token").value.trim(),
+  };
+}
+
+function handleFeishuTargetAction(action, index) {
+  const targets = state.config?.feishu_targets || [];
+  if (action === "edit-feishu-target") {
+    openFeishuTargetEditModal(targets[index], index);
+  } else if (action === "delete-feishu-target") {
+    if (!confirm(`确定要删除飞书目标 "${targets[index]?.name}" 吗？`)) return;
+    targets.splice(index, 1);
+    state.config.feishu_targets = targets;
+    renderFeishuTargets(targets);
+    saveCurrentConfig();
+  }
+}
+
+async function saveCurrentConfig() {
+  try {
+    const result = await getJson("/api/config", {
+      method: "PUT",
+      body: JSON.stringify(settingsPayload()),
+    });
+    if (!result.ok) {
+      showFlash(result.errors?.[0] || "保存失败。", "error");
+      return false;
+    }
+    showFlash("配置已保存。");
+    await refreshConfig();
+    return true;
+  } catch (error) {
+    showFlash(error.message, "error");
+    return false;
+  }
 }
 
 function maybePromptForCredential(jobs = []) {
@@ -372,6 +514,7 @@ async function refreshConfig() {
   document.querySelector("#feishu-bot-token").value = state.config.feishu_default?.FEISHU_BOT_TOKEN || "";
   renderConfigSummary(state.config);
   renderRemotes(state.config.remotes || []);
+  renderFeishuTargets(state.config.feishu_targets || []);
 }
 
 async function refreshResults() {
@@ -393,6 +536,25 @@ async function runAction(action) {
   try {
     if (action === "toggle-settings") {
       applySettingsPanelState(!state.settingsOpen);
+      return;
+    }
+    if (action === "init") {
+      const result = await getJson("/api/init", { method: "POST", body: "{}" });
+      if (result.created_env) {
+        showFlash("初始化完成，已创建配置文件。");
+      } else {
+        showFlash("已就绪，配置文件已存在。");
+      }
+      await Promise.all([refreshRuntime(), refreshConfig()]);
+      applySettingsPanelState(true);
+      return;
+    }
+    if (action === "add-remote") {
+      openRemoteEditModal(null, -1);
+      return;
+    }
+    if (action === "add-feishu-target") {
+      openFeishuTargetEditModal(null, -1);
       return;
     }
     if (action === "save-config") {
@@ -486,6 +648,73 @@ for (const button of document.querySelectorAll("[data-action]")) {
 applySettingsPanelState();
 refs.tableFilter.addEventListener("input", () => renderTable(normalizeResultsPayload(state.results).table_rows || []));
 refs.credentialForm.addEventListener("submit", submitCredential);
+
+refs.remoteEditForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitterValue = event.submitter?.value || "";
+  if (submitterValue === "cancel") {
+    refs.remoteEditModal.close();
+    return;
+  }
+  const remote = collectRemoteFromModal();
+  if (!remote.ssh_host || !remote.ssh_user) {
+    showFlash("SSH Host 和 SSH User 为必填项。", "error");
+    return;
+  }
+  if (!remote.alias) {
+    remote.alias = `${remote.ssh_user}_${remote.ssh_host}`.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
+  }
+  if (!remote.source_label) {
+    remote.source_label = `${remote.ssh_user}@${remote.ssh_host}`;
+  }
+  const remotes = state.config?.remotes || [];
+  const prevRemotes = [...remotes];
+  if (state.editingRemoteIndex >= 0) {
+    remotes[state.editingRemoteIndex] = remote;
+  } else {
+    remotes.push(remote);
+  }
+  state.config.remotes = remotes;
+  const ok = await saveCurrentConfig();
+  if (ok) {
+    refs.remoteEditModal.close();
+  } else {
+    state.config.remotes = prevRemotes;
+  }
+});
+
+refs.feishuTargetEditForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitterValue = event.submitter?.value || "";
+  if (submitterValue === "cancel") {
+    refs.feishuTargetEditModal.close();
+    return;
+  }
+  const target = collectFeishuTargetFromModal();
+  if (!target.name) {
+    showFlash("飞书目标名称为必填项。", "error");
+    return;
+  }
+  const normalizedName = target.name.toLowerCase();
+  const targets = state.config?.feishu_targets || [];
+  if (state.editingFeishuTargetIndex >= 0) {
+    targets[state.editingFeishuTargetIndex] = target;
+  } else {
+    if (targets.some((t) => t.name.toLowerCase() === normalizedName)) {
+      showFlash(`飞书目标 "${target.name}" 已存在（不区分大小写）。`, "error");
+      return;
+    }
+    targets.push(target);
+  }
+  const prevTargets = [...state.config.feishu_targets];
+  state.config.feishu_targets = targets;
+  const ok = await saveCurrentConfig();
+  if (ok) {
+    refs.feishuTargetEditModal.close();
+  } else {
+    state.config.feishu_targets = prevTargets;
+  }
+});
 
 setInterval(() => {
   refreshJobs().catch(() => {});
