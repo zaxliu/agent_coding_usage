@@ -96,6 +96,113 @@ def test_select_remotes_cli_supports_temporary_remote_without_configured_hosts()
     assert result.temporary_remotes[0].ssh_host == "host-b"
 
 
+def test_select_remotes_cli_drives_remote_prompt_runner_in_terminal_order(monkeypatch):
+    prompts: list[str] = []
+    applied_values: list[str] = []
+
+    class _FakeRunner:
+        def __init__(self, existing_aliases):  # noqa: ANN001
+            assert existing_aliases == []
+            self._requests = [
+                type("Req", (), {"kind": "ssh_host", "message": "SSH 主机："})(),
+                type("Req", (), {"kind": "ssh_user", "message": "SSH 用户："})(),
+                type("Req", (), {"kind": "ssh_port", "message": "SSH 端口 [22]："})(),
+                type("Req", (), {"kind": "use_sshpass", "message": "是否使用 sshpass？[y/N]："})(),
+            ]
+            self.state = type(
+                "State",
+                (),
+                {"alias": "", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "use_sshpass": False},
+            )()
+            self._index = 0
+
+        def next_request(self):
+            if self._index >= len(self._requests):
+                return None
+            request = self._requests[self._index]
+            self._index += 1
+            return request
+
+        def apply_input(self, value):
+            applied_values.append(value)
+            if len(applied_values) == 1:
+                self.state.alias = "BOB_HOST_B"
+                self.state.ssh_host = "host-b"
+            if len(applied_values) == 2:
+                self.state.ssh_user = "bob"
+            if len(applied_values) == 3:
+                self.state.ssh_port = 22
+            if len(applied_values) == 4:
+                self.state.use_sshpass = False
+            return True
+
+    def _fake_read_line(prompt_text, **_kwargs):  # noqa: ANN001
+        prompts.append(prompt_text)
+        answers = {
+            "回车表示仅统计本机，输入 + 新增一个临时远端：": "+",
+            "SSH 主机：": "host-b",
+            "SSH 用户：": "bob",
+            "SSH 端口 [22]：": "22",
+            "是否使用 sshpass？[y/N]：": "n",
+        }
+        return answers[prompt_text]
+
+    monkeypatch.setattr("llm_usage.interaction.RemotePromptRunner", _FakeRunner)
+    monkeypatch.setattr("llm_usage.interaction._read_line", _fake_read_line)
+
+    result = select_remotes([], [], ui_mode="cli", stdin=_TTYStringIO(), stdout=_TTYStringIO(), remote_validator=lambda config: (True, "ok"))
+
+    assert prompts == [
+        "回车表示仅统计本机，输入 + 新增一个临时远端：",
+        "SSH 主机：",
+        "SSH 用户：",
+        "SSH 端口 [22]：",
+        "是否使用 sshpass？[y/N]：",
+    ]
+    assert applied_values == ["host-b", "bob", "22", "n"]
+    assert result.mode_used == "cli"
+    assert len(result.temporary_remotes) == 1
+    temp = result.temporary_remotes[0]
+    assert temp.alias == "BOB_HOST_B"
+    assert temp.ssh_host == "host-b"
+    assert temp.ssh_user == "bob"
+    assert temp.ssh_port == 22
+    assert temp.use_sshpass is False
+    assert result.runtime_passwords == {}
+
+
+def test_select_remotes_cli_preserves_runner_alias_when_temporary_alias_collides():
+    configs = [_config("BOB_HOST_B")]
+    result = select_remotes(
+        configs,
+        ["BOB_HOST_B"],
+        ui_mode="cli",
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
+        stdout=_TTYStringIO(),
+        remote_validator=lambda config: (True, "ok"),
+    )
+
+    assert len(result.temporary_remotes) == 1
+    assert result.temporary_remotes[0].alias == "BOB_HOST_B_2"
+
+
+def test_select_remotes_cli_reprompts_invalid_use_sshpass_input():
+    stdout = _TTYStringIO()
+    result = select_remotes(
+        [],
+        [],
+        ui_mode="cli",
+        stdin=_TTYStringIO("+\nhost-b\nbob\n22\nmaybe\nn\n"),
+        stdout=stdout,
+        remote_validator=lambda config: (True, "ok"),
+    )
+
+    assert len(result.temporary_remotes) == 1
+    assert result.temporary_remotes[0].use_sshpass is False
+    assert stdout.getvalue().count("是否使用 sshpass？[y/N]：") == 2
+    assert "请输入 y 或 n。\n" in stdout.getvalue()
+
+
 def test_select_remotes_cli_supports_validator_with_positional_password_parameter():
     validator_calls = []
 

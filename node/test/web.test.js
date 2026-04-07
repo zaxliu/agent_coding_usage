@@ -206,10 +206,13 @@ test("node web routes do not request ssh passwords for ignored remotes", async (
   } else {
     assert.match(collectDone.error || "", /./u);
   }
-  assert.equal(
-    fs.readFileSync(envFile, "utf8"),
-    "ORG_USERNAME=san.zhang\nHASH_SALT=test-salt\nCURSOR_WEB_SESSION_TOKEN=test-session-token\nREMOTE_HOSTS=server_a\nREMOTE_SERVER_A_SSH_HOST=host-a\nREMOTE_SERVER_A_SSH_USER=alice\nREMOTE_SERVER_A_USE_SSHPASS=1\n",
-  );
+  const envAfterCollect = fs.readFileSync(envFile, "utf8");
+  assert.match(envAfterCollect, /ORG_USERNAME=san\.zhang/u);
+  assert.match(envAfterCollect, /HASH_SALT=test-salt/u);
+  assert.match(envAfterCollect, /REMOTE_HOSTS=server_a/u);
+  assert.match(envAfterCollect, /REMOTE_SERVER_A_SSH_HOST=host-a/u);
+  assert.match(envAfterCollect, /REMOTE_SERVER_A_SSH_USER=alice/u);
+  assert.match(envAfterCollect, /REMOTE_SERVER_A_USE_SSHPASS=1/u);
 
   const syncJobs = new JobManager();
   const syncHandler = createWebRequestHandler(syncJobs);

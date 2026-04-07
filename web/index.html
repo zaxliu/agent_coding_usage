@@ -197,12 +197,12 @@
         <p class="eyebrow">Runtime Input</p>
         <h3 id="credential-title">SSH Password Required</h3>
         <p id="credential-copy">This password is remembered only for the current browser session.</p>
-        <label>
-          Password
+        <label id="credential-field" class="credential-field">
+          <span id="credential-field-label">Password</span>
           <input id="credential-value" type="password" autocomplete="off">
         </label>
         <div class="credential-actions">
-          <button value="cancel" class="button-subtle">Cancel</button>
+          <button value="cancel" class="button-subtle" id="credential-cancel">Cancel</button>
           <button value="submit" class="button-primary" id="credential-submit">Continue</button>
         </div>
       </form>

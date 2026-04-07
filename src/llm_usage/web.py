@@ -33,6 +33,7 @@ from llm_usage.interaction import (
     FeishuTargetDraft,
     _save_config_draft,
 )
+from llm_usage.interaction_flow import RemotePromptRunner
 from llm_usage.main import (
     _build_terminal_host_labels,
     _collect_all,
@@ -715,7 +716,31 @@ class WebService:
             return self.jobs.create_needs_input("sync_preview", input_request, resume_handler)
         return self.jobs.start("sync_preview", lambda: self._run_sync_preview_operation(payload))
 
+    def _start_remote_setup_flow(self) -> dict[str, Any]:
+        _load_runtime_env()
+        _overlay_runtime_env()
+        runner = RemotePromptRunner(existing_aliases=[config.alias for config in parse_remote_configs_from_env()])
+        request = runner.next_request()
+        if request is None:
+            return {"remote_setup": asdict(runner.state)}
+
+        def resume_handler(value: str) -> dict[str, Any]:
+            current_request = runner.next_request()
+            if current_request is None:
+                return {"remote_setup": asdict(runner.state)}
+            if not runner.apply_input(value):
+                raise _JobNeedsInput(asdict(current_request), resume_handler)
+            next_request = runner.next_request()
+            if next_request is not None:
+                raise _JobNeedsInput(asdict(next_request), resume_handler)
+            return {"remote_setup": asdict(runner.state)}
+
+        return self.jobs.create_needs_input("remote_setup", asdict(request), resume_handler)
+
     def start_doctor(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("remote_setup", False):
+            return self._start_remote_setup_flow()
+
         def handler() -> dict[str, Any]:
             _load_runtime_env()
             _overlay_runtime_env()

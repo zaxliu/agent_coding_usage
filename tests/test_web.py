@@ -316,3 +316,89 @@ def test_web_sync_preview_pauses_for_ssh_password_and_resumes_from_memory_only(t
     assert current["result"]["warnings"] == []
     assert isinstance(current["result"]["targets"], list)
     assert captured["runtime_passwords"] == {"SERVER_A": "top-secret"}
+
+
+def test_web_remote_setup_returns_structured_input_request_sequence():
+    service = web.WebService()
+
+    queued = service.start_doctor({"remote_setup": True})
+
+    assert queued["type"] == "remote_setup"
+    assert queued["status"] == "needs_input"
+    assert queued["input_request"] == {
+        "kind": "ssh_host",
+        "message": "SSH 主机：",
+        "field": "value",
+        "remote_alias": "",
+        "secret": False,
+        "choices": None,
+    }
+
+    invalid = service.jobs.submit_input(queued["id"], "")
+    assert invalid["status"] == "needs_input"
+    assert invalid["input_request"]["kind"] == "ssh_host"
+
+    resumed = service.jobs.submit_input(queued["id"], "host-a")
+    assert resumed["status"] in {"queued", "running", "needs_input"}
+
+    job_id = queued["id"]
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] == "needs_input":
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
+    assert current["input_request"]["kind"] == "ssh_user"
+
+    resumed = service.jobs.submit_input(job_id, "bob")
+    assert resumed["status"] in {"queued", "running", "needs_input"}
+
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] == "needs_input":
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
+    assert current["input_request"]["kind"] == "ssh_port"
+
+    resumed = service.jobs.submit_input(job_id, "2200")
+    assert resumed["status"] in {"queued", "running", "needs_input"}
+
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] == "needs_input":
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
+    assert current["input_request"]["kind"] == "use_sshpass"
+
+    finished = service.jobs.submit_input(job_id, "n")
+    assert finished["status"] in {"queued", "running", "succeeded"}
+
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "succeeded"
+    assert current["result"] == {
+        "remote_setup": {
+            "alias": "BOB_HOST_A",
+            "ssh_host": "host-a",
+            "ssh_user": "bob",
+            "ssh_port": 2200,
+            "use_sshpass": False,
+        }
+    }

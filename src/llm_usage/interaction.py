@@ -3,7 +3,7 @@ from __future__ import annotations
 import getpass
 import inspect
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional, TextIO
 
@@ -13,6 +13,7 @@ from llm_usage.feishu_targets import (
     normalize_feishu_target_name,
     resolve_feishu_targets_from_env,
 )
+from llm_usage.interaction_flow import RemotePromptRunner
 from llm_usage.remotes import (
     RemoteDraft,
     RemoteHostConfig,
@@ -1032,6 +1033,7 @@ def _select_with_list(
                 stdout,
                 use_prompt_toolkit,
                 remote_validator,
+                existing_aliases=list(alias_map),
                 password_getter=password_getter,
                 password_setter=password_setter,
                 interactive_password_reader=interactive_password_reader,
@@ -1101,6 +1103,7 @@ def _select_without_configs(
         stdout,
         use_prompt_toolkit,
         remote_validator,
+        existing_aliases=[],
         password_getter=password_getter,
         password_setter=password_setter,
         interactive_password_reader=interactive_password_reader,
@@ -1119,6 +1122,7 @@ def _prompt_temporary_remote(
     stdout: TextIO,
     use_prompt_toolkit: bool,
     remote_validator: RemoteValidator,
+    existing_aliases: list[str],
     password_getter: Optional[Callable[[], Optional[str]]],
     password_setter: Optional[Callable[[str], None]],
     interactive_password_reader: Optional[Callable[[str], str]],
@@ -1129,28 +1133,59 @@ def _prompt_temporary_remote(
             password_setter("")
 
     while True:
+        runner = RemotePromptRunner(existing_aliases=existing_aliases)
         stdout.write("新增临时远端\n")
-        host = _read_line("SSH 主机：", stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit).strip()
+        while True:
+            request = runner.next_request()
+            if request is None:
+                break
+            if request.kind == "ssh_host":
+                host = _read_line(request.message, stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit)
+                if not host.strip():
+                    return None
+                if runner.apply_input(host):
+                    continue
+                return None
+            if request.kind == "ssh_user":
+                user = _read_line(request.message, stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit)
+                if not user.strip():
+                    return None
+                if runner.apply_input(user):
+                    continue
+                return None
+            if request.kind == "ssh_port":
+                while True:
+                    port_raw = _read_line(
+                        request.message,
+                        stdin=stdin,
+                        stdout=stdout,
+                        use_prompt_toolkit=use_prompt_toolkit,
+                    )
+                    if runner.apply_input(port_raw):
+                        break
+                    stdout.write("端口格式不正确，请重新输入。\n")
+                continue
+            if request.kind == "use_sshpass":
+                while True:
+                    answer = _read_line(
+                        request.message,
+                        stdin=stdin,
+                        stdout=stdout,
+                        use_prompt_toolkit=use_prompt_toolkit,
+                    )
+                    if runner.apply_input(answer):
+                        break
+                    stdout.write("请输入 y 或 n。\n")
+                continue
+            return None
+        host = runner.state.ssh_host
         if not host:
             return None
-        user = _read_line("SSH 用户：", stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit).strip()
+        user = runner.state.ssh_user
         if not user:
             return None
-        while True:
-            port_raw = _read_line(
-                "SSH 端口 [22]：",
-                stdin=stdin,
-                stdout=stdout,
-                use_prompt_toolkit=use_prompt_toolkit,
-            ).strip() or "22"
-            try:
-                port = int(port_raw)
-                if port <= 0:
-                    raise ValueError
-                break
-            except ValueError:
-                stdout.write("端口格式不正确，请重新输入。\n")
-        use_sshpass = _prompt_use_sshpass(stdin, stdout, use_prompt_toolkit)
+        port = runner.state.ssh_port
+        use_sshpass = runner.state.use_sshpass
         ssh_password = None
         if use_sshpass:
             ssh_password = password_getter() if password_getter is not None else None
@@ -1177,7 +1212,7 @@ def _prompt_temporary_remote(
                 continue
             if password_setter is not None:
                 password_setter(ssh_password)
-        config = build_temporary_remote(host, user, port, use_sshpass=use_sshpass)
+        config = replace(build_temporary_remote(host, user, port, use_sshpass=use_sshpass), alias=runner.state.alias)
         stdout.write("正在检查 SSH 连通性...\n")
         ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
         if ok:

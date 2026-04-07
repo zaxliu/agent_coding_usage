@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeResultsPayload, credentialSubmissionMode, nextCredentialPromptJob } from "../../web/app-state.js";
+import {
+  canDismissInputRequest,
+  describeInputRequest,
+  inputRequestSubmissionValue,
+  normalizeResultsPayload,
+  credentialSubmissionMode,
+  nextCredentialPromptJob,
+} from "../../web/app-state.js";
 
 test("normalizeResultsPayload reads dashboard summary totals and names from current backend payload", () => {
   const normalized = normalizeResultsPayload({
@@ -55,8 +62,55 @@ test("credentialSubmissionMode treats cancel as dismiss instead of submit", () =
   assert.equal(credentialSubmissionMode({ submitterValue: "" }), "submit");
 });
 
-test("nextCredentialPromptJob does not reopen a dismissed job until the pending job changes", () => {
-  const firstJob = {
+test("describeInputRequest distinguishes confirm, ssh_password, and generic text input requests", () => {
+  const confirmUi = describeInputRequest({
+    kind: "confirm",
+    message: "Save this temporary remote to .env?",
+    choices: ["Save", "Skip"],
+  });
+  const passwordUi = describeInputRequest({
+    kind: "ssh_password",
+    message: "Enter the SSH password",
+  });
+  const textUi = describeInputRequest({
+    kind: "ssh_host",
+    message: "SSH host",
+  });
+
+  assert.equal(confirmUi.inputType, "confirm");
+  assert.deepEqual(confirmUi.choices, ["Save", "Skip"]);
+  assert.equal(confirmUi.submitValue, "Save");
+  assert.equal(confirmUi.cancelValue, "Skip");
+  assert.equal(passwordUi.inputType, "password");
+  assert.deepEqual(passwordUi.choices, []);
+  assert.equal(textUi.inputType, "text");
+  assert.deepEqual(textUi.choices, []);
+});
+
+test("inputRequestSubmissionValue preserves confirm button values and text input values", () => {
+  const confirmUi = describeInputRequest({
+    kind: "confirm",
+    message: "Save this temporary remote to .env?",
+    choices: ["Save", "Skip"],
+  });
+  const textUi = describeInputRequest({
+    kind: "ssh_host",
+    message: "SSH host",
+  });
+
+  assert.equal(inputRequestSubmissionValue({ descriptor: confirmUi, submitterValue: "Save" }), "Save");
+  assert.equal(inputRequestSubmissionValue({ descriptor: confirmUi, submitterValue: "Skip" }), "Skip");
+  assert.equal(inputRequestSubmissionValue({ descriptor: textUi, fieldValue: "host-a" }), "host-a");
+});
+
+test("canDismissInputRequest only allows session password prompts to stay hidden", () => {
+  assert.equal(canDismissInputRequest({ kind: "ssh_password" }), true);
+  assert.equal(canDismissInputRequest({ kind: "ssh_host" }), false);
+  assert.equal(canDismissInputRequest({ kind: "confirm" }), false);
+});
+
+test("nextCredentialPromptJob keeps a dismissed job hidden until another pending job appears", () => {
+  const dismissedJob = {
     id: "job-1",
     status: "needs_input",
     input_request: {
@@ -65,8 +119,13 @@ test("nextCredentialPromptJob does not reopen a dismissed job until the pending 
       message: "Provide password",
     },
   };
-  const secondJob = {
+  const completedJob = {
     id: "job-2",
+    status: "succeeded",
+    input_request: null,
+  };
+  const nextPendingJob = {
+    id: "job-3",
     status: "needs_input",
     input_request: {
       kind: "ssh_password",
@@ -75,8 +134,9 @@ test("nextCredentialPromptJob does not reopen a dismissed job until the pending 
     },
   };
 
-  assert.equal(nextCredentialPromptJob([firstJob], "")?.id, "job-1");
-  assert.equal(nextCredentialPromptJob([firstJob], "job-1"), null);
-  assert.equal(nextCredentialPromptJob([firstJob, secondJob], "job-1")?.id, "job-2");
+  assert.equal(nextCredentialPromptJob([dismissedJob], "")?.id, "job-1");
+  assert.equal(nextCredentialPromptJob([dismissedJob], "job-1"), null);
+  assert.equal(nextCredentialPromptJob([dismissedJob, completedJob], "job-1"), null);
+  assert.equal(nextCredentialPromptJob([dismissedJob, completedJob, nextPendingJob], "job-1")?.id, "job-3");
   assert.equal(nextCredentialPromptJob([], "job-1"), null);
 });

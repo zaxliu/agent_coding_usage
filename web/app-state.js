@@ -115,6 +115,119 @@ export function credentialSubmissionMode({ submitterValue = "" } = {}) {
   return submitterValue === "cancel" ? "cancel" : "submit";
 }
 
+function normalizeChoices(choices = []) {
+  return Array.isArray(choices) ? choices.map((choice) => String(choice || "").trim()).filter(Boolean) : [];
+}
+
+function titleForInputKind(kind) {
+  if (kind === "confirm") {
+    return "Confirmation Required";
+  }
+  if (kind === "ssh_password") {
+    return "SSH Password Required";
+  }
+  if (kind === "ssh_host") {
+    return "SSH Host Required";
+  }
+  if (kind === "ssh_user") {
+    return "SSH User Required";
+  }
+  if (kind === "ssh_port") {
+    return "SSH Port Required";
+  }
+  if (kind === "use_sshpass") {
+    return "Use sshpass?";
+  }
+  return "Input Required";
+}
+
+function fieldLabelForInputKind(kind) {
+  if (kind === "ssh_password") {
+    return "Password";
+  }
+  if (kind === "ssh_port") {
+    return "Port";
+  }
+  if (kind === "confirm") {
+    return "";
+  }
+  return "Value";
+}
+
+function placeholderForInputKind(kind) {
+  if (kind === "ssh_password") {
+    return "Enter password";
+  }
+  if (kind === "ssh_port") {
+    return "22";
+  }
+  if (kind === "confirm") {
+    return "";
+  }
+  return "Enter value";
+}
+
+export function describeInputRequest(request = {}) {
+  const kind = String(request.kind || "").trim();
+  const choices = normalizeChoices(request.choices);
+  if (kind === "confirm") {
+    const submitChoice = choices[0] || "yes";
+    const cancelChoice = choices[1] || "no";
+    return {
+      kind,
+      inputType: "confirm",
+      title: titleForInputKind(kind),
+      message: String(request.message || "").trim(),
+      choices: choices.length ? choices : ["yes", "no"],
+      fieldLabel: "",
+      placeholder: "",
+      submitLabel: submitChoice,
+      submitValue: submitChoice,
+      cancelLabel: cancelChoice,
+      cancelValue: cancelChoice,
+    };
+  }
+  if (kind === "ssh_password") {
+    return {
+      kind,
+      inputType: "password",
+      title: titleForInputKind(kind),
+      message: String(request.message || "").trim(),
+      choices: [],
+      fieldLabel: fieldLabelForInputKind(kind),
+      placeholder: placeholderForInputKind(kind),
+      submitLabel: "Continue",
+      submitValue: "submit",
+      cancelLabel: "Cancel",
+      cancelValue: "cancel",
+    };
+  }
+  return {
+    kind,
+    inputType: "text",
+    title: titleForInputKind(kind),
+    message: String(request.message || "").trim(),
+    choices: [],
+    fieldLabel: fieldLabelForInputKind(kind),
+    placeholder: placeholderForInputKind(kind),
+    submitLabel: "Continue",
+    submitValue: "submit",
+    cancelLabel: "Cancel",
+    cancelValue: "cancel",
+  };
+}
+
+export function inputRequestSubmissionValue({ descriptor, submitterValue = "", fieldValue = "" } = {}) {
+  if ((descriptor || {}).inputType === "confirm") {
+    return String(submitterValue || descriptor?.submitValue || "");
+  }
+  return String(fieldValue || "");
+}
+
+export function canDismissInputRequest(request = {}) {
+  return String(request.kind || "").trim() === "ssh_password";
+}
+
 export function nextCredentialPromptJob(jobs = [], dismissedJobId = "") {
   const pending = jobs.find(
     (job) => job.status === "needs_input" && job.input_request && (!dismissedJobId || job.id !== dismissedJobId),

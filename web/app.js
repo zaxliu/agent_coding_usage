@@ -1,4 +1,11 @@
-import { credentialSubmissionMode, nextCredentialPromptJob, normalizeResultsPayload } from "./app-state.js";
+import {
+  canDismissInputRequest,
+  credentialSubmissionMode,
+  describeInputRequest,
+  inputRequestSubmissionValue,
+  nextCredentialPromptJob,
+  normalizeResultsPayload,
+} from "./app-state.js";
 
 const state = {
   runtime: null,
@@ -8,6 +15,7 @@ const state = {
   currentView: "dashboard",
   pendingCredentialJobId: "",
   dismissedCredentialJobId: "",
+  pendingCredentialRequest: null,
 };
 
 const refs = {
@@ -31,8 +39,12 @@ const refs = {
   credentialModal: document.querySelector("#credential-modal"),
   credentialTitle: document.querySelector("#credential-title"),
   credentialCopy: document.querySelector("#credential-copy"),
+  credentialField: document.querySelector("#credential-field"),
+  credentialFieldLabel: document.querySelector("#credential-field-label"),
   credentialValue: document.querySelector("#credential-value"),
+  credentialCancel: document.querySelector("#credential-cancel"),
   credentialForm: document.querySelector("#credential-form"),
+  credentialSubmit: document.querySelector("#credential-submit"),
 };
 
 async function getJson(url, options = {}) {
@@ -261,6 +273,7 @@ function renderRemotes(remotes = []) {
 function maybePromptForCredential(jobs = []) {
   const pending = nextCredentialPromptJob(jobs, state.dismissedCredentialJobId);
   if (!pending) {
+    state.pendingCredentialRequest = null;
     if (refs.credentialModal.open) {
       refs.credentialModal.close();
     }
@@ -274,11 +287,23 @@ function maybePromptForCredential(jobs = []) {
   if (state.pendingCredentialJobId === pending.id && refs.credentialModal.open) {
     return;
   }
+  const descriptor = describeInputRequest(pending.input_request);
   state.pendingCredentialJobId = pending.id;
   state.dismissedCredentialJobId = "";
-  refs.credentialTitle.textContent = pending.input_request.kind === "ssh_password" ? "SSH Password Required" : "Input Required";
-  refs.credentialCopy.textContent = pending.input_request.message || `Provide input for ${pending.input_request.remote_alias || "current job"}. Stored only for this session.`;
+  state.pendingCredentialRequest = pending.input_request;
+  refs.credentialTitle.textContent = descriptor.title;
+  refs.credentialCopy.textContent =
+    descriptor.message || `Provide input for ${pending.input_request.remote_alias || "current job"}. Stored only for this session.`;
+  refs.credentialField.hidden = descriptor.inputType === "confirm";
+  refs.credentialFieldLabel.textContent = descriptor.fieldLabel || "";
+  refs.credentialValue.type = descriptor.inputType === "password" ? "password" : "text";
+  refs.credentialValue.inputMode = pending.input_request.kind === "ssh_port" ? "numeric" : "text";
+  refs.credentialValue.placeholder = descriptor.placeholder || "";
   refs.credentialValue.value = "";
+  refs.credentialCancel.value = descriptor.cancelValue || "cancel";
+  refs.credentialCancel.textContent = descriptor.cancelLabel;
+  refs.credentialSubmit.value = descriptor.submitValue || "submit";
+  refs.credentialSubmit.textContent = descriptor.submitLabel;
   refs.credentialModal.showModal();
 }
 
@@ -376,12 +401,20 @@ async function runAction(action) {
 
 async function submitCredential(event) {
   event.preventDefault();
+  const request = state.pendingCredentialRequest || {};
+  const descriptor = describeInputRequest(request);
   const mode = credentialSubmissionMode({ submitterValue: event.submitter?.value || "" });
-  if (mode === "cancel") {
-    state.dismissedCredentialJobId = state.pendingCredentialJobId;
+  if (descriptor.inputType !== "confirm" && mode === "cancel") {
+    if (canDismissInputRequest(request)) {
+      state.dismissedCredentialJobId = state.pendingCredentialJobId;
+      showFlash("Credential prompt dismissed.", "warning");
+    } else {
+      state.dismissedCredentialJobId = "";
+      showFlash("This input is still required for the current job.", "warning");
+    }
     state.pendingCredentialJobId = "";
+    state.pendingCredentialRequest = null;
     refs.credentialModal.close();
-    showFlash("Credential prompt dismissed.", "warning");
     return;
   }
   if (!state.pendingCredentialJobId) {
@@ -389,11 +422,18 @@ async function submitCredential(event) {
     return;
   }
   try {
+    const value = inputRequestSubmissionValue({
+      descriptor,
+      submitterValue: event.submitter?.value || "",
+      fieldValue: refs.credentialValue.value,
+    });
     await getJson(`/api/jobs/${state.pendingCredentialJobId}/input`, {
       method: "POST",
-      body: JSON.stringify({ value: refs.credentialValue.value }),
+      body: JSON.stringify({ value }),
     });
     state.dismissedCredentialJobId = "";
+    state.pendingCredentialJobId = "";
+    state.pendingCredentialRequest = null;
     refs.credentialModal.close();
     showFlash("Runtime credential submitted.");
     await refreshJobs();
