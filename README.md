@@ -133,9 +133,10 @@ llm-usage --help
 行为：
 
 - 启动仅监听本机的 Web 控制台
-- 浏览最近一次 `reports/usage_report.csv`
-- 在浏览器中编辑当前运行时 `.env`
+- 首页以最近 30 天 dashboard 为主，展示趋势图、工具/模型对比和聚合明细表
+- `Settings` 页面用于编辑当前运行时 `.env`
 - 触发 `doctor`、`collect`、`sync preview` 和 `sync`
+- 当远端采集需要 SSH 密码时，会弹出运行时输入框；密码仅保存在当前 Web 会话内存里，不写入 `.env`
 
 常用参数：
 

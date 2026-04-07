@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+from collections import defaultdict
 import threading
 import traceback
 from types import SimpleNamespace
@@ -100,6 +101,180 @@ def _raw_env_entries(values: dict[str, str]) -> list[dict[str, str]]:
             continue
         out.append({"key": key, "value": values[key]})
     return out
+
+
+def _row_tokens(row: dict[str, Any]) -> tuple[int, int, int]:
+    return (
+        int(row.get("input_tokens_sum", 0) or 0),
+        int(row.get("cache_tokens_sum", 0) or 0),
+        int(row.get("output_tokens_sum", 0) or 0),
+    )
+
+
+def _total_tokens(input_tokens: int, cache_tokens: int, output_tokens: int) -> int:
+    return input_tokens + cache_tokens + output_tokens
+
+
+def _empty_breakdown_item(name: str = "") -> dict[str, Any]:
+    return {
+        "name": name,
+        "input_tokens_sum": 0,
+        "cache_tokens_sum": 0,
+        "output_tokens_sum": 0,
+        "total_tokens": 0,
+        "row_count": 0,
+    }
+
+
+def _top_summary_item(item: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not item:
+        return {"name": "", "total_tokens": 0}
+    return {"name": item.get("name", ""), "total_tokens": item.get("total_tokens", 0)}
+
+
+def _sorted_breakdown_rows(buckets: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for name, totals in buckets.items():
+        item = {
+            "name": name,
+            "input_tokens_sum": totals["input_tokens_sum"],
+            "cache_tokens_sum": totals["cache_tokens_sum"],
+            "output_tokens_sum": totals["output_tokens_sum"],
+            "total_tokens": _total_tokens(
+                totals["input_tokens_sum"], totals["cache_tokens_sum"], totals["output_tokens_sum"]
+            ),
+            "row_count": totals["row_count"],
+        }
+        items.append(item)
+    items.sort(key=lambda item: (-item["total_tokens"], item["name"]))
+    return items
+
+
+def _dashboard_payload_from_rows(rows: list[dict[str, Any]], csv_path: Path, generated_at: Optional[str]) -> dict[str, Any]:
+    totals = {
+        "rows": 0,
+        "input_tokens_sum": 0,
+        "cache_tokens_sum": 0,
+        "output_tokens_sum": 0,
+    }
+    timeseries_buckets: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "input_tokens_sum": 0,
+            "cache_tokens_sum": 0,
+            "output_tokens_sum": 0,
+            "row_count": 0,
+        }
+    )
+    tool_buckets: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "input_tokens_sum": 0,
+            "cache_tokens_sum": 0,
+            "output_tokens_sum": 0,
+            "row_count": 0,
+        }
+    )
+    model_buckets: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "input_tokens_sum": 0,
+            "cache_tokens_sum": 0,
+            "output_tokens_sum": 0,
+            "row_count": 0,
+        }
+    )
+    table_buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for row in rows:
+        date_local = str(row.get("date_local", "") or "")
+        tool = str(row.get("tool", "") or "")
+        model = str(row.get("model", "") or "")
+        input_tokens, cache_tokens, output_tokens = _row_tokens(row)
+        row_total = _total_tokens(input_tokens, cache_tokens, output_tokens)
+
+        totals["rows"] += 1
+        totals["input_tokens_sum"] += input_tokens
+        totals["cache_tokens_sum"] += cache_tokens
+        totals["output_tokens_sum"] += output_tokens
+
+        day_bucket = timeseries_buckets[date_local]
+        day_bucket["input_tokens_sum"] += input_tokens
+        day_bucket["cache_tokens_sum"] += cache_tokens
+        day_bucket["output_tokens_sum"] += output_tokens
+        day_bucket["row_count"] += 1
+
+        tool_bucket = tool_buckets[tool]
+        tool_bucket["input_tokens_sum"] += input_tokens
+        tool_bucket["cache_tokens_sum"] += cache_tokens
+        tool_bucket["output_tokens_sum"] += output_tokens
+        tool_bucket["row_count"] += 1
+
+        model_bucket = model_buckets[model]
+        model_bucket["input_tokens_sum"] += input_tokens
+        model_bucket["cache_tokens_sum"] += cache_tokens
+        model_bucket["output_tokens_sum"] += output_tokens
+        model_bucket["row_count"] += 1
+
+        key = (date_local, tool, model)
+        bucket = table_buckets.setdefault(
+            key,
+            {
+                "date_local": date_local,
+                "tool": tool,
+                "model": model,
+                "input_tokens_sum": 0,
+                "cache_tokens_sum": 0,
+                "output_tokens_sum": 0,
+                "total_tokens": 0,
+                "row_count": 0,
+            },
+        )
+        bucket["input_tokens_sum"] += input_tokens
+        bucket["cache_tokens_sum"] += cache_tokens
+        bucket["output_tokens_sum"] += output_tokens
+        bucket["total_tokens"] += row_total
+        bucket["row_count"] += 1
+
+    timeseries = []
+    for date_local in sorted(timeseries_buckets):
+        item = timeseries_buckets[date_local]
+        timeseries.append(
+            {
+                "date_local": date_local,
+                "input_tokens_sum": item["input_tokens_sum"],
+                "cache_tokens_sum": item["cache_tokens_sum"],
+                "output_tokens_sum": item["output_tokens_sum"],
+                "total_tokens": _total_tokens(item["input_tokens_sum"], item["cache_tokens_sum"], item["output_tokens_sum"]),
+                "row_count": item["row_count"],
+            }
+        )
+
+    tool_breakdown = _sorted_breakdown_rows(tool_buckets)
+    model_breakdown = _sorted_breakdown_rows(model_buckets)
+    table_rows = sorted(table_buckets.values(), key=lambda item: (item["date_local"], item["tool"], item["model"]))
+
+    summary = {
+        "totals": {
+            **totals,
+            "total_tokens": _total_tokens(
+                totals["input_tokens_sum"], totals["cache_tokens_sum"], totals["output_tokens_sum"]
+            ),
+        },
+        "active_days": len(timeseries),
+        "top_tool": _top_summary_item(tool_breakdown[0] if tool_breakdown else None),
+        "top_model": _top_summary_item(model_breakdown[0] if model_breakdown else None),
+        "generated_at": generated_at,
+    }
+
+    return {
+        "summary": summary,
+        "timeseries": timeseries,
+        "breakdowns": {"tools": tool_breakdown, "models": model_breakdown},
+        "table_rows": table_rows,
+        "warnings": [],
+        "rows": rows,
+        "csv_path": str(csv_path),
+        "generated_at": generated_at,
+        "ok": True,
+    }
 
 
 def load_config_payload() -> dict[str, Any]:
@@ -222,13 +397,13 @@ def save_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def load_latest_results() -> dict[str, Any]:
     csv_path = _reports_dir() / "usage_report.csv"
     if not csv_path.exists():
-        return {"ok": True, "csv_path": str(csv_path), "rows": [], "generated_at": None}
+        return _dashboard_payload_from_rows([], csv_path, None)
     rows: list[dict[str, str]] = []
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
             rows.append(dict(row))
     generated_at = datetime.fromtimestamp(csv_path.stat().st_mtime, tz=timezone.utc).isoformat()
-    return {"ok": True, "csv_path": str(csv_path), "rows": rows, "generated_at": generated_at}
+    return _dashboard_payload_from_rows(rows, csv_path, generated_at)
 
 
 def _resolve_feishu_targets_summary(names: list[str], select_all: bool) -> list[dict[str, str]]:
@@ -241,7 +416,11 @@ def _resolve_feishu_targets_summary(names: list[str], select_all: bool) -> list[
     return [{"name": target.name, "app_token": target.app_token, "table_id": target.table_id} for target in targets]
 
 
-def _build_aggregates_for_web(payload: dict[str, Any]) -> tuple[list, list[str], dict[str, str]]:
+def _build_aggregates_for_web(
+    payload: dict[str, Any],
+    *,
+    runtime_passwords: Optional[dict[str, str]] = None,
+) -> tuple[list, list[str], dict[str, str]]:
     _load_runtime_env()
     _overlay_runtime_env()
     username = _required_org_username()
@@ -257,18 +436,90 @@ def _build_aggregates_for_web(payload: dict[str, Any]) -> tuple[list, list[str],
     else:
         selected_configs = configured_remotes
     collectors: list[BaseCollector] = _collectors(local_source_host_hash)
-    collectors.extend(build_remote_collectors(selected_configs, username=username, salt=salt))
+    collectors.extend(build_remote_collectors(selected_configs, username=username, salt=salt, runtime_passwords=runtime_passwords))
     events, warnings = _collect_all(lookback_days, collectors)
     rows = aggregate_events(events, user_hash=hash_user(username, salt), timezone_name=timezone_name)
     host_labels = _build_terminal_host_labels(username, salt, selected_configs)
     return rows, warnings, host_labels
 
 
+class _JobNeedsInput(RuntimeError):
+    def __init__(self, input_request: dict[str, Any], resume_handler: Callable[[str], dict[str, Any]]) -> None:
+        super().__init__("job needs input")
+        self.input_request = input_request
+        self.resume_handler = resume_handler
+
+
 class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._handlers: dict[str, Callable[[], dict[str, Any]]] = {}
+        self._resume_handlers: dict[str, Callable[[str], dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self._write_job_id: Optional[str] = None
+
+    def _make_job(self, job_type: str, *, write_operation: bool = False) -> dict[str, Any]:
+        job_id = f"job-{len(self._jobs) + 1}-{int(datetime.now().timestamp() * 1000)}"
+        return {
+            "id": job_id,
+            "type": job_type,
+            "status": "queued",
+            "created_at": _json_now(),
+            "updated_at": _json_now(),
+            "logs": [],
+            "result": None,
+            "error": None,
+            "input_request": None,
+            "write_operation": write_operation,
+        }
+
+    def _run_handler(self, job_id: str, handler: Callable[[], dict[str, Any]]) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with self._lock:
+            self._jobs[job_id]["status"] = "running"
+            self._jobs[job_id]["updated_at"] = _json_now()
+        try:
+            from contextlib import redirect_stderr, redirect_stdout
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                result = handler()
+            logs = [line for line in (stdout.getvalue() + stderr.getvalue()).splitlines() if line.strip()]
+            with self._lock:
+                self._jobs[job_id]["status"] = "succeeded"
+                self._jobs[job_id]["updated_at"] = _json_now()
+                self._jobs[job_id]["logs"] = logs
+                self._jobs[job_id]["result"] = result
+                self._jobs[job_id]["error"] = None
+                self._jobs[job_id]["input_request"] = None
+                self._handlers.pop(job_id, None)
+                self._resume_handlers.pop(job_id, None)
+                if self._write_job_id == job_id:
+                    self._write_job_id = None
+        except _JobNeedsInput as exc:
+            logs = [line for line in (stdout.getvalue() + stderr.getvalue()).splitlines() if line.strip()]
+            with self._lock:
+                self._jobs[job_id]["status"] = "needs_input"
+                self._jobs[job_id]["updated_at"] = _json_now()
+                self._jobs[job_id]["logs"] = logs
+                self._jobs[job_id]["input_request"] = exc.input_request
+                self._jobs[job_id]["error"] = None
+                self._jobs[job_id]["result"] = None
+                self._handlers.pop(job_id, None)
+                self._resume_handlers[job_id] = exc.resume_handler
+        except Exception as exc:  # pragma: no cover - defensive
+            logs = [line for line in (stdout.getvalue() + stderr.getvalue()).splitlines() if line.strip()]
+            logs.extend(traceback.format_exc().splitlines())
+            with self._lock:
+                self._jobs[job_id]["status"] = "failed"
+                self._jobs[job_id]["updated_at"] = _json_now()
+                self._jobs[job_id]["logs"] = logs
+                self._jobs[job_id]["error"] = str(exc)
+                self._jobs[job_id]["input_request"] = None
+                self._handlers.pop(job_id, None)
+                self._resume_handlers.pop(job_id, None)
+                if self._write_job_id == job_id:
+                    self._write_job_id = None
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -283,53 +534,55 @@ class JobManager:
         with self._lock:
             if write_operation and self._write_job_id:
                 raise RuntimeError("another write operation is already running")
-            job_id = f"job-{len(self._jobs) + 1}-{int(datetime.now().timestamp() * 1000)}"
-            job = {
-                "id": job_id,
-                "type": job_type,
-                "status": "queued",
-                "created_at": _json_now(),
-                "updated_at": _json_now(),
-                "logs": [],
-                "result": None,
-                "error": None,
-                "write_operation": write_operation,
-            }
+            job = self._make_job(job_type, write_operation=write_operation)
+            job_id = job["id"]
             self._jobs[job_id] = job
+            self._handlers[job_id] = handler
             if write_operation:
                 self._write_job_id = job_id
 
-        def runner() -> None:
-            stdout = io.StringIO()
-            stderr = io.StringIO()
-            with self._lock:
-                self._jobs[job_id]["status"] = "running"
-                self._jobs[job_id]["updated_at"] = _json_now()
-            try:
-                from contextlib import redirect_stderr, redirect_stdout
+        thread = threading.Thread(target=lambda: self._run_handler(job_id, handler), daemon=True)
+        thread.start()
+        return self.get_job(job_id) or {"id": job_id}
 
-                with redirect_stdout(stdout), redirect_stderr(stderr):
-                    result = handler()
-                logs = [line for line in (stdout.getvalue() + stderr.getvalue()).splitlines() if line.strip()]
-                with self._lock:
-                    self._jobs[job_id]["status"] = "succeeded"
-                    self._jobs[job_id]["updated_at"] = _json_now()
-                    self._jobs[job_id]["logs"] = logs
-                    self._jobs[job_id]["result"] = result
-            except Exception as exc:  # pragma: no cover - defensive
-                logs = [line for line in (stdout.getvalue() + stderr.getvalue()).splitlines() if line.strip()]
-                logs.extend(traceback.format_exc().splitlines())
-                with self._lock:
-                    self._jobs[job_id]["status"] = "failed"
-                    self._jobs[job_id]["updated_at"] = _json_now()
-                    self._jobs[job_id]["logs"] = logs
-                    self._jobs[job_id]["error"] = str(exc)
-            finally:
-                with self._lock:
-                    if self._write_job_id == job_id:
-                        self._write_job_id = None
+    def create_needs_input(
+        self,
+        job_type: str,
+        input_request: dict[str, Any],
+        resume_handler: Callable[[str], dict[str, Any]],
+        *,
+        write_operation: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if write_operation and self._write_job_id:
+                raise RuntimeError("another write operation is already running")
+            job = self._make_job(job_type, write_operation=write_operation)
+            job_id = job["id"]
+            job["status"] = "needs_input"
+            job["input_request"] = input_request
+            self._jobs[job_id] = job
+            self._resume_handlers[job_id] = resume_handler
+            if write_operation:
+                self._write_job_id = job_id
+        return self.get_job(job_id) or {"id": job_id}
 
-        thread = threading.Thread(target=runner, daemon=True)
+    def submit_input(self, job_id: str, value: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise RuntimeError("job not found")
+            if job.get("status") != "needs_input":
+                raise RuntimeError("job is not waiting for input")
+            resume_handler = self._resume_handlers.get(job_id)
+            if resume_handler is None:
+                raise RuntimeError("job does not accept input")
+            job["status"] = "queued"
+            job["updated_at"] = _json_now()
+
+        thread = threading.Thread(
+            target=lambda: self._run_handler(job_id, lambda: resume_handler(value)),
+            daemon=True,
+        )
         thread.start()
         return self.get_job(job_id) or {"id": job_id}
 
@@ -337,6 +590,8 @@ class JobManager:
 class WebService:
     def __init__(self) -> None:
         self.jobs = JobManager()
+        self._runtime_credentials: dict[str, str] = {}
+        self._runtime_lock = threading.Lock()
 
     def runtime_payload(self) -> dict[str, Any]:
         _load_runtime_env()
@@ -349,6 +604,116 @@ class WebService:
             "base_url": None,
             "capabilities": {"config": True, "collect": True, "sync": True, "doctor": True},
         }
+
+    def _runtime_passwords_for(self, selected_aliases: list[str]) -> dict[str, str]:
+        with self._runtime_lock:
+            return {alias: self._runtime_credentials[alias] for alias in selected_aliases if alias in self._runtime_credentials}
+
+    def _remember_runtime_password(self, alias: str, value: str) -> None:
+        with self._runtime_lock:
+            self._runtime_credentials[alias] = value
+
+    def _missing_runtime_password_request(self, selected_configs: list[Any]) -> Optional[dict[str, Any]]:
+        with self._runtime_lock:
+            for config in selected_configs:
+                if not bool(getattr(config, "use_sshpass", False)):
+                    continue
+                if self._runtime_credentials.get(config.alias, "").strip():
+                    continue
+                return {
+                    "kind": "ssh_password",
+                    "remote_alias": config.alias,
+                    "message": f"Provide the SSH password for {config.alias}. It will be cached in memory for this session only.",
+                    "cache_scope": "session",
+                }
+        return None
+
+    def _selected_remote_configs(self, payload: dict[str, Any]) -> list[Any]:
+        _load_runtime_env()
+        _overlay_runtime_env()
+        configured_remotes = parse_remote_configs_from_env()
+        selected_aliases = [str(item).strip().upper() for item in (payload.get("selected_remotes") or []) if str(item).strip()]
+        if not selected_aliases:
+            return configured_remotes
+        selected_aliases_set = set(selected_aliases)
+        return [config for config in configured_remotes if config.alias in selected_aliases_set]
+
+    def _run_collect_operation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        runtime_passwords = self._runtime_passwords_for([config.alias for config in self._selected_remote_configs(payload)])
+        rows, warnings, host_labels = _build_aggregates_for_web(payload, runtime_passwords=runtime_passwords)
+        csv_path = _reports_dir() / "usage_report.csv"
+        from llm_usage.reporting import write_csv_report
+
+        write_csv_report(rows, _reports_dir())
+        return {
+            "row_count": len(rows),
+            "warnings": warnings,
+            "host_labels": host_labels,
+            "csv_path": str(csv_path),
+        }
+
+    def _run_sync_preview_operation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        runtime_passwords = self._runtime_passwords_for([config.alias for config in self._selected_remote_configs(payload)])
+        rows, warnings, _host_labels = _build_aggregates_for_web(payload, runtime_passwords=runtime_passwords)
+        names = [str(item).strip() for item in (payload.get("feishu_targets") or []) if str(item).strip()]
+        return {
+            "row_count": len(rows),
+            "warnings": warnings,
+            "targets": _resolve_feishu_targets_summary(names, bool(payload.get("all_feishu_targets", False))),
+        }
+
+    def _run_sync_operation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        runtime_passwords = self._runtime_passwords_for([config.alias for config in self._selected_remote_configs(payload)])
+        rows, warnings, _host_labels = _build_aggregates_for_web(payload, runtime_passwords=runtime_passwords)
+        from llm_usage.reporting import write_csv_report
+
+        csv_path = write_csv_report(rows, _reports_dir())
+        exit_code = _sync_rows_to_feishu_targets(
+            rows,
+            dry_run=False,
+            feishu_target=[str(item).strip() for item in (payload.get("feishu_targets") or []) if str(item).strip()],
+            all_feishu_targets=bool(payload.get("all_feishu_targets", False)),
+        )
+        return {"row_count": len(rows), "warnings": warnings, "csv_path": str(csv_path), "exit_code": exit_code}
+
+    def _collect_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
+        selected_configs = self._selected_remote_configs(payload)
+        input_request = self._missing_runtime_password_request(selected_configs)
+        if input_request:
+            alias = str(input_request["remote_alias"])
+
+            def resume_handler(value: str) -> dict[str, Any]:
+                self._remember_runtime_password(alias, value)
+                return self._run_collect_operation(payload)
+
+            return self.jobs.create_needs_input("collect", input_request, resume_handler, write_operation=True)
+        return self.jobs.start("collect", lambda: self._run_collect_operation(payload), write_operation=True)
+
+    def _sync_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
+        selected_configs = self._selected_remote_configs(payload)
+        input_request = self._missing_runtime_password_request(selected_configs)
+        if input_request:
+            alias = str(input_request["remote_alias"])
+
+            def resume_handler(value: str) -> dict[str, Any]:
+                self._remember_runtime_password(alias, value)
+                return self._run_sync_operation(payload)
+
+            return self.jobs.create_needs_input("sync", input_request, resume_handler, write_operation=True)
+        return self.jobs.start("sync", lambda: self._run_sync_operation(payload), write_operation=True)
+
+    def _sync_preview_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
+        selected_configs = self._selected_remote_configs(payload)
+        input_request = self._missing_runtime_password_request(selected_configs)
+        if input_request:
+            alias = str(input_request["remote_alias"])
+
+            def resume_handler(value: str) -> dict[str, Any]:
+                self._remember_runtime_password(alias, value)
+                return self._run_sync_preview_operation(payload)
+
+            return self.jobs.create_needs_input("sync_preview", input_request, resume_handler)
+        return self.jobs.start("sync_preview", lambda: self._run_sync_preview_operation(payload))
 
     def start_doctor(self, payload: dict[str, Any]) -> dict[str, Any]:
         def handler() -> dict[str, Any]:
@@ -374,51 +739,15 @@ class WebService:
         return self.jobs.start("doctor", handler)
 
     def start_collect(self, payload: dict[str, Any]) -> dict[str, Any]:
-        def handler() -> dict[str, Any]:
-            rows, warnings, host_labels = _build_aggregates_for_web(payload)
-            csv_path = _reports_dir() / "usage_report.csv"
-            from llm_usage.reporting import write_csv_report
-
-            write_csv_report(rows, _reports_dir())
-            return {
-                "row_count": len(rows),
-                "warnings": warnings,
-                "host_labels": host_labels,
-                "csv_path": str(csv_path),
-            }
-
-        return self.jobs.start("collect", handler, write_operation=True)
+        return self._collect_or_pause(payload)
 
     def start_sync_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
-        def handler() -> dict[str, Any]:
-            rows, warnings, _host_labels = _build_aggregates_for_web(payload)
-            names = [str(item).strip() for item in (payload.get("feishu_targets") or []) if str(item).strip()]
-            return {
-                "row_count": len(rows),
-                "warnings": warnings,
-                "targets": _resolve_feishu_targets_summary(names, bool(payload.get("all_feishu_targets", False))),
-            }
-
-        return self.jobs.start("sync_preview", handler)
+        return self._sync_preview_or_pause(payload)
 
     def start_sync(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not payload.get("confirm_sync", False):
             raise RuntimeError("confirm_sync is required")
-
-        def handler() -> dict[str, Any]:
-            rows, warnings, _host_labels = _build_aggregates_for_web(payload)
-            from llm_usage.reporting import write_csv_report
-
-            csv_path = write_csv_report(rows, _reports_dir())
-            exit_code = _sync_rows_to_feishu_targets(
-                rows,
-                dry_run=False,
-                feishu_target=[str(item).strip() for item in (payload.get("feishu_targets") or []) if str(item).strip()],
-                all_feishu_targets=bool(payload.get("all_feishu_targets", False)),
-            )
-            return {"row_count": len(rows), "warnings": warnings, "csv_path": str(csv_path), "exit_code": exit_code}
-
-        return self.jobs.start("sync", handler, write_operation=True)
+        return self._sync_or_pause(payload)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -456,6 +785,10 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/config/validate":
                 return self._write_json(HTTPStatus.OK, validate_config_payload(payload))
+            if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/input"):
+                value = str(payload.get("value", ""))
+                job_id = parsed.path.split("/")[3]
+                return self._write_json(HTTPStatus.ACCEPTED, self.service.jobs.submit_input(job_id, value))
             if parsed.path == "/api/doctor":
                 return self._write_json(HTTPStatus.ACCEPTED, self.service.start_doctor(payload))
             if parsed.path == "/api/collect":

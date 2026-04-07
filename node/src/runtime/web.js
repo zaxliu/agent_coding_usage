@@ -76,6 +76,183 @@ function rawEnvEntries(values) {
     .map((key) => ({ key, value: values[key] }));
 }
 
+function splitAliases(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.toUpperCase());
+}
+
+function envFlag(value) {
+  return ["1", "true", "yes", "y", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+function parseCsvReport(csvText) {
+  const text = String(csvText || "").trim();
+  if (!text) {
+    return [];
+  }
+  const [headerLine, ...lines] = text.split(/\r?\n/u);
+  const headers = headerLine.split(",");
+  return lines.filter(Boolean).map((line) => {
+    const values = line.split(",");
+    return Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
+  });
+}
+
+function toNumber(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sumRowMetrics(rows) {
+  return rows.reduce(
+    (totals, row) => {
+      totals.raw_rows += 1;
+      totals.input_tokens_sum += toNumber(row.input_tokens_sum);
+      totals.cache_tokens_sum += toNumber(row.cache_tokens_sum);
+      totals.output_tokens_sum += toNumber(row.output_tokens_sum);
+      if (row.date_local) {
+        totals.active_days.add(row.date_local);
+      }
+      if (row.tool) {
+        totals.tools.add(row.tool);
+      }
+      if (row.model) {
+        totals.models.add(row.model);
+      }
+      return totals;
+    },
+    {
+      raw_rows: 0,
+      input_tokens_sum: 0,
+      cache_tokens_sum: 0,
+      output_tokens_sum: 0,
+      active_days: new Set(),
+      tools: new Set(),
+      models: new Set(),
+    },
+  );
+}
+
+function groupRows(rows, keyFields) {
+  const buckets = new Map();
+  for (const row of rows) {
+    const key = keyFields.map((field) => String(row[field] || "")).join("\u0000");
+    const current = buckets.get(key) || {
+      row_count: 0,
+      input_tokens_sum: 0,
+      cache_tokens_sum: 0,
+      output_tokens_sum: 0,
+      sample: row,
+      updated_at: String(row.updated_at || ""),
+    };
+    current.row_count += 1;
+    current.input_tokens_sum += toNumber(row.input_tokens_sum);
+    current.cache_tokens_sum += toNumber(row.cache_tokens_sum);
+    current.output_tokens_sum += toNumber(row.output_tokens_sum);
+    if (String(row.updated_at || "") > current.updated_at) {
+      current.updated_at = String(row.updated_at || "");
+      current.sample = row;
+    }
+    buckets.set(key, current);
+  }
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket.sample,
+      row_count: bucket.row_count,
+      input_tokens_sum: bucket.input_tokens_sum,
+      cache_tokens_sum: bucket.cache_tokens_sum,
+      output_tokens_sum: bucket.output_tokens_sum,
+      total_tokens: bucket.input_tokens_sum + bucket.cache_tokens_sum + bucket.output_tokens_sum,
+      updated_at: bucket.updated_at,
+    }))
+    .sort((left, right) =>
+      [left.date_local || "", left.tool || "", String(left.model || "")].join("\u0000").localeCompare(
+        [right.date_local || "", right.tool || "", String(right.model || "")].join("\u0000"),
+      ),
+    );
+}
+
+function buildDashboardBreakdown(rows, key) {
+  const buckets = new Map();
+  for (const row of rows) {
+    const name = String(row[key] || "");
+    const current = buckets.get(name) || {
+      name,
+      row_count: 0,
+      input_tokens_sum: 0,
+      cache_tokens_sum: 0,
+      output_tokens_sum: 0,
+      total_tokens: 0,
+    };
+    current.row_count += toNumber(row.row_count || 1);
+    current.input_tokens_sum += toNumber(row.input_tokens_sum);
+    current.cache_tokens_sum += toNumber(row.cache_tokens_sum);
+    current.output_tokens_sum += toNumber(row.output_tokens_sum);
+    current.total_tokens += toNumber(row.input_tokens_sum) + toNumber(row.cache_tokens_sum) + toNumber(row.output_tokens_sum);
+    buckets.set(name, current);
+  }
+  return [...buckets.values()].sort((left, right) => {
+    if (right.total_tokens !== left.total_tokens) {
+      return right.total_tokens - left.total_tokens;
+    }
+    return left.name.localeCompare(right.name);
+  });
+}
+
+function buildLatestResultsPayload(rows, { csvPath, generatedAt, warnings = [] } = {}) {
+  const tableRows = groupRows(rows, ["date_local", "tool", "model"]);
+  const totals = sumRowMetrics(rows);
+  const timeseriesBuckets = new Map();
+  for (const row of tableRows) {
+    const current = timeseriesBuckets.get(row.date_local) || {
+      date_local: row.date_local,
+      row_count: 0,
+      input_tokens_sum: 0,
+      cache_tokens_sum: 0,
+      output_tokens_sum: 0,
+      total_tokens: 0,
+    };
+    current.row_count += row.row_count || 1;
+    current.input_tokens_sum += toNumber(row.input_tokens_sum);
+    current.cache_tokens_sum += toNumber(row.cache_tokens_sum);
+    current.output_tokens_sum += toNumber(row.output_tokens_sum);
+    current.total_tokens += toNumber(row.total_tokens);
+    timeseriesBuckets.set(row.date_local, current);
+  }
+  const timeseries = [...timeseriesBuckets.values()].sort((left, right) => left.date_local.localeCompare(right.date_local));
+  const toolBreakdowns = buildDashboardBreakdown(tableRows, "tool");
+  const modelBreakdowns = buildDashboardBreakdown(tableRows, "model");
+  return {
+    ok: true,
+    csv_path: csvPath,
+    generated_at: generatedAt,
+    warnings: [...warnings],
+    summary: {
+      totals: {
+        rows: rows.length,
+        input_tokens_sum: totals.input_tokens_sum,
+        cache_tokens_sum: totals.cache_tokens_sum,
+        output_tokens_sum: totals.output_tokens_sum,
+        total_tokens: totals.input_tokens_sum + totals.cache_tokens_sum + totals.output_tokens_sum,
+      },
+      active_days: totals.active_days.size,
+      top_tool: toolBreakdowns[0] ? { name: toolBreakdowns[0].name, total_tokens: toolBreakdowns[0].total_tokens } : { name: "", total_tokens: 0 },
+      top_model: modelBreakdowns[0] ? { name: modelBreakdowns[0].name, total_tokens: modelBreakdowns[0].total_tokens } : { name: "", total_tokens: 0 },
+      generated_at: generatedAt,
+    },
+    timeseries,
+    breakdowns: {
+      tools: toolBreakdowns,
+      models: modelBreakdowns,
+    },
+    table_rows: tableRows,
+    rows,
+  };
+}
+
 export function loadConfigPayload() {
   const values = envMap();
   const targets = resolveFeishuTargetsFromEnv(values).filter((target) => target.name !== "default");
@@ -90,10 +267,11 @@ export function loadConfigPayload() {
       app_id: target.appId,
       app_secret: target.appSecret,
       bot_token: target.botToken,
+      use_sshpass: envFlag(values[`REMOTE_${target.name.toUpperCase()}_USE_SSHPASS`]),
     })),
     remotes: parseRemoteConfigsFromEnv(values).map((remote) => ({
       ...remote,
-      use_sshpass: false,
+      use_sshpass: envFlag(values[`REMOTE_${remote.alias}_USE_SSHPASS`]),
     })),
     raw_env: rawEnvEntries(values),
     reports_dir: getReportsDir(),
@@ -193,20 +371,14 @@ export function writeConfigPayload(payload) {
 export function loadLatestResults() {
   const csvPath = path.join(getReportsDir(), "usage_report.csv");
   if (!fs.existsSync(csvPath)) {
-    return { ok: true, csv_path: csvPath, rows: [], generated_at: null };
+    return buildLatestResultsPayload([], { csvPath, generatedAt: null, warnings: [] });
   }
-  const [headerLine, ...lines] = fs.readFileSync(csvPath, "utf8").trim().split(/\r?\n/u);
-  const headers = headerLine.split(",");
-  const rows = lines.filter(Boolean).map((line) => {
-    const values = line.split(",");
-    return Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
+  const rows = parseCsvReport(fs.readFileSync(csvPath, "utf8"));
+  return buildLatestResultsPayload(rows, {
+    csvPath,
+    generatedAt: new Date(fs.statSync(csvPath).mtimeMs).toISOString(),
+    warnings: [],
   });
-  return {
-    ok: true,
-    csv_path: csvPath,
-    rows,
-    generated_at: new Date(fs.statSync(csvPath).mtimeMs).toISOString(),
-  };
 }
 
 function buildTerminalHostLabels() {
@@ -252,6 +424,23 @@ async function buildAggregates(payload = {}) {
   const timeZone = getEnv("TIMEZONE", "Asia/Shanghai");
   const rows = aggregateEvents(localPayload.events, { userHash, timeZone });
   return { rows, warnings: [...remoteCollectionWarnings(), ...localPayload.warnings] };
+}
+
+function selectedRemoteConfigs(payload = {}) {
+  const values = envMap();
+  const configured = parseRemoteConfigsFromEnv(values).map((remote) => ({
+    ...remote,
+    use_sshpass: envFlag(values[`REMOTE_${remote.alias}_USE_SSHPASS`]),
+  }));
+  const selectedAliases = new Set((payload.selected_remotes || []).map((item) => String(item).trim().toUpperCase()).filter(Boolean));
+  if (!selectedAliases.size) {
+    return configured;
+  }
+  return configured.filter((config) => selectedAliases.has(config.alias));
+}
+
+function runtimePasswordRequest(payload = {}, runtimeCredentials = new Map()) {
+  return null;
 }
 
 function resolveTargetSummary(names = [], selectAll = false) {
@@ -308,10 +497,12 @@ async function syncRowsToFeishu(rows, names = [], selectAll = false) {
   return exitCode;
 }
 
-class JobManager {
+export class JobManager {
   constructor() {
     this.jobs = new Map();
     this.writeJobId = "";
+    this.runtimeCredentials = new Map();
+    this.handlers = new Map();
   }
 
   list() {
@@ -337,31 +528,110 @@ class JobManager {
       result: null,
       error: null,
       write_operation: writeOperation,
+      input_request: null,
     };
     this.jobs.set(id, job);
+    this.handlers.set(id, handler);
     if (writeOperation) {
       this.writeJobId = id;
     }
-    Promise.resolve()
-      .then(async () => {
-        job.status = "running";
-        job.updated_at = new Date().toISOString();
-        job.result = await handler();
-        job.status = "succeeded";
-        job.updated_at = new Date().toISOString();
-      })
-      .catch((error) => {
-        job.status = "failed";
-        job.error = error.message;
-        job.updated_at = new Date().toISOString();
-      })
-      .finally(() => {
-        if (this.writeJobId === id) {
-          this.writeJobId = "";
-        }
-      });
+    this.run(id);
     return job;
   }
+
+  async run(jobId, inputValue = undefined) {
+    const job = this.jobs.get(jobId);
+    const handler = this.handlers.get(jobId);
+    if (!job || !handler) {
+      return null;
+    }
+    job.status = "running";
+    job.updated_at = new Date().toISOString();
+    try {
+      const result = await handler({
+        inputValue,
+        job: { ...job },
+        runtimeCredentials: new Map(this.runtimeCredentials),
+      });
+      if (result && result.status === "needs_input") {
+        job.status = "needs_input";
+        job.input_request = normalizeInputRequest(result.input_request);
+        job.result = null;
+        job.error = null;
+      } else {
+        job.status = "succeeded";
+        job.result = result;
+        job.input_request = null;
+        job.error = null;
+        if (this.writeJobId === jobId) {
+          this.writeJobId = "";
+        }
+      }
+      job.updated_at = new Date().toISOString();
+      return this.get(jobId);
+    } catch (error) {
+      job.status = "failed";
+      job.error = error.message;
+      job.updated_at = new Date().toISOString();
+      if (this.writeJobId === jobId) {
+        this.writeJobId = "";
+      }
+      return this.get(jobId);
+    }
+  }
+
+  async resumeInput(jobId, value) {
+    const job = this.jobs.get(jobId);
+    if (!job) {
+      throw new Error("job not found");
+    }
+    if (job.status !== "needs_input" || !job.input_request) {
+      throw new Error("job is not waiting for input");
+    }
+    if (job.input_request.cache_scope !== "none" && job.input_request.remote_alias) {
+      this.runtimeCredentials.set(job.input_request.remote_alias, value);
+    }
+    job.input_request = null;
+    job.status = "running";
+    job.updated_at = new Date().toISOString();
+    if (job.write_operation) {
+      if (this.writeJobId && this.writeJobId !== jobId) {
+        throw new Error("another write operation is already running");
+      }
+      this.writeJobId = jobId;
+    }
+    const next = this.run(jobId, value);
+    return this.get(jobId) || (await next);
+  }
+}
+
+export async function submitJobInput(jobManager, jobId, value) {
+  return jobManager.resumeInput(jobId, value);
+}
+
+function normalizeInputRequest(request) {
+  if (!request || typeof request !== "object") {
+    throw new Error("input_request is required");
+  }
+  const kind = String(request.kind || "").trim();
+  const remoteAlias = String(request.remote_alias || "").trim().toUpperCase();
+  const message = String(request.message || "").trim();
+  const cacheScope = String(request.cache_scope || "session").trim().toLowerCase() || "session";
+  if (!kind) {
+    throw new Error("input_request.kind is required");
+  }
+  if (!remoteAlias) {
+    throw new Error("input_request.remote_alias is required");
+  }
+  if (!message) {
+    throw new Error("input_request.message is required");
+  }
+  return {
+    kind,
+    remote_alias: remoteAlias,
+    message,
+    cache_scope: cacheScope,
+  };
 }
 
 function json(response, status, payload) {
@@ -396,102 +666,130 @@ async function maybeOpen(baseUrl, openBrowser) {
   execFile(command, args, { stdio: "ignore" }, () => {});
 }
 
-export async function createWebServer({ host = "127.0.0.1", port = 0, openBrowser = true, env = null } = {}) {
+export function createWebRequestHandler(jobManager) {
+  return async (request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    if (request.method === "GET" && url.pathname === "/api/runtime") {
+      return json(response, 200, {
+        backend: "node",
+        version: packageVersion(),
+        env_path: getEnvPath(),
+        reports_dir: getReportsDir(),
+        capabilities: { config: true, collect: true, sync: true, doctor: true },
+      });
+    }
+    if (request.method === "GET" && url.pathname === "/api/config") {
+      return json(response, 200, loadConfigPayload());
+    }
+    if (request.method === "GET" && url.pathname === "/api/results/latest") {
+      return json(response, 200, loadLatestResults());
+    }
+    if (request.method === "GET" && url.pathname === "/api/jobs") {
+      return json(response, 200, { jobs: jobManager.list() });
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/api/jobs/")) {
+      const jobId = url.pathname.split("/")[3];
+      const job = jobManager.get(jobId);
+      return json(response, job ? 200 : 404, job || { error: "job not found" });
+    }
+    if (request.method === "POST" && url.pathname.startsWith("/api/jobs/") && url.pathname.endsWith("/input")) {
+      const jobId = url.pathname.split("/")[3];
+      const payload = await readBody(request);
+      if (!Object.prototype.hasOwnProperty.call(payload, "value")) {
+        return json(response, 400, { error: "value is required" });
+      }
+      const job = await submitJobInput(jobManager, jobId, String(payload.value ?? ""));
+      return json(response, 202, job || { error: "job not found" });
+    }
+    if (request.method === "POST" && url.pathname === "/api/config/validate") {
+      return json(response, 200, validateConfigPayload(await readBody(request)));
+    }
+    if (request.method === "PUT" && url.pathname === "/api/config") {
+      const result = writeConfigPayload(await readBody(request));
+      return json(response, result.ok ? 200 : 400, result);
+    }
+    if (request.method === "POST" && url.pathname === "/api/doctor") {
+      const payload = await readBody(request);
+      const job = jobManager.start("doctor", async () => {
+        if (payload.feishu) {
+          return { exit_code: 0, mode: "feishu" };
+        }
+        return { probes: await probeLocalUsage() };
+      });
+      return json(response, 202, job);
+    }
+    if (request.method === "POST" && url.pathname === "/api/collect") {
+      const payload = await readBody(request);
+      const job = jobManager.start("collect", async ({ runtimeCredentials }) => {
+        const inputRequest = runtimePasswordRequest(payload, runtimeCredentials);
+        if (inputRequest) {
+          return { status: "needs_input", input_request: inputRequest };
+        }
+        const { rows, warnings } = await buildAggregates(payload);
+        const csvPath = writeCsvReport(rows, getReportsDir());
+        return { row_count: rows.length, warnings, csv_path: csvPath, host_labels: buildTerminalHostLabels() };
+      }, { writeOperation: true });
+      return json(response, 202, job);
+    }
+    if (request.method === "POST" && url.pathname === "/api/sync/preview") {
+      const payload = await readBody(request);
+      const names = (payload.feishu_targets || []).map((item) => String(item).trim()).filter(Boolean);
+      const job = jobManager.start("sync_preview", async ({ runtimeCredentials }) => {
+        const inputRequest = runtimePasswordRequest(payload, runtimeCredentials);
+        if (inputRequest) {
+          return { status: "needs_input", input_request: inputRequest };
+        }
+        const { rows, warnings } = await buildAggregates(payload);
+        return { row_count: rows.length, warnings, targets: resolveTargetSummary(names, Boolean(payload.all_feishu_targets)) };
+      });
+      return json(response, 202, job);
+    }
+    if (request.method === "POST" && url.pathname === "/api/sync") {
+      const payload = await readBody(request);
+      if (!payload.confirm_sync) {
+        return json(response, 400, { error: "confirm_sync is required" });
+      }
+      const names = (payload.feishu_targets || []).map((item) => String(item).trim()).filter(Boolean);
+      const job = jobManager.start("sync", async ({ runtimeCredentials }) => {
+        const inputRequest = runtimePasswordRequest(payload, runtimeCredentials);
+        if (inputRequest) {
+          return { status: "needs_input", input_request: inputRequest };
+        }
+        const { rows, warnings } = await buildAggregates(payload);
+        const csvPath = writeCsvReport(rows, getReportsDir());
+        const exitCode = await syncRowsToFeishu(rows, names, Boolean(payload.all_feishu_targets));
+        return { row_count: rows.length, warnings, csv_path: csvPath, exit_code: exitCode };
+      }, { writeOperation: true });
+      return json(response, 202, job);
+    }
+
+    const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+    let filePath = path.resolve(webRoot, relative);
+    if (!filePath.startsWith(webRoot) || !fs.existsSync(filePath)) {
+      filePath = path.resolve(webRoot, "index.html");
+    }
+    const contentType = filePath.endsWith(".js")
+      ? "application/javascript; charset=utf-8"
+      : filePath.endsWith(".css")
+        ? "text/css; charset=utf-8"
+        : "text/html; charset=utf-8";
+    const body = await readFile(filePath);
+    response.writeHead(200, { "content-type": contentType, "content-length": body.length });
+    response.end(body);
+  };
+}
+
+export async function createWebServer({ host = "127.0.0.1", port = 0, openBrowser = true, env = null, jobs = null } = {}) {
   if (env) {
     Object.assign(process.env, env);
   }
   await prepareRuntimePaths(repoRoot);
   loadDotenv();
-  const jobs = new JobManager();
+  const jobManager = jobs || new JobManager();
+  const handler = createWebRequestHandler(jobManager);
   const server = http.createServer(async (request, response) => {
-    const url = new URL(request.url, "http://127.0.0.1");
     try {
-      if (request.method === "GET" && url.pathname === "/api/runtime") {
-        return json(response, 200, {
-          backend: "node",
-          version: packageVersion(),
-          env_path: getEnvPath(),
-          reports_dir: getReportsDir(),
-          capabilities: { config: true, collect: true, sync: true, doctor: true },
-        });
-      }
-      if (request.method === "GET" && url.pathname === "/api/config") {
-        return json(response, 200, loadConfigPayload());
-      }
-      if (request.method === "GET" && url.pathname === "/api/results/latest") {
-        return json(response, 200, loadLatestResults());
-      }
-      if (request.method === "GET" && url.pathname === "/api/jobs") {
-        return json(response, 200, { jobs: jobs.list() });
-      }
-      if (request.method === "GET" && url.pathname.startsWith("/api/jobs/")) {
-        const jobId = url.pathname.split("/")[3];
-        const job = jobs.get(jobId);
-        return json(response, job ? 200 : 404, job || { error: "job not found" });
-      }
-      if (request.method === "POST" && url.pathname === "/api/config/validate") {
-        return json(response, 200, validateConfigPayload(await readBody(request)));
-      }
-      if (request.method === "PUT" && url.pathname === "/api/config") {
-        const result = writeConfigPayload(await readBody(request));
-        return json(response, result.ok ? 200 : 400, result);
-      }
-      if (request.method === "POST" && url.pathname === "/api/doctor") {
-        const payload = await readBody(request);
-        const job = jobs.start("doctor", async () => {
-          if (payload.feishu) {
-            return { exit_code: 0, mode: "feishu" };
-          }
-          return { probes: await probeLocalUsage() };
-        });
-        return json(response, 202, job);
-      }
-      if (request.method === "POST" && url.pathname === "/api/collect") {
-        const payload = await readBody(request);
-        const job = jobs.start("collect", async () => {
-          const { rows, warnings } = await buildAggregates(payload);
-          const csvPath = writeCsvReport(rows, getReportsDir());
-          return { row_count: rows.length, warnings, csv_path: csvPath, host_labels: buildTerminalHostLabels() };
-        }, { writeOperation: true });
-        return json(response, 202, job);
-      }
-      if (request.method === "POST" && url.pathname === "/api/sync/preview") {
-        const payload = await readBody(request);
-        const names = (payload.feishu_targets || []).map((item) => String(item).trim()).filter(Boolean);
-        const job = jobs.start("sync_preview", async () => {
-          const { rows, warnings } = await buildAggregates(payload);
-          return { row_count: rows.length, warnings, targets: resolveTargetSummary(names, Boolean(payload.all_feishu_targets)) };
-        });
-        return json(response, 202, job);
-      }
-      if (request.method === "POST" && url.pathname === "/api/sync") {
-        const payload = await readBody(request);
-        if (!payload.confirm_sync) {
-          return json(response, 400, { error: "confirm_sync is required" });
-        }
-        const names = (payload.feishu_targets || []).map((item) => String(item).trim()).filter(Boolean);
-        const job = jobs.start("sync", async () => {
-          const { rows, warnings } = await buildAggregates(payload);
-          const csvPath = writeCsvReport(rows, getReportsDir());
-          const exitCode = await syncRowsToFeishu(rows, names, Boolean(payload.all_feishu_targets));
-          return { row_count: rows.length, warnings, csv_path: csvPath, exit_code: exitCode };
-        }, { writeOperation: true });
-        return json(response, 202, job);
-      }
-
-      const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-      let filePath = path.resolve(webRoot, relative);
-      if (!filePath.startsWith(webRoot) || !fs.existsSync(filePath)) {
-        filePath = path.resolve(webRoot, "index.html");
-      }
-      const contentType = filePath.endsWith(".js")
-        ? "application/javascript; charset=utf-8"
-        : filePath.endsWith(".css")
-          ? "text/css; charset=utf-8"
-          : "text/html; charset=utf-8";
-      const body = await readFile(filePath);
-      response.writeHead(200, { "content-type": contentType, "content-length": body.length });
-      response.end(body);
+      await handler(request, response);
     } catch (error) {
       json(response, 500, { error: error.message });
     }

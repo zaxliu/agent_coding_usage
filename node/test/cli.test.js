@@ -287,3 +287,18 @@ test("init rejects Feishu target flags without --feishu-bitable-schema", () => {
   assert.equal(result.status, 2, result.stderr || result.stdout);
   assert.match(result.stdout, /require --feishu-bitable-schema/u);
 });
+
+test("web help still exposes the local console entry", () => {
+  const result = spawnSync(nodeBin, [cliPath, "web", "--help"], {
+    cwd: path.resolve(testDir, ".."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: nodeBinDir,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /--host/u);
+  assert.match(result.stdout, /--port/u);
+  assert.match(result.stdout, /--no-open/u);
+});

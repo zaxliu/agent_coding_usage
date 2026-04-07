@@ -39,6 +39,12 @@ llm-usage-node web --no-open
 llm-usage-node sync --from-bundle /path/to/offline.zip --dry-run
 ```
 
+`web` 控制台当前行为：
+
+- 首页为最近 30 天 dashboard，优先展示趋势、工具/模型对比和聚合明细
+- `Settings` 页面负责持久化配置编辑
+- 运行时输入如 SSH 密码只保存在当前 Web 会话内存里，不写入 `.env`
+
 Cursor 相关常用参数：
 
 - `--cursor-login-mode auto|managed-profile|manual`
