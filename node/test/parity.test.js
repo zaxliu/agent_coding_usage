@@ -7,7 +7,7 @@ import { aggregateEvents } from "../src/core/aggregation.js";
 import { buildRowKey, hashSourceHost, hashUser } from "../src/core/identity.js";
 import { toFeishuFields } from "../src/core/privacy.js";
 
-const repoRoot = process.cwd();
+const repoRoot = path.resolve(new URL(".", import.meta.url).pathname, "../..");
 
 function loadJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(repoRoot, relativePath), "utf8"));
