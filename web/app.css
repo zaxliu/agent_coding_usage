@@ -31,19 +31,21 @@ input {
   font: inherit;
 }
 
-.app-shell {
+.app-shell,
+.console-layout {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
   min-height: 100vh;
 }
 
-.sidebar {
-  padding: 28px 22px;
+.sidebar,
+.console-sidebar {
+  padding: 24px 20px;
   background: #eef3f7;
   border-right: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
+  display: grid;
+  gap: 16px;
+  align-content: start;
 }
 
 .brand h1,
@@ -74,13 +76,6 @@ input {
   color: var(--muted);
 }
 
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.nav-link,
 button {
   border: 1px solid transparent;
   border-radius: 14px;
@@ -91,14 +86,8 @@ button {
   transition: 160ms ease;
 }
 
-.nav-link:hover,
 button:hover {
   border-color: var(--line);
-}
-
-.nav-link.is-active {
-  background: var(--accent);
-  color: white;
 }
 
 .status-stack {
@@ -129,16 +118,9 @@ button:hover {
   letter-spacing: 0.08em;
 }
 
-.main-panel {
-  padding: 28px;
-}
-
-.view {
-  display: none;
-}
-
-.view.view-active {
-  display: block;
+.main-panel,
+.console-main {
+  padding: 24px;
 }
 
 .hero {
@@ -153,10 +135,13 @@ button:hover {
   font-size: clamp(2rem, 5vw, 3.3rem);
 }
 
-.hero-actions {
-  display: grid;
+.hero-actions,
+.operations-bar {
+  display: flex;
+  flex-wrap: wrap;
   gap: 14px;
-  justify-items: end;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .stamp {
@@ -193,6 +178,15 @@ button {
 
 .button-subtle {
   background: var(--surface-alt);
+}
+
+.settings-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-panel[hidden] {
+  display: none;
 }
 
 .flashbar {
@@ -482,11 +476,13 @@ input {
 }
 
 @media (max-width: 1100px) {
-  .app-shell {
+  .app-shell,
+  .console-layout {
     grid-template-columns: 1fr;
   }
 
-  .sidebar {
+  .sidebar,
+  .console-sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -500,7 +496,8 @@ input {
 }
 
 @media (max-width: 720px) {
-  .main-panel {
+  .main-panel,
+  .console-main {
     padding: 18px;
   }
 
@@ -512,8 +509,14 @@ input {
     align-items: stretch;
   }
 
+  .hero-actions,
+  .operations-bar {
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
   .actions {
-    justify-content: stretch;
+    justify-content: flex-start;
   }
 
   .actions button {

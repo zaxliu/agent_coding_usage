@@ -399,9 +399,9 @@ function remoteCollectionWarnings() {
   return remotes.length ? [`remote collection is not supported in llm-usage-node yet; ignoring ${remotes.length} configured remote(s)`] : [];
 }
 
-async function buildAggregates(payload = {}) {
+async function buildAggregates(payload = {}, { maybeCaptureCursorTokenFn = maybeCaptureCursorToken } = {}) {
   const lookbackDays = Number.isFinite(Number(payload.lookback_days)) ? Number(payload.lookback_days) : Math.max(1, intEnv("LOOKBACK_DAYS", 7));
-  await maybeCaptureCursorToken({
+  await maybeCaptureCursorTokenFn({
     timeoutSec: 600,
     browser: "default",
     userDataDir: "",
@@ -666,7 +666,7 @@ async function maybeOpen(baseUrl, openBrowser) {
   execFile(command, args, { stdio: "ignore" }, () => {});
 }
 
-export function createWebRequestHandler(jobManager) {
+export function createWebRequestHandler(jobManager, { maybeCaptureCursorTokenFn } = {}) {
   return async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/api/runtime") {
@@ -725,7 +725,7 @@ export function createWebRequestHandler(jobManager) {
         if (inputRequest) {
           return { status: "needs_input", input_request: inputRequest };
         }
-        const { rows, warnings } = await buildAggregates(payload);
+        const { rows, warnings } = await buildAggregates(payload, { maybeCaptureCursorTokenFn });
         const csvPath = writeCsvReport(rows, getReportsDir());
         return { row_count: rows.length, warnings, csv_path: csvPath, host_labels: buildTerminalHostLabels() };
       }, { writeOperation: true });
@@ -739,7 +739,7 @@ export function createWebRequestHandler(jobManager) {
         if (inputRequest) {
           return { status: "needs_input", input_request: inputRequest };
         }
-        const { rows, warnings } = await buildAggregates(payload);
+        const { rows, warnings } = await buildAggregates(payload, { maybeCaptureCursorTokenFn });
         return { row_count: rows.length, warnings, targets: resolveTargetSummary(names, Boolean(payload.all_feishu_targets)) };
       });
       return json(response, 202, job);
@@ -755,7 +755,7 @@ export function createWebRequestHandler(jobManager) {
         if (inputRequest) {
           return { status: "needs_input", input_request: inputRequest };
         }
-        const { rows, warnings } = await buildAggregates(payload);
+        const { rows, warnings } = await buildAggregates(payload, { maybeCaptureCursorTokenFn });
         const csvPath = writeCsvReport(rows, getReportsDir());
         const exitCode = await syncRowsToFeishu(rows, names, Boolean(payload.all_feishu_targets));
         return { row_count: rows.length, warnings, csv_path: csvPath, exit_code: exitCode };

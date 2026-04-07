@@ -192,7 +192,7 @@ test("node web routes do not request ssh passwords for ignored remotes", async (
   });
 
   const jobs = new JobManager();
-  const handler = createWebRequestHandler(jobs);
+  const handler = createWebRequestHandler(jobs, { maybeCaptureCursorTokenFn: async () => null });
 
   const collectResponse = await invokeRoute(handler, "POST", "/api/collect", {});
   assert.equal(collectResponse.status, 202);
@@ -215,7 +215,7 @@ test("node web routes do not request ssh passwords for ignored remotes", async (
   assert.match(envAfterCollect, /REMOTE_SERVER_A_USE_SSHPASS=1/u);
 
   const syncJobs = new JobManager();
-  const syncHandler = createWebRequestHandler(syncJobs);
+  const syncHandler = createWebRequestHandler(syncJobs, { maybeCaptureCursorTokenFn: async () => null });
 
   const previewResponse = await invokeRoute(syncHandler, "POST", "/api/sync/preview", {});
   assert.equal(previewResponse.status, 202);

@@ -1,37 +1,39 @@
 {
   "userHashes": [
     {
-      "username": "san.zhang",
-      "salt": "salt",
-      "expected": "0a700be8d9b4025ab4281667543e20d72c7a9352b74d7e0f8191d30a93d971a4"
+      "username": "alice",
+      "salt": "test-salt-42",
+      "expected": "f2dd2cba5558dff94d2cf5a92d87639d15ed6a1bb4fe9d3abf284c641a0c16cb"
+    },
+    {
+      "username": "bob",
+      "salt": "test-salt-42",
+      "expected": "2fa45193ba1a750f145c21e8fb25df1a9dd833995a408b3a815e842f0229b107"
     }
   ],
   "sourceHostHashes": [
     {
-      "username": "san.zhang",
-      "sourceLabel": "local",
-      "salt": "salt",
-      "expected": "6ddfee7194e69ab1c12ecad31a01c3eca30c72dcfe0cc4551914cdd15353b525"
+      "username": "alice",
+      "sourceLabel": "alice@host-a",
+      "salt": "test-salt-42",
+      "expected": "50ddcb8113f1d14f40dd00c51bad7e0e6f2c8e3cefcd36da2e973cdb0d7df34f"
+    },
+    {
+      "username": "bob",
+      "sourceLabel": "bob@host-b",
+      "salt": "test-salt-42",
+      "expected": "71c43f16d126d7beeb23f16cbd519dd845499fe18c7700725afba3e97096eb21"
     }
   ],
   "rowKeys": [
     {
-      "userHash": "u",
+      "userHash": "f2dd2cba5558dff94d2cf5a92d87639d15ed6a1bb4fe9d3abf284c641a0c16cb",
       "sourceHostHash": "source-a",
       "dateLocal": "2026-03-08",
       "tool": "codex",
       "model": "gpt-5.3-codex",
-      "sessionFingerprint": "codex:session-a",
-      "expected": "cd523a264dba14b177e915647d674c333b85f991226b4fcb7cad14591ac941df"
-    },
-    {
-      "userHash": "u",
-      "sourceHostHash": "source-a",
-      "dateLocal": "2026-03-08",
-      "tool": "codex",
-      "model": "gpt-5",
       "sessionFingerprint": null,
-      "expected": "d4bc3646658e94de1c3ef4baa506a3d5a5e046452e42254f68f2118af9a6d46e"
+      "expected": "a335dd6a452c96c131db51f9b2a199ec8df74208282935f1e2fb4f5bd5ff4291"
     }
   ]
 }

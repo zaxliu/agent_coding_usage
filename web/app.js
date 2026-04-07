@@ -1,20 +1,25 @@
 import {
   canDismissInputRequest,
   buildSemilogTicks,
+  buildConfigSummary,
+  dashboardSummaryText,
+  createUiFlags,
   credentialSubmissionMode,
   describeInputRequest,
+  escapeHtml,
   formatCompactNumber,
   inputRequestSubmissionValue,
   nextCredentialPromptJob,
   normalizeResultsPayload,
+  settingsPanelMode,
 } from "./app-state.js";
 
 const state = {
+  ...createUiFlags(),
   runtime: null,
   config: null,
   results: null,
   jobs: [],
-  currentView: "dashboard",
   pendingCredentialJobId: "",
   dismissedCredentialJobId: "",
   pendingCredentialRequest: null,
@@ -38,6 +43,9 @@ const refs = {
   tableFilter: document.querySelector("#table-filter"),
   jobsList: document.querySelector("#jobs-list"),
   remotesList: document.querySelector("#remotes-list"),
+  configSummaryList: document.querySelector("#config-summary-list"),
+  settingsPanel: document.querySelector("#settings-panel"),
+  settingsToggle: document.querySelector("#settings-toggle"),
   credentialModal: document.querySelector("#credential-modal"),
   credentialTitle: document.querySelector("#credential-title"),
   credentialCopy: document.querySelector("#credential-copy"),
@@ -87,14 +95,21 @@ function hideFlash() {
   refs.flashbar.textContent = "";
 }
 
-function navigate(view) {
-  state.currentView = view;
-  for (const node of document.querySelectorAll(".view")) {
-    node.classList.toggle("view-active", node.dataset.view === view);
+function applySettingsPanelState(open = state.settingsOpen) {
+  state.settingsOpen = open;
+  const mode = settingsPanelMode(open);
+  refs.settingsPanel.classList.remove("collapsed", "expanded");
+  refs.settingsPanel.classList.add(mode.className);
+  refs.settingsPanel.hidden = mode.hidden;
+  if (refs.settingsToggle) {
+    refs.settingsToggle.textContent = open ? "收起设置" : "编辑设置";
   }
-  for (const node of document.querySelectorAll(".nav-link")) {
-    node.classList.toggle("is-active", node.dataset.viewTarget === view);
-  }
+}
+
+function renderConfigSummary(config = {}) {
+  refs.configSummaryList.innerHTML = buildConfigSummary(config)
+    .map((item) => `<div class="summary-pair"><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong></div>`)
+    .join("");
 }
 
 function settingsPayload() {
@@ -120,11 +135,12 @@ function settingsPayload() {
 }
 
 function renderSummary(summary = {}) {
-  refs.metricTotal.textContent = fmtNumber(summary.total_tokens);
-  refs.metricDays.textContent = fmtNumber(summary.active_days);
-  refs.metricTool.textContent = summary.top_tool || "-";
-  refs.metricModel.textContent = summary.top_model || "-";
-  refs.generatedAt.textContent = fmtTime(summary.generated_at);
+  const dashboardSummary = dashboardSummaryText(summary);
+  refs.metricTotal.textContent = dashboardSummary.totalTokens;
+  refs.metricDays.textContent = dashboardSummary.activeDays;
+  refs.metricTool.textContent = dashboardSummary.topTool;
+  refs.metricModel.textContent = dashboardSummary.topModel;
+  refs.generatedAt.textContent = fmtTime(dashboardSummary.generatedAt);
 }
 
 function renderTrendChart(timeseries = []) {
@@ -354,6 +370,7 @@ async function refreshConfig() {
   document.querySelector("#feishu-app-id").value = state.config.feishu_default?.FEISHU_APP_ID || "";
   document.querySelector("#feishu-app-secret").value = state.config.feishu_default?.FEISHU_APP_SECRET || "";
   document.querySelector("#feishu-bot-token").value = state.config.feishu_default?.FEISHU_BOT_TOKEN || "";
+  renderConfigSummary(state.config);
   renderRemotes(state.config.remotes || []);
 }
 
@@ -374,6 +391,10 @@ async function refreshJobs() {
 
 async function runAction(action) {
   try {
+    if (action === "toggle-settings") {
+      applySettingsPanelState(!state.settingsOpen);
+      return;
+    }
     if (action === "save-config") {
       await getJson("/api/config", {
         method: "PUT",
@@ -462,10 +483,7 @@ for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => runAction(button.dataset.action));
 }
 
-for (const button of document.querySelectorAll("[data-view-target]")) {
-  button.addEventListener("click", () => navigate(button.dataset.viewTarget));
-}
-
+applySettingsPanelState();
 refs.tableFilter.addEventListener("input", () => renderTable(normalizeResultsPayload(state.results).table_rows || []));
 refs.credentialForm.addEventListener("submit", submitCredential);
 

@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from llm_usage.interaction import confirm_save_temporary_remote, run_config_editor, select_remotes
+from llm_usage.interaction_flow import RemotePromptRunner
 from llm_usage.remotes import RemoteHostConfig
 
 
@@ -711,3 +712,26 @@ def test_run_config_editor_rejects_blank_remote_fields(tmp_path: Path):
 
     assert exit_code == 0
     assert env_path.read_text(encoding="utf-8") == "ORG_USERNAME=alice\n"
+
+
+def _request_kinds(runner: RemotePromptRunner, values: list[str]) -> list[str]:
+    kinds: list[str] = []
+    for value in values:
+        request = runner.next_request()
+        if request is None:
+            break
+        kinds.append(request.kind)
+        runner.apply_input(value)
+    return kinds
+
+
+def test_cli_and_web_share_same_remote_input_sequence():
+    runner = RemotePromptRunner(existing_aliases=[])
+    kinds = _request_kinds(runner, ["host-a", "alice", "22", "n"])
+
+    assert kinds == ["ssh_host", "ssh_user", "ssh_port", "use_sshpass"]
+    assert runner.next_request() is None
+    assert runner.state.ssh_host == "host-a"
+    assert runner.state.ssh_user == "alice"
+    assert runner.state.ssh_port == 22
+    assert runner.state.use_sshpass is False

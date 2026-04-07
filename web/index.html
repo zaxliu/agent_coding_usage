@@ -7,18 +7,15 @@
     <link rel="stylesheet" href="/app.css">
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar">
+    <div class="app-shell console-layout">
+      <aside class="sidebar console-sidebar">
         <div class="brand">
           <p class="eyebrow">本地分析</p>
           <h1>LLM Usage</h1>
           <p class="sidebar-copy">查看最近 30 天各类编码工具使用数据的本地工作台。</p>
         </div>
-        <nav class="nav">
-          <button class="nav-link is-active" data-view-target="dashboard">看板</button>
-          <button class="nav-link" data-view-target="settings">设置</button>
-        </nav>
-        <section class="status-stack">
+
+        <section class="status-stack" id="system-status">
           <div class="status-card">
             <span class="status-label">后端</span>
             <strong id="runtime-backend">加载中…</strong>
@@ -30,131 +27,55 @@
             <span class="status-meta" id="latest-run-meta">先运行诊断或采集</span>
           </div>
         </section>
+
+        <section class="panel compact-panel" id="config-summary">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">配置</p>
+              <h3>摘要</h3>
+            </div>
+            <button type="button" class="button-subtle" id="settings-toggle" data-action="toggle-settings">编辑设置</button>
+          </div>
+          <div class="settings-list" id="config-summary-list">
+            <p class="panel-note">核心配置与远端信息会在这里持续展示。</p>
+          </div>
+        </section>
       </aside>
 
-      <main class="main-panel">
-        <section class="view view-active" data-view="dashboard">
-          <header class="hero">
-            <div>
-              <p class="eyebrow">看板</p>
-              <h2>最近 30 天</h2>
-              <p class="lede">先看趋势，再看对比，最后落到明细。</p>
+      <main class="main-panel console-main">
+        <header class="hero console-hero">
+          <div>
+            <p class="eyebrow">控制台</p>
+            <h2>最近 30 天</h2>
+            <p class="lede">先看趋势，再看对比，最后落到明细。</p>
+          </div>
+          <div class="hero-actions operations-bar" id="operations-bar">
+            <div class="stamp">
+              <span class="stamp-label">更新时间</span>
+              <strong id="generated-at">等待数据</strong>
             </div>
-            <div class="hero-actions">
-              <div class="stamp">
-                <span class="stamp-label">更新时间</span>
-                <strong id="generated-at">等待数据</strong>
-              </div>
-              <div class="actions">
-                <button data-action="doctor">诊断</button>
-                <button data-action="collect">采集</button>
-                <button data-action="sync-preview">同步预览</button>
-                <button data-action="sync" class="button-primary">同步</button>
-              </div>
+            <div class="actions">
+              <button data-action="doctor">诊断</button>
+              <button data-action="collect">采集</button>
+              <button data-action="sync-preview">同步预览</button>
+              <button data-action="sync" class="button-primary">同步</button>
             </div>
-          </header>
+          </div>
+        </header>
 
-          <section class="flashbar hidden" id="flashbar"></section>
-
-          <section class="summary-grid" id="summary-cards">
-            <article class="metric-card">
-              <span class="metric-label">总 Tokens</span>
-              <strong class="metric-value" id="metric-total">-</strong>
-            </article>
-            <article class="metric-card">
-              <span class="metric-label">活跃天数</span>
-              <strong class="metric-value" id="metric-days">-</strong>
-            </article>
-            <article class="metric-card">
-              <span class="metric-label">最高工具</span>
-              <strong class="metric-value" id="metric-tool">-</strong>
-            </article>
-            <article class="metric-card">
-              <span class="metric-label">最高模型</span>
-              <strong class="metric-value" id="metric-model">-</strong>
-            </article>
-          </section>
-
-          <section class="panel chart-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">主图</p>
-                <h3>Token 趋势</h3>
-              </div>
-              <span class="panel-note">按天查看输入 / 缓存 / 输出，纵轴为半对数刻度</span>
-            </div>
-            <div id="trend-chart" class="chart-surface chart-large"></div>
-          </section>
-
-          <section class="comparison-grid">
-            <article class="panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">对比</p>
-                  <h3>工具</h3>
-                </div>
-              </div>
-              <div id="tool-breakdown" class="rank-list"></div>
-            </article>
-            <article class="panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">对比</p>
-                  <h3>模型</h3>
-                </div>
-              </div>
-              <div id="model-breakdown" class="rank-list"></div>
-            </article>
-          </section>
-
-          <section class="panel table-panel">
-            <div class="panel-head">
-              <div>
-                  <p class="eyebrow">明细</p>
-                  <h3>聚合结果</h3>
-              </div>
-              <input id="table-filter" class="table-filter" type="search" placeholder="筛选日期、工具或模型">
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>日期</th>
-                    <th>工具</th>
-                    <th>模型</th>
-                    <th>输入</th>
-                    <th>缓存</th>
-                    <th>输出</th>
-                  </tr>
-                </thead>
-                <tbody id="results-table"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section class="panel jobs-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">任务</p>
-                <h3>最近任务</h3>
-              </div>
-            </div>
-            <div id="jobs-list" class="job-list"></div>
-          </section>
-        </section>
-
-        <section class="view" data-view="settings">
-          <header class="hero hero-settings">
+        <section class="panel settings-panel collapsed" id="settings-panel" hidden>
+          <div class="panel-head">
             <div>
               <p class="eyebrow">设置</p>
-              <h2>持久化配置</h2>
-              <p class="lede">这里只放长期配置，运行时密码仍然只保留在当前会话。</p>
+              <h3>持久化配置</h3>
             </div>
             <div class="actions">
               <button data-action="validate-config">校验</button>
               <button data-action="save-config" class="button-primary">保存设置</button>
             </div>
-          </header>
+          </div>
+
+          <p class="lede">这里只放长期配置，运行时密码仍然只保留在当前会话。</p>
 
           <section class="settings-grid">
             <article class="panel">
@@ -189,6 +110,94 @@
             <div id="remotes-list" class="settings-list"></div>
           </section>
         </section>
+
+        <section class="flashbar hidden" id="flashbar"></section>
+
+        <section class="summary-grid" id="summary-cards">
+          <article class="metric-card">
+            <span class="metric-label">总 Tokens</span>
+            <strong class="metric-value" id="metric-total">-</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">活跃天数</span>
+            <strong class="metric-value" id="metric-days">-</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">最高工具</span>
+            <strong class="metric-value" id="metric-tool">-</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">最高模型</span>
+            <strong class="metric-value" id="metric-model">-</strong>
+          </article>
+        </section>
+
+        <section class="panel chart-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">主图</p>
+              <h3>Token 趋势</h3>
+            </div>
+            <span class="panel-note">按天查看输入 / 缓存 / 输出，纵轴为半对数刻度</span>
+          </div>
+          <div id="trend-chart" class="chart-surface chart-large"></div>
+        </section>
+
+        <section class="comparison-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">对比</p>
+                <h3>工具</h3>
+              </div>
+            </div>
+            <div id="tool-breakdown" class="rank-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">对比</p>
+                <h3>模型</h3>
+              </div>
+            </div>
+            <div id="model-breakdown" class="rank-list"></div>
+          </article>
+        </section>
+
+        <section class="panel table-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">明细</p>
+              <h3>聚合结果</h3>
+            </div>
+            <input id="table-filter" class="table-filter" type="search" placeholder="筛选日期、工具或模型">
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>工具</th>
+                  <th>模型</th>
+                  <th>输入</th>
+                  <th>缓存</th>
+                  <th>输出</th>
+                </tr>
+              </thead>
+              <tbody id="results-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel jobs-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">任务</p>
+              <h3>最近任务</h3>
+            </div>
+          </div>
+          <div id="jobs-list" class="job-list"></div>
+        </section>
       </main>
     </div>
 
@@ -210,4 +219,4 @@
 
     <script type="module" src="/app.js"></script>
   </body>
-  </html>
+</html>

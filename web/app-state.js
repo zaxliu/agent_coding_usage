@@ -3,6 +3,51 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function textOrDash(value) {
+  const text = String(value || "").trim();
+  return text || "-";
+}
+
+export function escapeHtml(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+export function createUiFlags() {
+  return {
+    settingsOpen: false,
+  };
+}
+
+export function buildConfigSummary(config = {}) {
+  const source = config && typeof config === "object" ? config : {};
+  const basic = source.basic || {};
+  const remotes = Array.isArray(source.remotes) ? source.remotes : [];
+  const lookbackDays = String(basic.LOOKBACK_DAYS || "").trim();
+  return [
+    { label: "用户", value: textOrDash(basic.ORG_USERNAME) },
+    { label: "时区", value: textOrDash(basic.TIMEZONE) },
+    { label: "回看", value: lookbackDays ? `${lookbackDays} 天` : "-" },
+    { label: "远端", value: `${remotes.length} 个` },
+  ];
+}
+
+export function settingsPanelMode(isOpen = false) {
+  return {
+    className: isOpen ? "expanded" : "collapsed",
+    hidden: !isOpen,
+  };
+}
+
+export function dashboardSummaryText(summary = {}) {
+  return {
+    totalTokens: formatCompactNumber(summary.total_tokens),
+    activeDays: formatCompactNumber(summary.active_days),
+    topTool: textOrDash(summary.top_tool),
+    topModel: textOrDash(summary.top_model),
+    generatedAt: summary.generated_at || null,
+  };
+}
+
 export function formatCompactNumber(value) {
   const parsed = Number(value || 0);
   if (!Number.isFinite(parsed)) {
