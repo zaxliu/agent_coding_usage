@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildSemilogTicks,
   canDismissInputRequest,
+  formatCompactNumber,
   describeInputRequest,
   inputRequestSubmissionValue,
   normalizeResultsPayload,
@@ -54,6 +56,20 @@ test("normalizeResultsPayload reads dashboard summary totals and names from curr
   assert.equal(normalized.summary.top_tool, "codex");
   assert.equal(normalized.summary.top_model, "gpt-5");
   assert.equal(normalized.summary.generated_at, "2026-04-07T12:00:00Z");
+});
+
+test("formatCompactNumber switches between k m b t units automatically", () => {
+  assert.equal(formatCompactNumber(950), "950");
+  assert.equal(formatCompactNumber(1_200), "1.2K");
+  assert.equal(formatCompactNumber(2_500_000), "2.5M");
+  assert.equal(formatCompactNumber(3_400_000_000), "3.4B");
+  assert.equal(formatCompactNumber(5_000_000_000_000), "5T");
+});
+
+test("buildSemilogTicks returns readable tick values for a half-log chart", () => {
+  assert.deepEqual(buildSemilogTicks(0), [0, 1]);
+  assert.deepEqual(buildSemilogTicks(87), [0, 1, 10, 100]);
+  assert.deepEqual(buildSemilogTicks(9_500), [0, 1, 10, 100, 1000, 10000]);
 });
 
 test("credentialSubmissionMode treats cancel as dismiss instead of submit", () => {

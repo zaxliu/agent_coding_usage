@@ -3,6 +3,39 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export function formatCompactNumber(value) {
+  const parsed = Number(value || 0);
+  if (!Number.isFinite(parsed)) {
+    return "-";
+  }
+  const abs = Math.abs(parsed);
+  const units = [
+    { value: 1e12, suffix: "T" },
+    { value: 1e9, suffix: "B" },
+    { value: 1e6, suffix: "M" },
+    { value: 1e3, suffix: "K" },
+  ];
+  for (const unit of units) {
+    if (abs >= unit.value) {
+      const scaled = parsed / unit.value;
+      const digits = Math.abs(scaled) >= 10 ? 1 : 2;
+      return `${Number(scaled.toFixed(digits)).toString()}${unit.suffix}`;
+    }
+  }
+  return Number(parsed.toFixed(abs >= 100 ? 0 : 2)).toString();
+}
+
+export function buildSemilogTicks(maxValue) {
+  const limit = Math.max(0, Number(maxValue || 0));
+  const ticks = [0, 1];
+  let current = 1;
+  while (current < limit) {
+    current *= 10;
+    ticks.push(current);
+  }
+  return [...new Set(ticks)];
+}
+
 function totalFromParts(input, cache, output) {
   return toNumber(input) + toNumber(cache) + toNumber(output);
 }
@@ -121,42 +154,42 @@ function normalizeChoices(choices = []) {
 
 function titleForInputKind(kind) {
   if (kind === "confirm") {
-    return "Confirmation Required";
+    return "需要确认";
   }
   if (kind === "ssh_password") {
-    return "SSH Password Required";
+    return "需要 SSH 密码";
   }
   if (kind === "ssh_host") {
-    return "SSH Host Required";
+    return "需要 SSH 主机";
   }
   if (kind === "ssh_user") {
-    return "SSH User Required";
+    return "需要 SSH 用户";
   }
   if (kind === "ssh_port") {
-    return "SSH Port Required";
+    return "需要 SSH 端口";
   }
   if (kind === "use_sshpass") {
-    return "Use sshpass?";
+    return "是否使用 sshpass";
   }
-  return "Input Required";
+  return "需要输入";
 }
 
 function fieldLabelForInputKind(kind) {
   if (kind === "ssh_password") {
-    return "Password";
+    return "密码";
   }
   if (kind === "ssh_port") {
-    return "Port";
+    return "端口";
   }
   if (kind === "confirm") {
     return "";
   }
-  return "Value";
+  return "输入值";
 }
 
 function placeholderForInputKind(kind) {
   if (kind === "ssh_password") {
-    return "Enter password";
+    return "输入密码";
   }
   if (kind === "ssh_port") {
     return "22";
@@ -164,7 +197,7 @@ function placeholderForInputKind(kind) {
   if (kind === "confirm") {
     return "";
   }
-  return "Enter value";
+  return "请输入";
 }
 
 export function describeInputRequest(request = {}) {
@@ -196,9 +229,9 @@ export function describeInputRequest(request = {}) {
       choices: [],
       fieldLabel: fieldLabelForInputKind(kind),
       placeholder: placeholderForInputKind(kind),
-      submitLabel: "Continue",
+      submitLabel: "继续",
       submitValue: "submit",
-      cancelLabel: "Cancel",
+      cancelLabel: "取消",
       cancelValue: "cancel",
     };
   }
@@ -210,9 +243,9 @@ export function describeInputRequest(request = {}) {
     choices: [],
     fieldLabel: fieldLabelForInputKind(kind),
     placeholder: placeholderForInputKind(kind),
-    submitLabel: "Continue",
+    submitLabel: "继续",
     submitValue: "submit",
-    cancelLabel: "Cancel",
+    cancelLabel: "取消",
     cancelValue: "cancel",
   };
 }

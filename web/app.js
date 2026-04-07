@@ -1,7 +1,9 @@
 import {
   canDismissInputRequest,
+  buildSemilogTicks,
   credentialSubmissionMode,
   describeInputRequest,
+  formatCompactNumber,
   inputRequestSubmissionValue,
   nextCredentialPromptJob,
   normalizeResultsPayload,
@@ -61,19 +63,18 @@ async function getJson(url, options = {}) {
 }
 
 function fmtNumber(value) {
-  const parsed = Number(value || 0);
-  return Number.isFinite(parsed) ? parsed.toLocaleString() : "-";
+  return formatCompactNumber(value);
 }
 
 function fmtTime(value) {
   if (!value) {
-    return "Waiting for data";
+    return "等待数据";
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return String(value);
   }
-  return date.toLocaleString();
+  return date.toLocaleString("zh-CN");
 }
 
 function showFlash(message, tone = "") {
@@ -128,22 +129,33 @@ function renderSummary(summary = {}) {
 
 function renderTrendChart(timeseries = []) {
   if (!timeseries.length) {
-    refs.trendChart.innerHTML = `<div class="empty-state">No report data for the current range.</div>`;
+    refs.trendChart.innerHTML = `<div class="empty-state">当前范围内还没有报表数据。</div>`;
     return;
   }
 
   const width = 860;
   const height = 260;
-  const padding = 26;
+  const paddingLeft = 64;
+  const paddingRight = 24;
+  const paddingTop = 18;
+  const paddingBottom = 30;
   const values = timeseries.flatMap((item) => [Number(item.input || 0), Number(item.cache || 0), Number(item.output || 0)]);
   const maxValue = Math.max(...values, 1);
-  const xStep = timeseries.length === 1 ? width - padding * 2 : (width - padding * 2) / (timeseries.length - 1);
+  const ticks = buildSemilogTicks(maxValue);
+  const maxLog = Math.log10(maxValue + 1);
+  const plotWidth = width - paddingLeft - paddingRight;
+  const plotHeight = height - paddingTop - paddingBottom;
+  const xStep = timeseries.length === 1 ? plotWidth : plotWidth / (timeseries.length - 1);
+  const yForValue = (value) => {
+    const scaled = Math.log10(Number(value || 0) + 1) / maxLog;
+    return height - paddingBottom - scaled * plotHeight;
+  };
 
   const buildLine = (key) =>
     timeseries
       .map((item, index) => {
-        const x = padding + index * xStep;
-        const y = height - padding - (Number(item[key] || 0) / maxValue) * (height - padding * 2);
+        const x = paddingLeft + index * xStep;
+        const y = yForValue(item[key] || 0);
         return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
       })
       .join(" ");
@@ -153,36 +165,40 @@ function renderTrendChart(timeseries = []) {
       if (timeseries.length > 8 && index % Math.ceil(timeseries.length / 6) !== 0 && index !== timeseries.length - 1) {
         return "";
       }
-      const x = padding + index * xStep;
+      const x = paddingLeft + index * xStep;
       return `<text x="${x}" y="${height - 6}" text-anchor="middle" fill="#5B6B79" font-size="11">${item.date.slice(5)}</text>`;
+    })
+    .join("");
+  const yTicks = ticks
+    .map((tick) => {
+      const y = yForValue(tick);
+      return `
+        <line x1="${paddingLeft}" y1="${y}" x2="${width - paddingRight}" y2="${y}" stroke="#D9E2EA" stroke-width="1"></line>
+        <text x="${paddingLeft - 10}" y="${y + 4}" text-anchor="end" fill="#5B6B79" font-size="11">${fmtNumber(tick)}</text>
+      `;
     })
     .join("");
 
   refs.trendChart.innerHTML = `
     <svg class="chart-svg" viewBox="0 0 ${width} ${height}" aria-label="Token trend">
       <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
-      ${[0, 0.25, 0.5, 0.75, 1]
-        .map((tick) => {
-          const y = height - padding - tick * (height - padding * 2);
-          return `<line x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" stroke="#D9E2EA" stroke-width="1"></line>`;
-        })
-        .join("")}
+      ${yTicks}
       <path d="${buildLine("input")}" fill="none" stroke="#1F6FEB" stroke-width="3" stroke-linecap="round"></path>
       <path d="${buildLine("cache")}" fill="none" stroke="#7B8EA3" stroke-width="3" stroke-linecap="round"></path>
       <path d="${buildLine("output")}" fill="none" stroke="#0F9D94" stroke-width="3" stroke-linecap="round"></path>
       ${labels}
     </svg>
     <div class="chart-legend">
-      <span><span class="legend-dot legend-input"></span>Input</span>
-      <span><span class="legend-dot legend-cache"></span>Cache</span>
-      <span><span class="legend-dot legend-output"></span>Output</span>
+      <span><span class="legend-dot legend-input"></span>输入</span>
+      <span><span class="legend-dot legend-cache"></span>缓存</span>
+      <span><span class="legend-dot legend-output"></span>输出</span>
     </div>
   `;
 }
 
 function renderBreakdown(target, items = [], className = "") {
   if (!items.length) {
-    target.innerHTML = `<div class="empty-state">No comparison data yet.</div>`;
+    target.innerHTML = `<div class="empty-state">还没有可对比的数据。</div>`;
     return;
   }
   const max = Math.max(...items.map((item) => Number(item.total || 0)), 1);
@@ -227,7 +243,7 @@ function renderTable(rows = []) {
           `,
         )
         .join("")
-    : `<tr><td colspan="6"><div class="empty-state">No rows match the current filter.</div></td></tr>`;
+    : `<tr><td colspan="6"><div class="empty-state">没有匹配当前筛选条件的数据。</div></td></tr>`;
 }
 
 function renderJobs(jobs = []) {
@@ -235,7 +251,7 @@ function renderJobs(jobs = []) {
     ? jobs
         .map((job) => {
           const result = job.result || {};
-          const summary = result.row_count ? `${fmtNumber(result.row_count)} rows` : job.error || "No summary";
+          const summary = result.row_count ? `${fmtNumber(result.row_count)} 行` : job.error || "暂无摘要";
           const statusClass = String(job.status || "").replace(/_/g, "-");
           return `
             <article class="job-item">
@@ -249,7 +265,7 @@ function renderJobs(jobs = []) {
           `;
         })
         .join("")
-    : `<div class="empty-state">No jobs yet.</div>`;
+    : `<div class="empty-state">还没有任务。</div>`;
 }
 
 function renderRemotes(remotes = []) {
@@ -267,7 +283,7 @@ function renderRemotes(remotes = []) {
           `,
         )
         .join("")
-    : `<div class="empty-state">No remote sources configured.</div>`;
+    : `<div class="empty-state">还没有配置远端来源。</div>`;
 }
 
 function maybePromptForCredential(jobs = []) {
@@ -351,8 +367,8 @@ async function refreshJobs() {
   state.jobs = jobsPayload.jobs || [];
   renderJobs(state.jobs);
   const latest = state.jobs[0];
-  refs.latestRunTitle.textContent = latest ? `${latest.type} · ${latest.status}` : "No jobs yet";
-  refs.latestRunMeta.textContent = latest ? fmtTime(latest.updated_at || latest.created_at) : "Start with Doctor or Collect";
+  refs.latestRunTitle.textContent = latest ? `${latest.type} · ${latest.status}` : "还没有任务";
+  refs.latestRunMeta.textContent = latest ? fmtTime(latest.updated_at || latest.created_at) : "先运行诊断或采集";
   maybePromptForCredential(state.jobs);
 }
 

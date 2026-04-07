@@ -1,33 +1,33 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>LLM Usage Console</title>
+    <title>LLM Usage 控制台</title>
     <link rel="stylesheet" href="/app.css">
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <p class="eyebrow">Local Analysis</p>
+          <p class="eyebrow">本地分析</p>
           <h1>LLM Usage</h1>
-          <p class="sidebar-copy">Personal workbench for the last 30 days of coding-tool usage.</p>
+          <p class="sidebar-copy">查看最近 30 天各类编码工具使用数据的本地工作台。</p>
         </div>
         <nav class="nav">
-          <button class="nav-link is-active" data-view-target="dashboard">Dashboard</button>
-          <button class="nav-link" data-view-target="settings">Settings</button>
+          <button class="nav-link is-active" data-view-target="dashboard">看板</button>
+          <button class="nav-link" data-view-target="settings">设置</button>
         </nav>
         <section class="status-stack">
           <div class="status-card">
-            <span class="status-label">Backend</span>
-            <strong id="runtime-backend">Loading…</strong>
-            <span class="status-meta" id="runtime-meta">Preparing console</span>
+            <span class="status-label">后端</span>
+            <strong id="runtime-backend">加载中…</strong>
+            <span class="status-meta" id="runtime-meta">正在准备控制台</span>
           </div>
           <div class="status-card">
-            <span class="status-label">Latest Run</span>
-            <strong id="latest-run-title">No jobs yet</strong>
-            <span class="status-meta" id="latest-run-meta">Start with Doctor or Collect</span>
+            <span class="status-label">最近任务</span>
+            <strong id="latest-run-title">还没有任务</strong>
+            <span class="status-meta" id="latest-run-meta">先运行诊断或采集</span>
           </div>
         </section>
       </aside>
@@ -36,20 +36,20 @@
         <section class="view view-active" data-view="dashboard">
           <header class="hero">
             <div>
-              <p class="eyebrow">Dashboard</p>
-              <h2>Last 30 Days</h2>
-              <p class="lede">Trend first, comparison second, detail table third.</p>
+              <p class="eyebrow">看板</p>
+              <h2>最近 30 天</h2>
+              <p class="lede">先看趋势，再看对比，最后落到明细。</p>
             </div>
             <div class="hero-actions">
               <div class="stamp">
-                <span class="stamp-label">Updated</span>
-                <strong id="generated-at">Waiting for data</strong>
+                <span class="stamp-label">更新时间</span>
+                <strong id="generated-at">等待数据</strong>
               </div>
               <div class="actions">
-                <button data-action="doctor">Doctor</button>
-                <button data-action="collect">Collect</button>
-                <button data-action="sync-preview">Sync Preview</button>
-                <button data-action="sync" class="button-primary">Sync</button>
+                <button data-action="doctor">诊断</button>
+                <button data-action="collect">采集</button>
+                <button data-action="sync-preview">同步预览</button>
+                <button data-action="sync" class="button-primary">同步</button>
               </div>
             </div>
           </header>
@@ -58,19 +58,19 @@
 
           <section class="summary-grid" id="summary-cards">
             <article class="metric-card">
-              <span class="metric-label">Total Tokens</span>
+              <span class="metric-label">总 Tokens</span>
               <strong class="metric-value" id="metric-total">-</strong>
             </article>
             <article class="metric-card">
-              <span class="metric-label">Active Days</span>
+              <span class="metric-label">活跃天数</span>
               <strong class="metric-value" id="metric-days">-</strong>
             </article>
             <article class="metric-card">
-              <span class="metric-label">Top Tool</span>
+              <span class="metric-label">最高工具</span>
               <strong class="metric-value" id="metric-tool">-</strong>
             </article>
             <article class="metric-card">
-              <span class="metric-label">Top Model</span>
+              <span class="metric-label">最高模型</span>
               <strong class="metric-value" id="metric-model">-</strong>
             </article>
           </section>
@@ -78,10 +78,10 @@
           <section class="panel chart-panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Primary</p>
-                <h3>Token Trend</h3>
+                <p class="eyebrow">主图</p>
+                <h3>Token 趋势</h3>
               </div>
-              <span class="panel-note">Input / Cache / Output by day</span>
+              <span class="panel-note">按天查看输入 / 缓存 / 输出，纵轴为半对数刻度</span>
             </div>
             <div id="trend-chart" class="chart-surface chart-large"></div>
           </section>
@@ -90,8 +90,8 @@
             <article class="panel">
               <div class="panel-head">
                 <div>
-                  <p class="eyebrow">Comparison</p>
-                  <h3>Tools</h3>
+                  <p class="eyebrow">对比</p>
+                  <h3>工具</h3>
                 </div>
               </div>
               <div id="tool-breakdown" class="rank-list"></div>
@@ -99,8 +99,8 @@
             <article class="panel">
               <div class="panel-head">
                 <div>
-                  <p class="eyebrow">Comparison</p>
-                  <h3>Models</h3>
+                  <p class="eyebrow">对比</p>
+                  <h3>模型</h3>
                 </div>
               </div>
               <div id="model-breakdown" class="rank-list"></div>
@@ -110,21 +110,21 @@
           <section class="panel table-panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Details</p>
-                <h3>Aggregated Rows</h3>
+                  <p class="eyebrow">明细</p>
+                  <h3>聚合结果</h3>
               </div>
-              <input id="table-filter" class="table-filter" type="search" placeholder="Filter tool, model, or date">
+              <input id="table-filter" class="table-filter" type="search" placeholder="筛选日期、工具或模型">
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Date</th>
-                    <th>Tool</th>
-                    <th>Model</th>
-                    <th>Input</th>
-                    <th>Cache</th>
-                    <th>Output</th>
+                    <th>日期</th>
+                    <th>工具</th>
+                    <th>模型</th>
+                    <th>输入</th>
+                    <th>缓存</th>
+                    <th>输出</th>
                   </tr>
                 </thead>
                 <tbody id="results-table"></tbody>
@@ -135,8 +135,8 @@
           <section class="panel jobs-panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Operations</p>
-                <h3>Recent Jobs</h3>
+                <p class="eyebrow">任务</p>
+                <h3>最近任务</h3>
               </div>
             </div>
             <div id="jobs-list" class="job-list"></div>
@@ -146,19 +146,19 @@
         <section class="view" data-view="settings">
           <header class="hero hero-settings">
             <div>
-              <p class="eyebrow">Settings</p>
-              <h2>Persistent Configuration</h2>
-              <p class="lede">Only long-lived values belong here. Runtime passwords stay session-only.</p>
+              <p class="eyebrow">设置</p>
+              <h2>持久化配置</h2>
+              <p class="lede">这里只放长期配置，运行时密码仍然只保留在当前会话。</p>
             </div>
             <div class="actions">
-              <button data-action="validate-config">Validate</button>
-              <button data-action="save-config" class="button-primary">Save Settings</button>
+              <button data-action="validate-config">校验</button>
+              <button data-action="save-config" class="button-primary">保存设置</button>
             </div>
           </header>
 
           <section class="settings-grid">
             <article class="panel">
-              <div class="panel-head"><h3>Basic</h3></div>
+              <div class="panel-head"><h3>基础配置</h3></div>
               <div class="form-grid">
                 <label>ORG_USERNAME<input id="org-username"></label>
                 <label>HASH_SALT<input id="hash-salt" type="password"></label>
@@ -168,7 +168,7 @@
             </article>
 
             <article class="panel">
-              <div class="panel-head"><h3>Feishu Default</h3></div>
+              <div class="panel-head"><h3>飞书默认配置</h3></div>
               <div class="form-grid">
                 <label>APP_TOKEN<input id="feishu-app-token" type="password"></label>
                 <label>TABLE_ID<input id="feishu-table-id"></label>
@@ -182,8 +182,8 @@
           <section class="panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Remotes</p>
-                <h3>Configured Sources</h3>
+                <p class="eyebrow">远端</p>
+                <h3>已配置来源</h3>
               </div>
             </div>
             <div id="remotes-list" class="settings-list"></div>
@@ -194,16 +194,16 @@
 
     <dialog id="credential-modal" class="credential-modal">
       <form method="dialog" class="credential-form" id="credential-form">
-        <p class="eyebrow">Runtime Input</p>
-        <h3 id="credential-title">SSH Password Required</h3>
-        <p id="credential-copy">This password is remembered only for the current browser session.</p>
+        <p class="eyebrow">运行时输入</p>
+        <h3 id="credential-title">需要 SSH 密码</h3>
+        <p id="credential-copy">这个密码只会保留在当前浏览器会话中。</p>
         <label id="credential-field" class="credential-field">
-          <span id="credential-field-label">Password</span>
+          <span id="credential-field-label">密码</span>
           <input id="credential-value" type="password" autocomplete="off">
         </label>
         <div class="credential-actions">
-          <button value="cancel" class="button-subtle" id="credential-cancel">Cancel</button>
-          <button value="submit" class="button-primary" id="credential-submit">Continue</button>
+          <button value="cancel" class="button-subtle" id="credential-cancel">取消</button>
+          <button value="submit" class="button-primary" id="credential-submit">继续</button>
         </div>
       </form>
     </dialog>
