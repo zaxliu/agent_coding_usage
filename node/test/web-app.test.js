@@ -101,6 +101,45 @@ test("single-page console layout exposes dedicated sidebar, main, operations, an
   assert.match(html, /class="hero-actions operations-bar"/u);
 });
 
+test("app.css defines responsive console and dialog overflow protections", () => {
+  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+
+  assert.match(css, /@media\s*\(max-width:\s*1100px\)/u);
+  assert.match(css, /@media\s*\(max-width:\s*720px\)/u);
+  assert.match(css, /\.console-layout[\s\S]*grid-template-columns:\s*320px minmax\(0,\s*1fr\)/u);
+  assert.match(css, /\.summary-grid[\s\S]*repeat\(4,\s*minmax\(0,\s*1fr\)\)/u);
+  assert.match(css, /\.comparison-grid[\s\S]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/u);
+  assert.match(css, /\.credential-form[\s\S]*max-height:\s*calc\(100vh - 32px\)/u);
+  assert.match(css, /\.credential-form[\s\S]*overflow:\s*auto/u);
+});
+
+test("app.css allows shell sections and action rows to shrink and wrap", () => {
+  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+
+  assert.match(css, /\.console-main,[\s\S]*\.console-sidebar,[\s\S]*\.panel,[\s\S]*\.metric-card[\s\S]*min-width:\s*0/u);
+  assert.match(css, /\.hero[\s\S]*flex-wrap:\s*wrap/u);
+  assert.match(css, /\.panel-head[\s\S]*flex-wrap:\s*wrap/u);
+  assert.match(css, /\.actions[\s\S]*width:\s*100%/u);
+});
+
+test("index.html exposes responsive form hooks for settings and dialogs", () => {
+  const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
+
+  assert.match(html, /class="form-grid settings-form-grid"/u);
+  assert.match(html, /class="form-grid modal-form-grid"/u);
+});
+
+test("dialog markup and styles support viewport-safe modal content", () => {
+  const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
+  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+
+  assert.match(html, /id="credential-modal" class="credential-modal"/u);
+  assert.match(css, /\.credential-modal[\s\S]*max-width:\s*calc\(100vw - 16px\)/u);
+  assert.match(css, /\.credential-form[\s\S]*width:\s*min\(460px,\s*calc\(100vw - 32px\)\)/u);
+  assert.match(css, /\.credential-form[\s\S]*word-break:\s*break-word/u);
+  assert.match(css, /\.credential-actions[\s\S]*justify-content:\s*flex-end/u);
+});
+
 test("normalizeResultsPayload reads dashboard summary totals and names from current backend payload", () => {
   const normalized = normalizeResultsPayload({
     summary: {

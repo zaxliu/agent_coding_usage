@@ -24,6 +24,7 @@ body {
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   color: var(--text);
   background: linear-gradient(180deg, #f7fafc 0%, var(--app-bg) 100%);
+  overflow-x: clip;
 }
 
 button,
@@ -46,6 +47,15 @@ input {
   display: grid;
   gap: 16px;
   align-content: start;
+}
+
+.console-main,
+.console-sidebar,
+.panel,
+.metric-card,
+.status-card,
+.stamp {
+  min-width: 0;
 }
 
 .brand h1,
@@ -131,6 +141,7 @@ button:hover {
 
 .hero {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 24px;
   align-items: flex-start;
@@ -168,6 +179,7 @@ button:hover {
 
 .actions {
   display: flex;
+  width: 100%;
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -250,6 +262,7 @@ button {
 
 .panel-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
@@ -318,6 +331,7 @@ button {
 }
 
 .table-wrap {
+  max-width: 100%;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -325,6 +339,7 @@ button {
 
 table {
   width: 100%;
+  min-width: 640px;
   border-collapse: collapse;
 }
 
@@ -361,6 +376,7 @@ th {
 .job-head,
 .remote-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
   align-items: center;
@@ -405,10 +421,12 @@ label {
   display: grid;
   gap: 8px;
   color: var(--muted);
+  min-width: 0;
 }
 
 input {
   width: 100%;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface-alt);
@@ -419,6 +437,8 @@ input {
 .credential-modal {
   border: 0;
   padding: 0;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
   border-radius: 24px;
   box-shadow: 0 24px 80px rgba(20, 32, 43, 0.22);
 }
@@ -428,17 +448,33 @@ input {
 }
 
 .credential-form {
-  width: min(460px, 92vw);
+  width: min(460px, calc(100vw - 32px));
+  max-width: 100%;
+  max-height: calc(100vh - 32px);
   padding: 22px;
   background: var(--surface);
   display: grid;
   gap: 14px;
+  overflow: auto;
+  word-break: break-word;
 }
 
 .credential-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.credential-form > * {
+  min-width: 0;
+}
+
+.credential-form p,
+.credential-form h3,
+.credential-form span,
+.credential-form label {
+  overflow-wrap: anywhere;
 }
 
 .empty-state {
@@ -505,6 +541,7 @@ input {
 
 .chart-legend {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   margin-top: 10px;
   color: var(--muted);
@@ -534,6 +571,34 @@ input {
 @media (max-width: 1100px) {
   .app-shell,
   .console-layout {
+    grid-template-columns: minmax(260px, 280px) minmax(0, 1fr);
+  }
+
+  .sidebar,
+  .console-sidebar {
+    padding: 20px 16px;
+  }
+
+  .main-panel,
+  .console-main {
+    padding: 20px;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .comparison-grid,
+  .settings-grid,
+  .settings-form-grid,
+  .modal-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell,
+  .console-layout {
     grid-template-columns: 1fr;
   }
 
@@ -543,24 +608,20 @@ input {
     border-bottom: 1px solid var(--line);
   }
 
-  .summary-grid,
-  .comparison-grid,
-  .settings-grid,
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 720px) {
   .main-panel,
   .console-main {
     padding: 18px;
   }
 
+  .summary-grid {
+    grid-template-columns: 1fr;
+  }
+
   .hero,
   .panel-head,
   .job-head,
-  .remote-head {
+  .remote-head,
+  .credential-actions {
     flex-direction: column;
     align-items: stretch;
   }
@@ -575,7 +636,8 @@ input {
     justify-content: flex-start;
   }
 
-  .actions button {
+  .actions button,
+  .credential-actions button {
     flex: 1 1 auto;
   }
 }

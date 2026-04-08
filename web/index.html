@@ -82,7 +82,7 @@
           <section class="settings-grid">
             <article class="panel">
               <div class="panel-head"><h3>基础配置</h3></div>
-              <div class="form-grid">
+              <div class="form-grid settings-form-grid">
                 <label>ORG_USERNAME<input id="org-username"></label>
                 <label>HASH_SALT<input id="hash-salt" type="password"></label>
                 <label>TIMEZONE<input id="timezone"></label>
@@ -92,7 +92,7 @@
 
             <article class="panel">
               <div class="panel-head"><h3>飞书默认配置</h3></div>
-              <div class="form-grid">
+              <div class="form-grid settings-form-grid">
                 <label>APP_TOKEN<input id="feishu-app-token" type="password"></label>
                 <label>TABLE_ID<input id="feishu-table-id"></label>
                 <label>APP_ID<input id="feishu-app-id"></label>
@@ -235,7 +235,7 @@
       <form method="dialog" class="credential-form" id="remote-edit-form">
         <p class="eyebrow">远端配置</p>
         <h3 id="remote-edit-title">编辑远端</h3>
-        <div class="form-grid">
+        <div class="form-grid modal-form-grid">
           <label>Alias<input id="remote-edit-alias"></label>
           <label>SSH Host<input id="remote-edit-ssh-host"></label>
           <label>SSH User<input id="remote-edit-ssh-user"></label>
@@ -248,7 +248,7 @@
         </div>
         <details class="path-details">
           <summary>日志路径配置</summary>
-          <div class="form-grid form-grid-single">
+          <div class="form-grid modal-form-grid form-grid-single">
             <label>Claude Log Paths<input id="remote-edit-claude-paths" placeholder="逗号分隔"></label>
             <label>Codex Log Paths<input id="remote-edit-codex-paths" placeholder="逗号分隔"></label>
             <label>Copilot CLI Log Paths<input id="remote-edit-copilot-cli-paths" placeholder="逗号分隔"></label>
@@ -266,7 +266,7 @@
       <form method="dialog" class="credential-form" id="feishu-target-edit-form">
         <p class="eyebrow">飞书目标</p>
         <h3 id="feishu-target-edit-title">编辑飞书目标</h3>
-        <div class="form-grid">
+        <div class="form-grid modal-form-grid">
           <label>名称 (Name)<input id="feishu-target-edit-name"></label>
           <label>APP_TOKEN<input id="feishu-target-edit-app-token" type="password"></label>
           <label>TABLE_ID<input id="feishu-target-edit-table-id"></label>
