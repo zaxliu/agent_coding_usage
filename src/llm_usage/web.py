@@ -49,6 +49,7 @@ from llm_usage.main import (
     _tool_version,
     run_feishu_doctor,
 )
+from llm_usage.paths import read_bootstrap_env_text
 from llm_usage.remotes import RemoteDraft, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.runtime_state import save_selected_remote_aliases
 
@@ -737,6 +738,32 @@ class WebService:
 
         return self.jobs.create_needs_input("remote_setup", asdict(request), resume_handler)
 
+    def run_init(self) -> dict[str, Any]:
+        env_path = _env_path()
+        reports_dir = _reports_dir()
+        created_env = False
+        created_reports = False
+
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        if not env_path.exists():
+            env_path.write_text(read_bootstrap_env_text(), encoding="utf-8")
+            created_env = True
+
+        if not reports_dir.exists():
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            created_reports = True
+
+        _load_runtime_env()
+        _overlay_runtime_env()
+
+        return {
+            "ok": True,
+            "env_path": str(env_path),
+            "reports_dir": str(reports_dir),
+            "created_env": created_env,
+            "created_reports": created_reports,
+        }
+
     def start_doctor(self, payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("remote_setup", False):
             return self._start_remote_setup_flow()
@@ -808,6 +835,8 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         payload = self._read_json()
         try:
+            if parsed.path == "/api/init":
+                return self._write_json(HTTPStatus.OK, self.service.run_init())
             if parsed.path == "/api/config/validate":
                 return self._write_json(HTTPStatus.OK, validate_config_payload(payload))
             if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/input"):

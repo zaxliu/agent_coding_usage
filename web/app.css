@@ -442,6 +442,56 @@ input {
   min-height: 180px;
 }
 
+.empty-state-compact {
+  min-height: 60px;
+}
+
+.item-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.button-small {
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  border-radius: 10px;
+}
+
+.button-danger {
+  color: var(--danger);
+}
+
+.button-danger:hover {
+  border-color: var(--danger);
+  background: rgba(199, 74, 58, 0.06);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-direction: row;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+}
+
+.path-details {
+  margin-top: 4px;
+}
+
+.path-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.form-grid-single {
+  grid-template-columns: 1fr;
+}
+
 .chart-svg {
   width: 100%;
   height: 100%;
