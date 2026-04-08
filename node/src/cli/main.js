@@ -55,8 +55,8 @@ Options:
   --port PORT
   --no-open
   --feishu
-  --feishu-target NAME
-  --all-feishu-targets
+  --feishu-target NAME          Select a named target (repeatable)
+  --all-feishu-targets          Upload to every configured target
   --feishu-bitable-schema
   --from PATH
   --from-bundle PATH
@@ -67,6 +67,11 @@ Options:
   --cursor-login-browser default|chrome|edge|safari|firefox|chromium|msedge|webkit
   --cursor-login-user-data-dir PATH
   --cursor-login-timeout-sec N
+
+Feishu target selection (sync):
+  By default, sync uploads to the default target (legacy FEISHU_* keys).
+  Use --feishu-target NAME to select one or more named targets.
+  Use --all-feishu-targets to upload to every configured target.
 `);
 }
 

@@ -437,19 +437,19 @@ def run_config_editor(
         if answer == "":
             answer = "q"
         if answer == "1":
-            _edit_key_menu(draft, "Basic", BASIC_KEYS, stdin=stdin, stdout=stdout)
+            _edit_key_menu(draft, "Basic", BASIC_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
             continue
         if answer == "2":
             _edit_feishu_menu(draft, env_path, stdin=stdin, stdout=stdout)
             continue
         if answer == "3":
-            _edit_key_menu(draft, "Cursor", CURSOR_KEYS, stdin=stdin, stdout=stdout)
+            _edit_key_menu(draft, "Cursor", CURSOR_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
             continue
         if answer == "4":
-            _edit_remotes_menu(draft, stdin=stdin, stdout=stdout)
+            _edit_remotes_menu(draft, stdin=stdin, stdout=stdout, env_path=env_path)
             continue
         if answer == "5":
-            _edit_raw_env_menu(draft, stdin=stdin, stdout=stdout)
+            _edit_raw_env_menu(draft, stdin=stdin, stdout=stdout, env_path=env_path)
             continue
         if answer == "s":
             _save_config_draft(env_path, draft)
@@ -539,20 +539,26 @@ def _run_feishu_init_schema_from_menu(env_path: Path, stdout: TextIO) -> None:
 
 def _edit_feishu_menu(draft: ConfigDraft, env_path: Path, stdin: TextIO, stdout: TextIO) -> None:
     while True:
-        stdout.write("Feishu\n")
+        dirty_mark = " *" if draft.dirty else ""
+        stdout.write(f"Feishu{dirty_mark}\n")
         stdout.write("  1. Default target (legacy FEISHU_* keys)\n")
         stdout.write("  2. Named targets (FEISHU_TARGETS)\n")
         stdout.write("  3. Doctor current Feishu targets (saved .env)\n")
         stdout.write("  4. Initialize Feishu schema (saved .env)\n")
+        stdout.write("  s. Save\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
+        if answer == "s":
+            _save_config_draft(env_path, draft)
+            stdout.write("Saved.\n")
+            continue
         if answer == "1":
-            _edit_key_menu(draft, "Feishu default (legacy)", FEISHU_KEYS, stdin=stdin, stdout=stdout)
+            _edit_key_menu(draft, "Feishu default (legacy)", FEISHU_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
             continue
         if answer == "2":
-            _edit_feishu_named_targets_menu(draft, stdin=stdin, stdout=stdout)
+            _edit_feishu_named_targets_menu(draft, env_path=env_path, stdin=stdin, stdout=stdout)
             continue
         if answer == "3":
             _run_feishu_doctor_from_menu(env_path, stdout)
@@ -572,19 +578,28 @@ def _validate_new_feishu_target_name(raw: str, existing: list[FeishuTargetDraft]
     return None
 
 
-def _edit_feishu_named_targets_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO) -> None:
+def _edit_feishu_named_targets_menu(
+    draft: ConfigDraft, *, env_path: Optional[Path] = None, stdin: TextIO, stdout: TextIO
+) -> None:
     while True:
-        stdout.write("Named Feishu targets\n")
+        dirty_mark = " *" if draft.dirty else ""
+        stdout.write(f"Named Feishu targets{dirty_mark}\n")
         for index, target in enumerate(draft.feishu_named_targets, start=1):
             preview = target.app_token[:24] + ("..." if len(target.app_token) > 24 else "")
             stdout.write(f"  {index}. {target.name} app_token={preview}\n")
         stdout.write("  a. Add target\n")
         stdout.write("  e. Edit target\n")
         stdout.write("  d. Delete target\n")
+        if env_path is not None:
+            stdout.write("  s. Save\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
+        if answer == "s" and env_path is not None:
+            _save_config_draft(env_path, draft)
+            stdout.write("Saved.\n")
+            continue
         if answer == "a":
             name_raw = _read_line("Target name: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
             err = _validate_new_feishu_target_name(name_raw, draft.feishu_named_targets)
@@ -595,7 +610,7 @@ def _edit_feishu_named_targets_menu(draft: ConfigDraft, stdin: TextIO, stdout: T
             target = FeishuTargetDraft(name=normalized)
             draft.feishu_named_targets.append(target)
             draft.dirty = True
-            if _edit_feishu_target_detail(target, stdin=stdin, stdout=stdout):
+            if _edit_feishu_target_detail(target, env_path=env_path, draft=draft, stdin=stdin, stdout=stdout):
                 draft.dirty = True
             continue
         if answer == "e":
@@ -604,7 +619,7 @@ def _edit_feishu_named_targets_menu(draft: ConfigDraft, stdin: TextIO, stdout: T
             )
             if target is None:
                 continue
-            if _edit_feishu_target_detail(target, stdin=stdin, stdout=stdout):
+            if _edit_feishu_target_detail(target, env_path=env_path, draft=draft, stdin=stdin, stdout=stdout):
                 draft.dirty = True
             continue
         if answer == "d":
@@ -639,19 +654,32 @@ def _read_feishu_target_selection(
     return None
 
 
-def _edit_feishu_target_detail(target: FeishuTargetDraft, stdin: TextIO, stdout: TextIO) -> bool:
+def _edit_feishu_target_detail(
+    target: FeishuTargetDraft,
+    *,
+    env_path: Optional[Path] = None,
+    draft: Optional[ConfigDraft] = None,
+    stdin: TextIO,
+    stdout: TextIO,
+) -> bool:
     changed = False
     while True:
         stdout.write(f"Feishu target [{target.name}]\n")
-        stdout.write(f"  1. APP_TOKEN = {target.app_token}\n")
-        stdout.write(f"  2. TABLE_ID = {target.table_id}\n")
-        stdout.write(f"  3. APP_ID = {target.app_id}\n")
-        stdout.write(f"  4. APP_SECRET = {target.app_secret}\n")
-        stdout.write(f"  5. BOT_TOKEN = {target.bot_token}\n")
+        stdout.write(f"  1. APP_TOKEN  = {target.app_token}\n")
+        stdout.write(f"  2. TABLE_ID   = {target.table_id or '(empty: auto-select first table)'}\n")
+        stdout.write(f"  3. APP_ID     = {target.app_id or '(empty: inherit from default target)'}\n")
+        stdout.write(f"  4. APP_SECRET = {target.app_secret or '(empty: inherit from default target)'}\n")
+        stdout.write(f"  5. BOT_TOKEN  = {target.bot_token or '(empty: derived from APP_ID/APP_SECRET)'}\n")
+        if env_path is not None and draft is not None:
+            stdout.write("  s. Save\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return changed
+        if answer == "s" and env_path is not None and draft is not None:
+            _save_config_draft(env_path, draft)
+            stdout.write("Saved.\n")
+            continue
         if answer == "1":
             v = _read_line("APP_TOKEN: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
             if v != target.app_token:
@@ -683,17 +711,26 @@ def _edit_key_menu(
     draft: ConfigDraft,
     title: str,
     keys: list[str],
+    *,
+    env_path: Optional[Path] = None,
     stdin: TextIO,
     stdout: TextIO,
 ) -> None:
     while True:
-        stdout.write(f"{title}\n")
+        dirty_mark = " *" if draft.dirty else ""
+        stdout.write(f"{title}{dirty_mark}\n")
         for index, key in enumerate(keys, start=1):
             stdout.write(f"  {index}. {key} = {draft.values.get(key, '')}\n")
+        if env_path is not None:
+            stdout.write("  s. Save\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
+        if answer == "s" and env_path is not None:
+            _save_config_draft(env_path, draft)
+            stdout.write("Saved.\n")
+            continue
         if not answer.isdigit():
             continue
         index = int(answer) - 1
@@ -712,18 +749,25 @@ def _edit_key_menu(
         return
 
 
-def _edit_raw_env_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO) -> None:
+def _edit_raw_env_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env_path: Optional[Path] = None) -> None:
     while True:
         keys = sorted(draft.values)
-        stdout.write("Advanced / Raw Env\n")
+        dirty_mark = " *" if draft.dirty else ""
+        stdout.write(f"Advanced / Raw Env{dirty_mark}\n")
         for index, key in enumerate(keys, start=1):
             stdout.write(f"  {index}. {key} = {draft.values[key]}\n")
         stdout.write("  a. Add key\n")
         stdout.write("  d. Delete key\n")
+        if env_path is not None:
+            stdout.write("  s. Save\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
+        if answer == "s" and env_path is not None:
+            _save_config_draft(env_path, draft)
+            stdout.write("Saved.\n")
+            continue
         if answer == "a":
             key = _read_line("Key: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().upper()
             if not key or key.startswith("REMOTE_"):
@@ -756,18 +800,25 @@ def _edit_raw_env_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO) -> Non
             return
 
 
-def _edit_remotes_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO) -> None:
+def _edit_remotes_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env_path: Optional[Path] = None) -> None:
     while True:
-        stdout.write("Remotes\n")
+        dirty_mark = " *" if draft.dirty else ""
+        stdout.write(f"Remotes{dirty_mark}\n")
         for index, remote in enumerate(draft.remotes, start=1):
             stdout.write(f"  {index}. {remote.alias} {remote.ssh_user}@{remote.ssh_host}:{remote.ssh_port}\n")
         stdout.write("  a. Add remote\n")
         stdout.write("  e. Edit remote\n")
         stdout.write("  d. Delete remote\n")
+        if env_path is not None:
+            stdout.write("  s. Save\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
+        if answer == "s" and env_path is not None:
+            _save_config_draft(env_path, draft)
+            stdout.write("Saved.\n")
+            continue
         if answer == "a":
             remote = _prompt_remote(existing_aliases=[item.alias for item in draft.remotes], stdin=stdin, stdout=stdout)
             if remote is None:

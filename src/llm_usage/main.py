@@ -1288,8 +1288,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Use --from-bundle to upload rows from an offline bundle instead of collecting live data."
         ),
         epilog=(
+            "Feishu target selection:\n"
+            "  By default, sync uploads to the default target (legacy FEISHU_* keys).\n"
+            "  Use --feishu-target NAME to select one or more named targets.\n"
+            "  Use --all-feishu-targets to upload to every configured target.\n"
+            "\n"
             "Examples:\n"
             "  llm-usage sync --ui auto\n"
+            "  llm-usage sync --feishu-target team_b\n"
+            "  llm-usage sync --all-feishu-targets --dry-run\n"
             "  llm-usage sync --ui cli --cursor-login-browser chrome\n"
             "  llm-usage sync --from-bundle /tmp/offline.zip --dry-run\n"
         ),
