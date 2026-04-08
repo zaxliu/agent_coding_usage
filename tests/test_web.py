@@ -71,6 +71,8 @@ def test_web_server_serves_runtime_config_and_results(tmp_path: Path, monkeypatc
     assert config_payload["basic"]["ORG_USERNAME"] == "san.zhang"
     assert config_payload["feishu_targets"][0]["name"] == "team_b"
     assert config_payload["remotes"][0]["alias"] == "SERVER_A"
+    assert config_payload["bootstrap_applied"] is False
+    assert config_payload["auto_fixes"] == []
 
     results_payload = web.load_latest_results()
     assert results_payload["summary"]["totals"]["input_tokens_sum"] == 10
@@ -100,8 +102,74 @@ def test_web_server_serves_runtime_config_and_results(tmp_path: Path, monkeypatc
             "raw_env": [],
         }
     )
-    assert save_payload["ok"] is True
-    assert "LOOKBACK_DAYS=14" in env_path.read_text(encoding="utf-8")
+    assert save_payload["ok"] is False
+    assert save_payload["saved"] is False
+    assert "feishu[default]: missing BOT_TOKEN or APP_ID+APP_SECRET" in save_payload["errors"]
+    assert "LOOKBACK_DAYS=14" not in env_path.read_text(encoding="utf-8")
+
+
+def test_load_config_payload_bootstraps_missing_runtime_paths(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    payload = web.load_config_payload()
+
+    assert payload["bootstrap_applied"] is True
+    assert payload["auto_fixes"]
+    assert env_path.exists()
+    assert (tmp_path / "reports").exists()
+
+
+def test_save_config_payload_rejects_incomplete_default_feishu_auth(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    payload = web.save_config_payload(
+        {
+            "basic": {},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-default"},
+            "feishu_targets": [],
+            "remotes": [],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is False
+    assert payload["saved"] is False
+    assert "feishu[default]: missing BOT_TOKEN or APP_ID+APP_SECRET" in payload["errors"]
+    text = env_path.read_text(encoding="utf-8")
+    assert "FEISHU_APP_TOKEN=app-default" not in text
+    assert "LOOKBACK_DAYS=30" in text
+
+
+def test_save_config_payload_allows_named_target_to_inherit_default_auth(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    payload = web.save_config_payload(
+        {
+            "basic": {},
+            "cursor": {},
+            "feishu_default": {
+                "FEISHU_APP_TOKEN": "app-default",
+                "FEISHU_APP_ID": "cli_a",
+                "FEISHU_APP_SECRET": "secret_a",
+            },
+            "feishu_targets": [{"name": "finance", "app_token": "app-fin"}],
+            "remotes": [],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["saved"] is True
+    text = env_path.read_text(encoding="utf-8")
+    assert "FEISHU_APP_TOKEN=app-default" in text
+    assert "FEISHU_TARGETS=finance" in text
 
 
 def test_web_results_payload_is_dashboard_shaped(tmp_path: Path, monkeypatch):
