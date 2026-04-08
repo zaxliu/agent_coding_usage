@@ -506,6 +506,14 @@ def _validate_config_save(draft: ConfigDraft, stdout: TextIO) -> bool:
     return False
 
 
+def _save_config_draft_if_valid(env_path: Path, draft: ConfigDraft, stdout: TextIO) -> bool:
+    if not _validate_config_save(draft, stdout):
+        return False
+    _save_config_draft(env_path, draft)
+    stdout.write("Saved.\n")
+    return True
+
+
 def _save_config_draft(env_path: Path, draft: ConfigDraft) -> None:
     existing_non_remote_keys = {
         line.key
@@ -585,8 +593,7 @@ def _edit_feishu_menu(draft: ConfigDraft, env_path: Path, stdin: TextIO, stdout:
         if answer == "b" or answer == "":
             return
         if answer == "s":
-            _save_config_draft(env_path, draft)
-            stdout.write("Saved.\n")
+            _save_config_draft_if_valid(env_path, draft, stdout)
             continue
         if answer == "1":
             _edit_key_menu(draft, "Feishu default (legacy)", FEISHU_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
@@ -631,8 +638,7 @@ def _edit_feishu_named_targets_menu(
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft(env_path, draft)
-            stdout.write("Saved.\n")
+            _save_config_draft_if_valid(env_path, draft, stdout)
             continue
         if answer == "a":
             name_raw = _read_line("Target name: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
@@ -711,8 +717,7 @@ def _edit_feishu_target_detail(
         if answer == "b" or answer == "":
             return changed
         if answer == "s" and env_path is not None and draft is not None:
-            _save_config_draft(env_path, draft)
-            stdout.write("Saved.\n")
+            _save_config_draft_if_valid(env_path, draft, stdout)
             continue
         if answer == "1":
             v = _read_line("APP_TOKEN: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
@@ -762,8 +767,7 @@ def _edit_key_menu(
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft(env_path, draft)
-            stdout.write("Saved.\n")
+            _save_config_draft_if_valid(env_path, draft, stdout)
             continue
         if not answer.isdigit():
             continue
@@ -799,8 +803,7 @@ def _edit_raw_env_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft(env_path, draft)
-            stdout.write("Saved.\n")
+            _save_config_draft_if_valid(env_path, draft, stdout)
             continue
         if answer == "a":
             key = _read_line("Key: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().upper()
@@ -850,8 +853,7 @@ def _edit_remotes_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft(env_path, draft)
-            stdout.write("Saved.\n")
+            _save_config_draft_if_valid(env_path, draft, stdout)
             continue
         if answer == "a":
             remote = _prompt_remote(existing_aliases=[item.alias for item in draft.remotes], stdin=stdin, stdout=stdout)

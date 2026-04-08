@@ -15,6 +15,9 @@ class _TTYStringIO(StringIO):
         return True
 
 
+_VALID_DEFAULT_TARGET = "FEISHU_APP_TOKEN=default-app\nFEISHU_BOT_TOKEN=default-bot\n"
+
+
 def _env_map(path: Path) -> dict[str, str]:
     from llm_usage.env import load_env_document
 
@@ -59,7 +62,7 @@ def test_save_rewrites_feishu_targets_and_prefixed_keys_deterministically(tmp_pa
 
 def test_interactive_default_feishu_menu_still_edits_legacy_keys(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text("FEISHU_APP_TOKEN=old-token\n", encoding="utf-8")
+    env_path.write_text("FEISHU_APP_TOKEN=old-token\nFEISHU_BOT_TOKEN=default-bot\n", encoding="utf-8")
     # Feishu -> Default (legacy) -> first key -> new value -> back -> save from main menu
     exit_code = run_config_editor(
         env_path=env_path,
@@ -70,9 +73,24 @@ def test_interactive_default_feishu_menu_still_edits_legacy_keys(tmp_path: Path)
     assert "FEISHU_APP_TOKEN=new-token" in env_path.read_text(encoding="utf-8")
 
 
+def test_interactive_feishu_submenu_save_rejects_invalid_default_target(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    stdout = _TTYStringIO()
+    exit_code = run_config_editor(
+        env_path=env_path,
+        stdin=_TTYStringIO("2\n1\n1\nnew-token\nb\ns\nb\nd\n"),
+        stdout=stdout,
+    )
+    assert exit_code == 0
+    assert "feishu[default]: missing BOT_TOKEN or APP_ID+APP_SECRET" in stdout.getvalue()
+    assert "Saved.\n" not in stdout.getvalue()
+    assert "FEISHU_APP_TOKEN=new-token" not in env_path.read_text(encoding="utf-8")
+
+
 def test_interactive_add_named_target_rejects_reserved_default(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text("ORG_USERNAME=u\n", encoding="utf-8")
+    env_path.write_text(_VALID_DEFAULT_TARGET + "ORG_USERNAME=u\n", encoding="utf-8")
     out = _TTYStringIO()
     exit_code = run_config_editor(
         env_path=env_path,
@@ -86,7 +104,7 @@ def test_interactive_add_named_target_rejects_reserved_default(tmp_path: Path):
 
 def test_interactive_add_named_target_rejects_invalid_name(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text("ORG_USERNAME=u\n", encoding="utf-8")
+    env_path.write_text(_VALID_DEFAULT_TARGET + "ORG_USERNAME=u\n", encoding="utf-8")
     exit_code = run_config_editor(
         env_path=env_path,
         stdin=_TTYStringIO("2\n2\na\nBad-Name\nb\nq\nd\n"),
@@ -99,6 +117,7 @@ def test_interactive_add_named_target_rejects_invalid_name(tmp_path: Path):
 def test_interactive_add_duplicate_named_target_is_rejected(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
+        _VALID_DEFAULT_TARGET +
         "FEISHU_TARGETS=alpha\n"
         "FEISHU_ALPHA_APP_TOKEN=t\n",
         encoding="utf-8",
@@ -114,6 +133,7 @@ def test_interactive_add_duplicate_named_target_is_rejected(tmp_path: Path):
 def test_interactive_named_target_edit_accepts_target_name(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
+        _VALID_DEFAULT_TARGET +
         "FEISHU_TARGETS=myself\n"
         "FEISHU_MYSELF_APP_TOKEN=\n",
         encoding="utf-8",
@@ -130,7 +150,7 @@ def test_interactive_named_target_edit_accepts_target_name(tmp_path: Path):
 
 def test_interactive_add_named_target_enters_detail_immediately(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text("ORG_USERNAME=u\n", encoding="utf-8")
+    env_path.write_text(_VALID_DEFAULT_TARGET + "ORG_USERNAME=u\n", encoding="utf-8")
     exit_code = run_config_editor(
         env_path=env_path,
         stdin=_TTYStringIO("2\n2\na\nteam_b\n1\nteam-token\nb\nb\nb\ns\n"),
@@ -145,6 +165,8 @@ def test_interactive_add_named_target_enters_detail_immediately(tmp_path: Path):
 def test_save_preserves_named_target_keys_when_feishu_targets_list_is_invalid(tmp_path: Path):
     env_path = tmp_path / ".env"
     original = (
+        _VALID_DEFAULT_TARGET
+        +
         "ORG_USERNAME=alice\n"
         "FEISHU_TARGETS=alpha,Alpha\n"
         "FEISHU_ALPHA_APP_TOKEN=alpha-token\n"
