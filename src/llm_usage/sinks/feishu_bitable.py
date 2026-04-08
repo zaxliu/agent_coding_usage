@@ -158,41 +158,6 @@ def fetch_bitable_field_type_map(
     return client._fetch_field_type_map()
 
 
-def fetch_bitable_link_share_entity(
-    app_token: str,
-    bot_token: str,
-    request_timeout_sec: int = 20,
-) -> str:
-    """Return the ``link_share_entity`` value for a Bitable document.
-
-    Uses the Drive permission-public API:
-    ``GET /open-apis/drive/v2/permissions/{token}/public?type=bitable``
-    """
-    url = f"https://open.feishu.cn/open-apis/drive/v2/permissions/{app_token}/public"
-    resp = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {bot_token}"},
-        params={"type": "bitable"},
-        timeout=request_timeout_sec,
-    )
-    payload = _maybe_json(resp)
-    if resp.status_code >= 400:
-        if payload is not None:
-            raise RuntimeError(
-                _format_feishu_api_error(payload, context="feishu get permission public http error")
-            )
-        resp.raise_for_status()
-    if payload is None:
-        resp.raise_for_status()
-        raise RuntimeError("feishu get permission public response is not json")
-    if payload.get("code", 0) != 0:
-        raise RuntimeError(
-            _format_feishu_api_error(payload, context="feishu get permission public error")
-        )
-    perm = payload.get("data", {}).get("permission_public", {})
-    return perm.get("link_share_entity", "")
-
-
 class FeishuBitableClient:
     def __init__(
         self,
