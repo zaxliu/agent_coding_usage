@@ -10,7 +10,16 @@ import pytest
 from llm_usage.collectors.remote_file import SshAuthenticationError
 
 import llm_usage.main as main
+import llm_usage.paths as paths
 import llm_usage.web as web
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_paths(tmp_path: Path, monkeypatch):
+    paths.reset_runtime_paths_cache()
+    monkeypatch.chdir(tmp_path)
+    yield
+    paths.reset_runtime_paths_cache()
 
 
 def test_web_help_describes_local_console(capsys):
