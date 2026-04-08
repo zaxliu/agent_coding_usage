@@ -107,9 +107,13 @@ test("single-page console layout exposes dedicated sidebar, main, operations, an
   assert.match(css, /\.operations-bar\b/u);
   assert.match(css, /\.sidebar-actions\b/u);
   assert.match(css, /\.operations-head\b/u);
+  assert.match(css, /\.sidebar-actions[\s\S]*gap:\s*18px/u);
+  assert.match(css, /\.operations-head[\s\S]*margin-bottom:\s*6px/u);
   assert.match(css, /\.action-tile\b/u);
   assert.match(css, /\.action-tile\.button-primary\b/u);
   assert.match(css, /\.status-card\.is-running\b[\s\S]*animation:/u);
+  assert.doesNotMatch(css, /\.status-card::after/u);
+  assert.doesNotMatch(css, /\.status-card\.is-idle::after/u);
   assert.match(css, /\.settings-panel\b/u);
   assert.match(css, /\.settings-panel\[hidden\]/u);
   assert.doesNotMatch(css, /\.view\s*\{/u);
@@ -120,6 +124,7 @@ test("single-page console layout exposes dedicated sidebar, main, operations, an
   assert.match(html, /id="operations-bar"/u);
   assert.match(html, /class="panel compact-panel sidebar-actions" id="operations-bar"/u);
   assert.match(html, /<div class="operations-head">[\s\S]*<p class="eyebrow">操作<\/p>[\s\S]*上次执行时间/u);
+  assert.doesNotMatch(html, /data-action="sync-preview"/u);
   assert.doesNotMatch(html, /<h3>执行台<\/h3>/u);
   assert.match(html, /<section class="status-stack" id="system-status">[\s\S]*最近任务/u);
   assert.doesNotMatch(html, /<span class="status-label">后端<\/span>/u);
@@ -136,6 +141,10 @@ test("app.css defines responsive console and dialog overflow protections", () =>
   assert.match(css, /@media\s*\(max-width:\s*720px\)/u);
   assert.match(css, /\.console-layout[\s\S]*grid-template-columns:\s*320px minmax\(0,\s*1fr\)/u);
   assert.match(css, /\.summary-grid[\s\S]*repeat\(4,\s*minmax\(0,\s*1fr\)\)/u);
+  assert.match(css, /\.summary-grid[\s\S]*margin-bottom:\s*12px/u);
+  assert.match(css, /\.metric-card[\s\S]*padding:\s*14px 16px/u);
+  assert.match(css, /\.metric-value[\s\S]*margin-top:\s*8px/u);
+  assert.match(css, /\.chart-large[\s\S]*min-height:\s*300px/u);
   assert.match(css, /\.comparison-grid[\s\S]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/u);
   assert.match(css, /\.credential-form[\s\S]*max-height:\s*calc\(100vh - 32px\)/u);
   assert.match(css, /\.credential-form[\s\S]*overflow:\s*auto/u);
