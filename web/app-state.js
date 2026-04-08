@@ -70,9 +70,20 @@ export function formatCompactNumber(value) {
   return Number(parsed.toFixed(abs >= 100 ? 0 : 2)).toString();
 }
 
+export function formatHostHash(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "-";
+  }
+  if (text.length <= 8) {
+    return text;
+  }
+  return `${text.slice(0, 4)}…${text.slice(-4)}`;
+}
+
 export function buildSemilogTicks(maxValue) {
   const limit = Math.max(0, Number(maxValue || 0));
-  const ticks = [0, 1];
+  const ticks = [1];
   let current = 1;
   while (current < limit) {
     current *= 10;
@@ -118,6 +129,7 @@ export function normalizeResultsPayload(results) {
       },
       table_rows: (results.table_rows || []).map((row) => ({
         date: row.date || row.date_local,
+        source_host_hash: row.source_host_hash || "",
         tool: row.tool,
         model: row.model,
         input: toNumber(row.input ?? row.input_tokens_sum),
@@ -153,6 +165,7 @@ export function normalizeResultsPayload(results) {
     },
     table_rows: rows.map((row) => ({
       date: row.date_local,
+      source_host_hash: row.source_host_hash || "",
       tool: row.tool,
       model: row.model,
       input: toNumber(row.input_tokens_sum || row.input),

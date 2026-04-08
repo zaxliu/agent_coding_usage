@@ -7,6 +7,7 @@ import {
   credentialSubmissionMode,
   describeInputRequest,
   escapeHtml,
+  formatHostHash,
   formatCompactNumber,
   inputRequestSubmissionValue,
   nextCredentialPromptJob,
@@ -29,6 +30,7 @@ const state = {
 
 const refs = {
   flashbar: document.querySelector("#flashbar"),
+  runtimeStatusCard: document.querySelector("#runtime-status-card"),
   runtimeBackend: document.querySelector("#runtime-backend"),
   runtimeMeta: document.querySelector("#runtime-meta"),
   latestRunTitle: document.querySelector("#latest-run-title"),
@@ -116,9 +118,67 @@ function applySettingsPanelState(open = state.settingsOpen) {
 }
 
 function renderConfigSummary(config = {}) {
-  refs.configSummaryList.innerHTML = buildConfigSummary(config)
+  const summaryItems = buildConfigSummary(config);
+  summaryItems.push({
+    label: ".env",
+    value: state.runtime?.env_path || "-",
+  });
+  refs.configSummaryList.innerHTML = summaryItems
     .map((item) => `<div class="summary-pair"><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong></div>`)
     .join("");
+}
+
+function renderRuntimeStatus(status = "idle", title = "空闲", meta = "可以开始新的任务") {
+  const className = String(status || "idle").replace(/_/g, "-");
+  refs.runtimeStatusCard.classList.remove("is-idle", "is-running", "is-needs-input", "is-failed", "is-succeeded");
+  refs.runtimeStatusCard.classList.add(`is-${className}`);
+  refs.runtimeBackend.textContent = title;
+  refs.runtimeMeta.textContent = meta;
+}
+
+function setActionRuntimeState(action, phase = "running", detail = "") {
+  const messages = {
+    init: {
+      running: ["正在初始化", "检查配置文件 -> 准备本地控制台 -> 等待结果"],
+      success: ["初始化完成", detail || "已准备好设置面板"],
+      error: ["初始化失败", detail || "请检查当前配置与文件权限"],
+    },
+    "validate-config": {
+      running: ["正在校验配置", "读取表单 -> 请求校验接口 -> 等待结果"],
+      success: ["配置校验完成", detail || "当前表单可用于保存"],
+      error: ["配置校验失败", detail || "请根据提示修正配置"],
+    },
+    "save-config": {
+      running: ["正在保存设置", "读取表单 -> 写入配置文件 -> 刷新摘要"],
+      success: ["设置已保存", detail || "设置面板已自动收起"],
+      error: ["保存设置失败", detail || "请检查配置项后重试"],
+    },
+    collect: {
+      running: ["正在采集数据", "准备任务 -> 请求采集接口 -> 等待任务状态"],
+      success: ["采集任务已提交", detail || "请等待任务状态更新"],
+      error: ["采集启动失败", detail || "请检查采集配置后重试"],
+    },
+    "sync-preview": {
+      running: ["正在同步预览", "准备任务 -> 请求预览接口 -> 等待任务状态"],
+      success: ["同步预览已提交", detail || "请等待任务状态更新"],
+      error: ["同步预览启动失败", detail || "请检查同步配置后重试"],
+    },
+    sync: {
+      running: ["正在执行同步", "准备确认参数 -> 请求同步接口 -> 等待任务状态"],
+      success: ["同步任务已提交", detail || "请等待任务状态更新"],
+      error: ["同步启动失败", detail || "请检查同步配置后重试"],
+    },
+    doctor: {
+      running: ["正在执行诊断", "准备任务 -> 请求诊断接口 -> 等待任务状态"],
+      success: ["诊断任务已提交", detail || "请等待任务状态更新"],
+      error: ["诊断启动失败", detail || "请检查环境后重试"],
+    },
+  };
+  const entry = messages[action]?.[phase];
+  if (!entry) {
+    return;
+  }
+  renderRuntimeStatus(phase === "error" ? "failed" : phase === "success" ? "succeeded" : "running", entry[0], entry[1]);
 }
 
 function settingsPayload() {
@@ -251,7 +311,7 @@ function renderTable(rows = []) {
     if (!query) {
       return true;
     }
-    return [row.date, row.tool, row.model].some((value) => String(value || "").toLowerCase().includes(query));
+    return [row.date, row.source_host_hash, row.tool, row.model].some((value) => String(value || "").toLowerCase().includes(query));
   });
   refs.resultsTable.innerHTML = visible.length
     ? visible
@@ -259,6 +319,7 @@ function renderTable(rows = []) {
           (row) => `
             <tr>
               <td>${row.date || "-"}</td>
+              <td>${escapeHtml(formatHostHash(row.source_host_hash))}</td>
               <td>${row.tool || "-"}</td>
               <td>${row.model || "-"}</td>
               <td>${fmtNumber(row.input)}</td>
@@ -268,7 +329,7 @@ function renderTable(rows = []) {
           `,
         )
         .join("")
-    : `<tr><td colspan="6"><div class="empty-state">没有匹配当前筛选条件的数据。</div></td></tr>`;
+    : `<tr><td colspan="7"><div class="empty-state">没有匹配当前筛选条件的数据。</div></td></tr>`;
 }
 
 function renderJobs(jobs = []) {
@@ -497,8 +558,10 @@ function renderDashboard(results) {
 
 async function refreshRuntime() {
   state.runtime = await getJson("/api/runtime");
-  refs.runtimeBackend.textContent = `${state.runtime.backend || "unknown"} ${state.runtime.version || ""}`.trim();
-  refs.runtimeMeta.textContent = state.runtime.env_path || "No env path";
+  renderConfigSummary(state.config);
+  if (!state.jobs.length) {
+    renderRuntimeStatus("idle", "空闲", "本地控制台已就绪");
+  }
 }
 
 async function refreshConfig() {
@@ -529,6 +592,17 @@ async function refreshJobs() {
   const latest = state.jobs[0];
   refs.latestRunTitle.textContent = latest ? `${latest.type} · ${latest.status}` : "还没有任务";
   refs.latestRunMeta.textContent = latest ? fmtTime(latest.updated_at || latest.created_at) : "先运行诊断或采集";
+  if (!latest) {
+    renderRuntimeStatus("idle", "空闲", "本地控制台已就绪");
+  } else if (latest.status === "needs_input") {
+    renderRuntimeStatus("needs_input", "等待输入", latest.input_request?.message || `${latest.type} 需要当前会话输入`);
+  } else if (latest.status === "failed") {
+    renderRuntimeStatus("failed", "任务失败", latest.error || `${latest.type} 执行失败`);
+  } else if (latest.status === "succeeded") {
+    renderRuntimeStatus("succeeded", "最近完成", `${latest.type} -> 执行完成 -> ${fmtTime(latest.updated_at || latest.created_at)}`);
+  } else {
+    renderRuntimeStatus("running", "运行中", `${latest.type} -> 正在执行 -> ${fmtTime(latest.updated_at || latest.created_at)}`);
+  }
   maybePromptForCredential(state.jobs);
 }
 
@@ -539,6 +613,7 @@ async function runAction(action) {
       return;
     }
     if (action === "init") {
+      setActionRuntimeState("init", "running");
       const result = await getJson("/api/init", { method: "POST", body: "{}" });
       if (result.created_env) {
         showFlash("初始化完成，已创建配置文件。");
@@ -547,6 +622,7 @@ async function runAction(action) {
       }
       await Promise.all([refreshRuntime(), refreshConfig()]);
       applySettingsPanelState(true);
+      setActionRuntimeState("init", "success", "配置文件已就绪，设置面板已展开");
       return;
     }
     if (action === "add-remote") {
@@ -558,23 +634,29 @@ async function runAction(action) {
       return;
     }
     if (action === "save-config") {
+      setActionRuntimeState("save-config", "running");
       await getJson("/api/config", {
         method: "PUT",
         body: JSON.stringify(settingsPayload()),
       });
-      showFlash("Settings saved.");
+      showFlash("设置已保存。", "success");
       await refreshConfig();
+      applySettingsPanelState(false);
+      setActionRuntimeState("save-config", "success", "配置已写入，设置面板已收起");
       return;
     }
     if (action === "validate-config") {
+      setActionRuntimeState("validate-config", "running");
       const result = await getJson("/api/config/validate", {
         method: "POST",
         body: JSON.stringify(settingsPayload()),
       });
       if (result.ok) {
-        showFlash("Settings are valid.");
+        showFlash("配置校验通过。", "success");
+        setActionRuntimeState("validate-config", "success", "表单检查通过，可以直接保存");
       } else {
-        showFlash(result.errors?.[0] || "Validation failed.", "error");
+        showFlash(result.errors?.[0] || "配置校验失败。", "error");
+        setActionRuntimeState("validate-config", "error", result.errors?.[0] || "请修正配置后重新校验");
       }
       return;
     }
@@ -583,17 +665,24 @@ async function runAction(action) {
     let payload = {};
     if (action === "collect") {
       url = "/api/collect";
+      setActionRuntimeState("collect", "running");
     } else if (action === "sync-preview") {
       url = "/api/sync/preview";
+      setActionRuntimeState("sync-preview", "running");
     } else if (action === "sync") {
       url = "/api/sync";
       payload = { confirm_sync: true };
+      setActionRuntimeState("sync", "running");
+    } else {
+      setActionRuntimeState("doctor", "running");
     }
     const job = await getJson(url, { method: "POST", body: JSON.stringify(payload) });
     showFlash(`Started ${job.type}.`);
+    setActionRuntimeState(action, "success");
     await refreshJobs();
     await refreshResults();
   } catch (error) {
+    setActionRuntimeState(action, "error", error.message);
     showFlash(error.message, "error");
   }
 }

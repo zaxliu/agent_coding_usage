@@ -16,10 +16,30 @@
           <p class="sidebar-copy">查看最近 30 天各类编码工具使用数据的本地工作台。</p>
         </div>
 
+        <section class="panel compact-panel sidebar-actions" id="operations-bar">
+          <div class="operations-head">
+            <p class="eyebrow">操作</p>
+            <div class="operations-meta">
+              <span class="stamp-label">上次执行时间</span>
+              <strong id="generated-at">等待数据</strong>
+            </div>
+          </div>
+          <div class="actions">
+            <button data-action="init" class="action-tile">初始化</button>
+            <button data-action="doctor" class="action-tile">诊断</button>
+            <button data-action="collect" class="action-tile">采集</button>
+            <button data-action="sync-preview" class="action-tile">同步预览</button>
+            <button data-action="sync" class="action-tile button-primary">同步</button>
+          </div>
+        </section>
+
         <section class="status-stack" id="system-status">
-          <div class="status-card">
-            <span class="status-label">后端</span>
-            <strong id="runtime-backend">加载中…</strong>
+          <div class="status-card" id="runtime-status-card">
+            <div class="status-head">
+              <span class="status-label">运行状态</span>
+              <span class="status-pulse" aria-hidden="true"></span>
+            </div>
+            <strong id="runtime-backend">准备中…</strong>
             <span class="status-meta" id="runtime-meta">正在准备控制台</span>
           </div>
           <div class="status-card">
@@ -44,27 +64,6 @@
       </aside>
 
       <main class="main-panel console-main">
-        <header class="hero console-hero">
-          <div>
-            <p class="eyebrow">控制台</p>
-            <h2>最近 30 天</h2>
-            <p class="lede">先看趋势，再看对比，最后落到明细。</p>
-          </div>
-          <div class="hero-actions operations-bar" id="operations-bar">
-            <div class="stamp">
-              <span class="stamp-label">更新时间</span>
-              <strong id="generated-at">等待数据</strong>
-            </div>
-            <div class="actions">
-              <button data-action="init">初始化</button>
-              <button data-action="doctor">诊断</button>
-              <button data-action="collect">采集</button>
-              <button data-action="sync-preview">同步预览</button>
-              <button data-action="sync" class="button-primary">同步</button>
-            </div>
-          </div>
-        </header>
-
         <section class="panel settings-panel collapsed" id="settings-panel" hidden>
           <div class="panel-head">
             <div>
@@ -72,8 +71,8 @@
               <h3>持久化配置</h3>
             </div>
             <div class="actions">
-              <button data-action="validate-config">校验</button>
-              <button data-action="save-config" class="button-primary">保存设置</button>
+              <button data-action="validate-config" class="button-subtle settings-action-secondary">校验</button>
+              <button data-action="save-config" class="button-primary settings-action-primary">保存设置</button>
             </div>
           </div>
 
@@ -184,13 +183,14 @@
               <p class="eyebrow">明细</p>
               <h3>聚合结果</h3>
             </div>
-            <input id="table-filter" class="table-filter" type="search" placeholder="筛选日期、工具或模型">
+            <input id="table-filter" class="table-filter" type="search" placeholder="筛选日期、Host、工具或模型">
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>日期</th>
+                  <th>Host</th>
                   <th>工具</th>
                   <th>模型</th>
                   <th>输入</th>

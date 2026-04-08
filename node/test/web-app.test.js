@@ -9,6 +9,7 @@ import {
   dashboardSummaryText,
   createUiFlags,
   escapeHtml,
+  formatHostHash,
   formatCompactNumber,
   describeInputRequest,
   inputRequestSubmissionValue,
@@ -72,6 +73,13 @@ test("app.js wires config summary rendering and inline settings state without ol
   assert.match(js, /settingsPanelMode/u);
   assert.match(js, /config-summary-list/u);
   assert.match(js, /toggle-settings/u);
+  assert.match(js, /renderRuntimeStatus\("idle", "空闲", "本地控制台已就绪"\)/u);
+  assert.match(js, /function setActionRuntimeState\(action, phase = "running", detail = ""\)/u);
+  assert.match(js, /action === "validate-config"[\s\S]*setActionRuntimeState\("validate-config", "running"\)/u);
+  assert.match(js, /action === "collect"[\s\S]*setActionRuntimeState\("collect", "running"\)/u);
+  assert.match(js, /action === "sync"[\s\S]*setActionRuntimeState\("sync", "running"\)/u);
+  assert.match(js, /action === "save-config"[\s\S]*applySettingsPanelState\(false\)/u);
+  assert.match(js, /action === "validate-config"[\s\S]*showFlash\("配置校验通过。", "success"\)/u);
   assert.match(html, /id="settings-toggle"/u);
   assert.doesNotMatch(js, /currentView/u);
   assert.doesNotMatch(js, /data-view-target/u);
@@ -90,15 +98,28 @@ test("single-page console layout exposes dedicated sidebar, main, operations, an
   assert.match(css, /\.console-sidebar\b/u);
   assert.match(css, /\.console-main\b/u);
   assert.match(css, /\.operations-bar\b/u);
+  assert.match(css, /\.sidebar-actions\b/u);
+  assert.match(css, /\.operations-head\b/u);
+  assert.match(css, /\.action-tile\b/u);
+  assert.match(css, /\.action-tile\.button-primary\b/u);
+  assert.match(css, /\.status-card\.is-running\b[\s\S]*animation:/u);
   assert.match(css, /\.settings-panel\b/u);
   assert.match(css, /\.settings-panel\[hidden\]/u);
   assert.doesNotMatch(css, /\.view\s*\{/u);
   assert.doesNotMatch(css, /\.view\.view-active\s*\{/u);
   assert.doesNotMatch(css, /\.nav\s*\{/u);
   assert.doesNotMatch(css, /\.nav-link\b/u);
-  assert.match(css, /@media[\s\S]*\.actions\s*\{[\s\S]*justify-content:\s*flex-start;/u);
+  assert.match(css, /@media[\s\S]*\.sidebar-actions[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/u);
   assert.match(html, /id="operations-bar"/u);
-  assert.match(html, /class="hero-actions operations-bar"/u);
+  assert.match(html, /class="panel compact-panel sidebar-actions" id="operations-bar"/u);
+  assert.match(html, /<div class="operations-head">[\s\S]*<p class="eyebrow">操作<\/p>[\s\S]*上次执行时间/u);
+  assert.doesNotMatch(html, /<h3>执行台<\/h3>/u);
+  assert.match(html, /<section class="status-stack" id="system-status">[\s\S]*最近任务/u);
+  assert.doesNotMatch(html, /<span class="status-label">后端<\/span>/u);
+  assert.doesNotMatch(html, /class="hero console-hero"/u);
+  assert.doesNotMatch(html, /<p class="eyebrow">控制台<\/p>/u);
+  assert.doesNotMatch(html, /<h2>最近 30 天<\/h2>/u);
+  assert.doesNotMatch(html, /先看趋势，再看对比，最后落到明细/u);
 });
 
 test("app.css defines responsive console and dialog overflow protections", () => {
@@ -111,14 +132,16 @@ test("app.css defines responsive console and dialog overflow protections", () =>
   assert.match(css, /\.comparison-grid[\s\S]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/u);
   assert.match(css, /\.credential-form[\s\S]*max-height:\s*calc\(100vh - 32px\)/u);
   assert.match(css, /\.credential-form[\s\S]*overflow:\s*auto/u);
+  assert.match(css, /\.flashbar\.is-success/u);
 });
 
 test("app.css allows shell sections and action rows to shrink and wrap", () => {
   const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
 
   assert.match(css, /\.console-main,[\s\S]*\.console-sidebar,[\s\S]*\.panel,[\s\S]*\.metric-card[\s\S]*min-width:\s*0/u);
-  assert.match(css, /\.hero[\s\S]*flex-wrap:\s*wrap/u);
   assert.match(css, /\.panel-head[\s\S]*flex-wrap:\s*wrap/u);
+  assert.match(css, /\.status-head[\s\S]*justify-content:\s*space-between/u);
+  assert.match(css, /\.operations-head[\s\S]*justify-content:\s*space-between/u);
   assert.match(css, /\.actions[\s\S]*width:\s*100%/u);
 });
 
@@ -127,6 +150,10 @@ test("index.html exposes responsive form hooks for settings and dialogs", () => 
 
   assert.match(html, /class="form-grid settings-form-grid"/u);
   assert.match(html, /class="form-grid modal-form-grid"/u);
+  assert.match(html, /<th>Host<\/th>/u);
+  assert.match(html, /placeholder="筛选日期、Host、工具或模型"/u);
+  assert.match(html, /data-action="validate-config" class="button-subtle settings-action-secondary"/u);
+  assert.match(html, /data-action="save-config" class="button-primary settings-action-primary"/u);
 });
 
 test("dialog markup and styles support viewport-safe modal content", () => {
@@ -170,6 +197,7 @@ test("normalizeResultsPayload reads dashboard summary totals and names from curr
     table_rows: [
       {
         date_local: "2026-04-06",
+        source_host_hash: "abcdef1234567890",
         tool: "codex",
         model: "gpt-5",
         input_tokens_sum: 10,
@@ -195,6 +223,7 @@ test("normalizeResultsPayload reads dashboard summary totals and names from curr
   assert.deepEqual(normalized.table_rows, [
     {
       date: "2026-04-06",
+      source_host_hash: "abcdef1234567890",
       tool: "codex",
       model: "gpt-5",
       input: 10,
@@ -202,6 +231,12 @@ test("normalizeResultsPayload reads dashboard summary totals and names from curr
       output: 3,
     },
   ]);
+});
+
+test("formatHostHash shortens long host hashes for table display", () => {
+  assert.equal(formatHostHash(""), "-");
+  assert.equal(formatHostHash("abcd"), "abcd");
+  assert.equal(formatHostHash("abcdef1234567890"), "abcd…7890");
 });
 
 test("dashboardSummaryText keeps summary cards on the normalized compact-number path", () => {
@@ -242,9 +277,9 @@ test("formatCompactNumber switches between k m b t units automatically", () => {
 });
 
 test("buildSemilogTicks returns readable tick values for a half-log chart", () => {
-  assert.deepEqual(buildSemilogTicks(0), [0, 1]);
-  assert.deepEqual(buildSemilogTicks(87), [0, 1, 10, 100]);
-  assert.deepEqual(buildSemilogTicks(9_500), [0, 1, 10, 100, 1000, 10000]);
+  assert.deepEqual(buildSemilogTicks(0), [1]);
+  assert.deepEqual(buildSemilogTicks(87), [1, 10, 100]);
+  assert.deepEqual(buildSemilogTicks(9_500), [1, 10, 100, 1000, 10000]);
 });
 
 test("credentialSubmissionMode treats cancel as dismiss instead of submit", () => {

@@ -203,7 +203,7 @@ function buildDashboardBreakdown(rows, key) {
 }
 
 function buildLatestResultsPayload(rows, { csvPath, generatedAt, warnings = [] } = {}) {
-  const tableRows = groupRows(rows, ["date_local", "tool", "model"]);
+  const tableRows = groupRows(rows, ["date_local", "source_host_hash", "tool", "model"]);
   const totals = sumRowMetrics(rows);
   const timeseriesBuckets = new Map();
   for (const row of tableRows) {

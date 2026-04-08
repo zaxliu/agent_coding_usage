@@ -138,6 +138,7 @@ test("web helpers load config validate payload and results", async () => {
   assert.equal(resultsPayload.timeseries[0].total_tokens, 15);
   assert.equal(resultsPayload.breakdowns.tools[0].name, "codex");
   assert.equal(resultsPayload.breakdowns.models[0].name, "gpt-5");
+  assert.equal(resultsPayload.table_rows[0].source_host_hash, "host-a");
   assert.equal(resultsPayload.table_rows[0].tool, "codex");
   assert.equal(resultsPayload.table_rows[0].total_tokens, 15);
   assert.equal(resultsPayload.rows[0].row_key, "row-1");

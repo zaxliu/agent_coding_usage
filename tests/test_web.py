@@ -155,6 +155,7 @@ def test_web_results_payload_is_dashboard_shaped(tmp_path: Path, monkeypatch):
     assert payload["table_rows"] == [
         {
             "date_local": "2026-04-06",
+            "source_host_hash": "host-a",
             "tool": "codex",
             "model": "gpt-5",
             "input_tokens_sum": 10,
@@ -165,6 +166,7 @@ def test_web_results_payload_is_dashboard_shaped(tmp_path: Path, monkeypatch):
         },
         {
             "date_local": "2026-04-07",
+            "source_host_hash": "host-a",
             "tool": "claude",
             "model": "claude-3.7",
             "input_tokens_sum": 5,

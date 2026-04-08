@@ -183,10 +183,11 @@ def _dashboard_payload_from_rows(rows: list[dict[str, Any]], csv_path: Path, gen
             "row_count": 0,
         }
     )
-    table_buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    table_buckets: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 
     for row in rows:
         date_local = str(row.get("date_local", "") or "")
+        source_host_hash = str(row.get("source_host_hash", "") or "")
         tool = str(row.get("tool", "") or "")
         model = str(row.get("model", "") or "")
         input_tokens, cache_tokens, output_tokens = _row_tokens(row)
@@ -215,11 +216,12 @@ def _dashboard_payload_from_rows(rows: list[dict[str, Any]], csv_path: Path, gen
         model_bucket["output_tokens_sum"] += output_tokens
         model_bucket["row_count"] += 1
 
-        key = (date_local, tool, model)
+        key = (date_local, source_host_hash, tool, model)
         bucket = table_buckets.setdefault(
             key,
             {
                 "date_local": date_local,
+                "source_host_hash": source_host_hash,
                 "tool": tool,
                 "model": model,
                 "input_tokens_sum": 0,
@@ -251,7 +253,10 @@ def _dashboard_payload_from_rows(rows: list[dict[str, Any]], csv_path: Path, gen
 
     tool_breakdown = _sorted_breakdown_rows(tool_buckets)
     model_breakdown = _sorted_breakdown_rows(model_buckets)
-    table_rows = sorted(table_buckets.values(), key=lambda item: (item["date_local"], item["tool"], item["model"]))
+    table_rows = sorted(
+        table_buckets.values(),
+        key=lambda item: (item["date_local"], item["source_host_hash"], item["tool"], item["model"]),
+    )
 
     summary = {
         "totals": {
