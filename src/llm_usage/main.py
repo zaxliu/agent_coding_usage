@@ -28,9 +28,12 @@ from llm_usage.cursor_login import (
     open_cursor_dashboard_login_page,
     resolve_cursor_login_browser_choice,
 )
-from llm_usage.env import load_dotenv, upsert_env_var
+from llm_usage.env import load_dotenv, load_env_document, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
 from llm_usage.interaction import (
+    BASIC_KEYS,
+    FEISHU_KEYS,
+    ConfigDraft,
     confirm_save_temporary_remote,
     feishu_config_add_target,
     feishu_config_delete_target,
@@ -44,6 +47,7 @@ from llm_usage.offline_bundle import OfflineBundleError, read_offline_bundle, wr
 from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
 from llm_usage.remotes import RemoteHostConfig, append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
+from llm_usage.runtime_preflight import validate_runtime_config
 from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
 from llm_usage.sinks.feishu_bitable import (
     FeishuBitableClient,
@@ -238,6 +242,33 @@ def _resolve_feishu_sync_selection(args: argparse.Namespace) -> list[FeishuTarge
         raise RuntimeError(str(exc)) from exc
 
 
+def _execution_preflight(
+    *,
+    feishu_target: Optional[list[str]] = None,
+    all_feishu_targets: bool = False,
+) -> object:
+    del feishu_target, all_feishu_targets
+    _load_runtime_env()
+    document = load_env_document(_env_path())
+    draft = ConfigDraft.from_document(document)
+    return validate_runtime_config(
+        basic={key: os.getenv(key, draft.values.get(key, "")) for key in BASIC_KEYS},
+        feishu_default={key: os.getenv(key, draft.values.get(key, "")) for key in FEISHU_KEYS},
+        feishu_targets=[
+            {
+                "name": target.name,
+                "app_token": target.app_token,
+                "table_id": target.table_id,
+                "app_id": target.app_id,
+                "app_secret": target.app_secret,
+                "bot_token": target.bot_token,
+            }
+            for target in draft.feishu_named_targets
+        ],
+        mode="execution",
+    )
+
+
 def _feishu_bot_token_for_target(target: FeishuTargetConfig) -> str:
     bot = target.bot_token.strip()
     if bot:
@@ -262,6 +293,12 @@ def _feishu_table_id_for_target(target: FeishuTargetConfig, bot_token: str) -> s
 
 
 def run_feishu_doctor(args: argparse.Namespace) -> int:
+    preflight = _execution_preflight(
+        feishu_target=list(getattr(args, "feishu_target", []) or []),
+        all_feishu_targets=bool(getattr(args, "all_feishu_targets", False)),
+    )
+    if not preflight.ok:
+        raise RuntimeError("; ".join(preflight.errors))
     targets = _resolve_feishu_sync_selection(args)
     if not targets:
         print("warn: no Feishu targets configured")
@@ -333,6 +370,11 @@ def _sync_rows_to_feishu_targets(
     if dry_run:
         print("dry-run: bundle validated and upload skipped")
         return 0
+    preflight = _execution_preflight(feishu_target=feishu_target, all_feishu_targets=all_feishu_targets)
+    if not preflight.ok:
+        for error in preflight.errors:
+            print(f"error: {error}")
+        return 1
 
     class _Args:
         pass
