@@ -59,6 +59,12 @@ input {
   font-size: 2rem;
 }
 
+.brand-icon {
+  margin-right: 8px;
+  font-size: 1.8rem;
+  vertical-align: -2px;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: var(--muted);
