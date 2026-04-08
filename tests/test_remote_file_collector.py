@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from contextlib import redirect_stdout
 
 from llm_usage.collectors import remote_file
-from llm_usage.collectors.remote_file import RemoteCollectJob, RemoteFileCollector, SshTarget
+from llm_usage.collectors.remote_file import RemoteCollectJob, RemoteFileCollector, SshAuthenticationError, SshTarget
 
 
 class _Completed:
@@ -61,7 +61,7 @@ def test_remote_file_collector_supports_python_fallback(tmp_path):
     assert "ControlPersist=5m" in calls[1]
     assert "ControlPath=/tmp/llm-usage-ssh-%C" in calls[1]
     assert len(calls) == 3
-    assert "BatchMode=yes" not in calls[1]
+    assert "BatchMode=yes" in calls[1]
 
 
 def test_remote_file_collector_uses_sshpass_env_for_collect(tmp_path):
@@ -1870,3 +1870,93 @@ def test_remote_file_collector_reports_chunked_stdout_corruption(monkeypatch):
     assert not any("remote stdout noise:" in line for line in printed)
     assert any("remote stdout debug:" in line for line in printed)
     assert any("remote stdout preview:" in line for line in printed)
+
+
+def test_sshpass_mode_does_not_include_batch_mode():
+    """use_sshpass=True should NOT include BatchMode=yes."""
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
+        calls.append(cmd)
+        if "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if input is not None:
+            return _Completed(stdout=json.dumps({"matches": 1}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+        use_sshpass=True,
+        ssh_password="secret",
+    )
+    ok, _msg = collector.probe()
+    assert ok
+    assert "BatchMode=yes" not in calls[0]
+    assert calls[0][:2] == ["sshpass", "-e"]
+
+
+def test_ssh_auth_failure_raises_ssh_authentication_error():
+    """Permission denied from SSH should raise SshAuthenticationError."""
+    import pytest
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        return _Completed(returncode=255, stderr="user@host: Permission denied (publickey,password).")
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+    with pytest.raises(SshAuthenticationError) as exc_info:
+        collector.probe()
+    assert exc_info.value.source_name == "server_a"
+
+
+def test_key_auth_fallback_uses_sshpass_without_batch_mode():
+    """use_sshpass=False + ssh_password provided should use sshpass and skip BatchMode."""
+    calls = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
+        calls.append((cmd, env))
+        if "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if input is not None:
+            return _Completed(stdout=json.dumps({"matches": 1}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "codex",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.codex/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+        use_sshpass=False,
+        ssh_password="fallback_password",
+    )
+    ok, _msg = collector.probe()
+    assert ok
+    probe_cmd, probe_env = calls[0]
+    assert probe_cmd[:2] == ["sshpass", "-e"]
+    assert probe_env is not None
+    assert probe_env["SSHPASS"] == "fallback_password"
+    assert "BatchMode=yes" not in probe_cmd
+
+
+def test_is_ssh_auth_failure_helper():
+    from llm_usage.collectors.remote_file import _is_ssh_auth_failure
+
+    assert _is_ssh_auth_failure("user@host: Permission denied (publickey,password).")
+    assert _is_ssh_auth_failure("Permission denied (publickey).")
+    assert _is_ssh_auth_failure("PERMISSION DENIED (publickey).")
+    assert not _is_ssh_auth_failure("Connection timed out")
+    assert not _is_ssh_auth_failure("No route to host")
+    assert not _is_ssh_auth_failure("")

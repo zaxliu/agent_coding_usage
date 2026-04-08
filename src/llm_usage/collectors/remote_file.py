@@ -19,6 +19,15 @@ from llm_usage.models import UsageEvent
 
 from .base import BaseCollector, CollectOutput
 
+
+class SshAuthenticationError(Exception):
+    """Raised when SSH authentication fails and no password fallback is available."""
+
+    def __init__(self, source_name: str, message: str = "") -> None:
+        self.source_name = source_name
+        super().__init__(message or f"SSH authentication failed for {source_name}")
+
+
 _CHUNKED_STDOUT_PREFIX = "LLMUSAGE_CHUNKED_V1"
 _DEFAULT_STDOUT_CHUNK_SIZE = 32 * 1024
 _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES = 600 * 1024
@@ -1336,6 +1345,8 @@ class RemoteFileCollector(BaseCollector):
                         self._log_progress(f"remote stdout received {stdout_bytes} bytes")
                     self._log_progress(f"remote stdout complete {stdout_bytes} bytes")
                 if process.returncode != 0:
+                    if _is_ssh_auth_failure(stderr_text):
+                        raise SshAuthenticationError(self.source_name, stderr_text.strip())
                     if allow_retry and self._maybe_disable_connection_sharing_from_text(stderr_text):
                         return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
                     if self._should_fallback_to_uploaded_script(stdout_text, stderr_text):
@@ -1413,6 +1424,8 @@ class RemoteFileCollector(BaseCollector):
         try:
             if process.returncode != 0:
                 stderr_text = "\n".join(stderr_lines)
+                if _is_ssh_auth_failure(stderr_text):
+                    raise SshAuthenticationError(self.source_name, stderr_text.strip())
                 if allow_retry and self._maybe_disable_connection_sharing_from_text(stderr_text):
                     return self._ssh_run_python_command_once(args, input_text=input_text, allow_retry=False)
                 if self._should_fallback_to_uploaded_script("", stderr_text):
@@ -1472,10 +1485,13 @@ class RemoteFileCollector(BaseCollector):
             )
             if env is not None:
                 run_kwargs["env"] = env
-            return self._runner(
+            result = self._runner(
                 command,
                 **run_kwargs,
             )
+            if result.returncode != 0 and _is_ssh_auth_failure(result.stderr or ""):
+                raise SshAuthenticationError(self.source_name, (result.stderr or "").strip())
+            return result
         except FileNotFoundError as exc:
             raise ValueError(_missing_ssh_binary_message(exc, self.use_sshpass))
         except subprocess.TimeoutExpired:
@@ -1491,10 +1507,13 @@ class RemoteFileCollector(BaseCollector):
                     )
                     if retry_env is not None:
                         retry_kwargs["env"] = retry_env
-                    return self._runner(
+                    retry_result = self._runner(
                         retry_command,
                         **retry_kwargs,
                     )
+                    if retry_result.returncode != 0 and _is_ssh_auth_failure(retry_result.stderr or ""):
+                        raise SshAuthenticationError(self.source_name, (retry_result.stderr or "").strip())
+                    return retry_result
                 except FileNotFoundError as exc:
                     raise ValueError(_missing_ssh_binary_message(exc, self.use_sshpass))
                 except subprocess.TimeoutExpired:
@@ -1552,7 +1571,12 @@ def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def _ssh_base_command(destination: str, port: int, use_connection_sharing: bool = True) -> list[str]:
+def _ssh_base_command(
+    destination: str,
+    port: int,
+    use_connection_sharing: bool = True,
+    batch_mode: bool = False,
+) -> list[str]:
     command = [
         "ssh",
         "-o",
@@ -1561,8 +1585,11 @@ def _ssh_base_command(destination: str, port: int, use_connection_sharing: bool 
         str(port),
         destination,
     ]
+    if batch_mode:
+        command[3:3] = ["-o", "BatchMode=yes"]
     if use_connection_sharing:
-        command[3:3] = [
+        idx = 3 + (2 if batch_mode else 0)
+        command[idx:idx] = [
             "-o",
             "ControlMaster=auto",
             "-o",
@@ -1583,15 +1610,30 @@ def _ssh_command_and_env(
     ssh_password: Optional[str] = None,
 ) -> tuple[list[str], Optional[dict[str, str]]]:
     remote_command = " ".join(_shell_quote(arg) for arg in remote_args)
-    command = _ssh_base_command(destination, port, use_connection_sharing=use_connection_sharing) + [remote_command]
-    if not use_sshpass:
-        return command, None
-    password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
-    if not password.strip():
+
+    # Determine effective password: explicit ssh_password, or SSHPASS env for sshpass mode
+    if use_sshpass:
+        effective_password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
+    else:
+        effective_password = ssh_password or ""
+
+    has_password = bool(effective_password and effective_password.strip())
+
+    if use_sshpass and not has_password:
         raise ValueError("SSH 密码模式需要提供密码")
-    env = os.environ.copy()
-    env["SSHPASS"] = password
-    return ["sshpass", "-e"] + command, env
+
+    # BatchMode=yes when no password available — prevents SSH from prompting on /dev/tty
+    batch_mode = not has_password
+    command = _ssh_base_command(
+        destination, port, use_connection_sharing=use_connection_sharing, batch_mode=batch_mode,
+    ) + [remote_command]
+
+    if has_password:
+        env = os.environ.copy()
+        env["SSHPASS"] = effective_password
+        return ["sshpass", "-e"] + command, env
+
+    return command, None
 
 
 def _coerce_int(value: object) -> int:
@@ -1607,6 +1649,11 @@ def _optional_str(value: object) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value
     return None
+
+
+def _is_ssh_auth_failure(stderr_text: str) -> bool:
+    """Return True if SSH stderr indicates an authentication failure."""
+    return "permission denied" in stderr_text.lower()
 
 
 def _missing_ssh_binary_message(exc: FileNotFoundError, use_sshpass: bool) -> str:

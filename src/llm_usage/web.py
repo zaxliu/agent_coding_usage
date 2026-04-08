@@ -20,7 +20,7 @@ import webbrowser
 
 from llm_usage.aggregation import aggregate_events
 from llm_usage.collectors import BaseCollector
-from llm_usage.collectors.remote_file import RemoteFileCollector
+from llm_usage.collectors.remote_file import RemoteFileCollector, SshAuthenticationError
 from llm_usage.env import load_env_document
 from llm_usage.feishu_targets import normalize_feishu_target_name, resolve_feishu_targets_from_env, select_feishu_targets
 from llm_usage.identity import hash_source_host, hash_user
@@ -640,6 +640,40 @@ class WebService:
         selected_aliases_set = set(selected_aliases)
         return [config for config in configured_remotes if config.alias in selected_aliases_set]
 
+    def _wrap_with_ssh_auth_fallback(
+        self,
+        operation: Callable[[], dict[str, Any]],
+        selected_configs: list[Any],
+    ) -> Callable[[], dict[str, Any]]:
+        """Wrap a handler to catch SSH auth failures and prompt for password via the frontend."""
+
+        def handler() -> dict[str, Any]:
+            try:
+                return operation()
+            except SshAuthenticationError as exc:
+                alias = None
+                for config in selected_configs:
+                    if config.alias.lower() == exc.source_name:
+                        alias = config.alias
+                        break
+                if alias is None:
+                    raise
+
+                input_request = {
+                    "kind": "ssh_password",
+                    "remote_alias": alias,
+                    "message": f"SSH key 认证失败（{alias}）。请提供 SSH 密码重试，密码仅缓存在本次会话中。",
+                    "cache_scope": "session",
+                }
+
+                def resume_handler(value: str) -> dict[str, Any]:
+                    self._remember_runtime_password(alias, value)
+                    return operation()
+
+                raise _JobNeedsInput(input_request, resume_handler)
+
+        return handler
+
     def _run_collect_operation(self, payload: dict[str, Any]) -> dict[str, Any]:
         runtime_passwords = self._runtime_passwords_for([config.alias for config in self._selected_remote_configs(payload)])
         rows, warnings, host_labels = _build_aggregates_for_web(payload, runtime_passwords=runtime_passwords)
@@ -689,7 +723,10 @@ class WebService:
                 return self._run_collect_operation(payload)
 
             return self.jobs.create_needs_input("collect", input_request, resume_handler, write_operation=True)
-        return self.jobs.start("collect", lambda: self._run_collect_operation(payload), write_operation=True)
+        handler = self._wrap_with_ssh_auth_fallback(
+            lambda: self._run_collect_operation(payload), selected_configs,
+        )
+        return self.jobs.start("collect", handler, write_operation=True)
 
     def _sync_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
         selected_configs = self._selected_remote_configs(payload)
@@ -702,7 +739,10 @@ class WebService:
                 return self._run_sync_operation(payload)
 
             return self.jobs.create_needs_input("sync", input_request, resume_handler, write_operation=True)
-        return self.jobs.start("sync", lambda: self._run_sync_operation(payload), write_operation=True)
+        handler = self._wrap_with_ssh_auth_fallback(
+            lambda: self._run_sync_operation(payload), selected_configs,
+        )
+        return self.jobs.start("sync", handler, write_operation=True)
 
     def _sync_preview_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
         selected_configs = self._selected_remote_configs(payload)
@@ -715,7 +755,10 @@ class WebService:
                 return self._run_sync_preview_operation(payload)
 
             return self.jobs.create_needs_input("sync_preview", input_request, resume_handler)
-        return self.jobs.start("sync_preview", lambda: self._run_sync_preview_operation(payload))
+        handler = self._wrap_with_ssh_auth_fallback(
+            lambda: self._run_sync_preview_operation(payload), selected_configs,
+        )
+        return self.jobs.start("sync_preview", handler)
 
     def _start_remote_setup_flow(self) -> dict[str, Any]:
         _load_runtime_env()
@@ -778,17 +821,21 @@ class WebService:
                 return {"exit_code": exit_code, "mode": "feishu"}
             username = _required_org_username()
             salt = _required_env("HASH_SALT")
+            configs = parse_remote_configs_from_env()
+            runtime_passwords = self._runtime_passwords_for([c.alias for c in configs])
             probes: list[dict[str, Any]] = []
             for collector in _collectors(hash_source_host(username, "local", salt)):
                 ok, msg = collector.probe()
                 probes.append({"name": collector.name, "source_name": collector.source_name, "ok": ok, "message": msg})
-            for collector in build_remote_collectors(parse_remote_configs_from_env(), username=username, salt=salt):
+            for collector in build_remote_collectors(configs, username=username, salt=salt, runtime_passwords=runtime_passwords):
                 if isinstance(collector, RemoteFileCollector):
                     ok, msg = collector.probe()
                     probes.append({"name": collector.name, "source_name": collector.source_name, "ok": ok, "message": msg})
             return {"exit_code": 0, "probes": probes}
 
-        return self.jobs.start("doctor", handler)
+        configs = parse_remote_configs_from_env()
+        wrapped = self._wrap_with_ssh_auth_fallback(handler, configs)
+        return self.jobs.start("doctor", wrapped)
 
     def start_collect(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._collect_or_pause(payload)

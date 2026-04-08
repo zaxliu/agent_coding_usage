@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from llm_usage.collectors.remote_file import SshAuthenticationError
+
 import llm_usage.main as main
 import llm_usage.web as web
 
@@ -402,3 +404,72 @@ def test_web_remote_setup_returns_structured_input_request_sequence():
             "use_sshpass": False,
         }
     }
+
+
+def test_web_collect_fallback_on_ssh_auth_failure(tmp_path: Path, monkeypatch):
+    """When SSH key auth fails (use_sshpass=False), the job should pause for password input."""
+    # Ensure no leftover USE_SSHPASS from prior tests (dotenv pollution)
+    monkeypatch.delenv("REMOTE_SERVER_A_USE_SSHPASS", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "ORG_USERNAME=san.zhang",
+                "HASH_SALT=test-salt",
+                "TIMEZONE=Asia/Shanghai",
+                "REMOTE_HOSTS=server_a",
+                "REMOTE_SERVER_A_SSH_HOST=host-a",
+                "REMOTE_SERVER_A_SSH_USER=alice",
+                "REMOTE_SERVER_A_USE_SSHPASS=0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    call_count = {"n": 0}
+    captured: dict[str, object] = {}
+
+    def fake_build(payload, runtime_passwords=None):
+        call_count["n"] += 1
+        captured["runtime_passwords"] = dict(runtime_passwords or {})
+        if call_count["n"] == 1:
+            raise SshAuthenticationError("server_a", "Permission denied (publickey).")
+        return [], [], {}
+
+    monkeypatch.setattr(web, "_build_aggregates_for_web", fake_build)
+
+    service = web.WebService()
+    started = service.start_collect({})
+    job_id = started["id"]
+
+    # Wait for the job to transition to needs_input after the auth failure
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] in {"needs_input", "failed"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
+    assert current["input_request"]["kind"] == "ssh_password"
+    assert current["input_request"]["remote_alias"] == "SERVER_A"
+
+    # Submit password
+    result = service.jobs.submit_input(job_id, "my-password")
+    assert result["status"] in {"queued", "running"}
+
+    # Wait for completion
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "succeeded"
+    assert captured["runtime_passwords"] == {"SERVER_A": "my-password"}
