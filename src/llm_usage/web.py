@@ -988,16 +988,36 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_static(self, raw_path: str) -> None:
         relative = "index.html" if raw_path in {"", "/"} else raw_path.lstrip("/")
         file_path = (_web_root() / relative).resolve()
-        if not str(file_path).startswith(str(_web_root().resolve())) or not file_path.exists():
-            file_path = _web_root() / "index.html"
+        web_root = _web_root().resolve()
+        if not str(file_path).startswith(str(web_root)):
+            return self._write_not_found()
+        if not file_path.exists():
+            if raw_path == "/favicon.ico":
+                file_path = web_root / "favicon.svg"
+            elif Path(relative).suffix:
+                return self._write_not_found()
+            else:
+                file_path = web_root / "index.html"
         content_type = "text/html; charset=utf-8"
         if file_path.suffix == ".js":
             content_type = "application/javascript; charset=utf-8"
         elif file_path.suffix == ".css":
             content_type = "text/css; charset=utf-8"
+        elif file_path.suffix == ".svg":
+            content_type = "image/svg+xml"
+        elif file_path.suffix == ".ico":
+            content_type = "image/x-icon"
         data = file_path.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _write_not_found(self) -> None:
+        data = b"not found"
+        self.send_response(HTTPStatus.NOT_FOUND)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

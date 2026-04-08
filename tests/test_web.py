@@ -255,6 +255,33 @@ def test_web_results_payload_is_dashboard_shaped(tmp_path: Path, monkeypatch):
     ]
 
 
+def test_web_static_handler_serves_favicon_assets_with_image_types_and_404s_unknown_static_paths():
+    def serve(path: str) -> tuple[int, dict[str, str], bytes]:
+        captured: dict[str, object] = {"status": None, "headers": {}, "body": b""}
+        handler = object.__new__(web._Handler)
+        handler.wfile = SimpleNamespace(write=lambda data: captured.__setitem__("body", captured["body"] + data))
+        handler.send_response = lambda status: captured.__setitem__("status", int(status))
+        handler.send_header = lambda key, value: captured["headers"].__setitem__(key, value)
+        handler.end_headers = lambda: None
+
+        web._Handler._serve_static(handler, path)
+        return captured["status"], captured["headers"], captured["body"]
+
+    status, headers, body = serve("/favicon.svg")
+    assert status == 200
+    assert headers["Content-Type"] == "image/svg+xml"
+    assert b"<svg" in body
+
+    status, headers, body = serve("/favicon.ico")
+    assert status == 200
+    assert headers["Content-Type"] == "image/svg+xml"
+    assert b"<svg" in body
+
+    status, headers, body = serve("/favicon-does-not-exist.ico")
+    assert status == 404
+    assert body == b"not found"
+
+
 def test_web_collect_pauses_for_ssh_password_and_resumes_from_memory_only(tmp_path: Path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text(

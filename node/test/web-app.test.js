@@ -23,6 +23,8 @@ test("index.html exposes a single-page console shell and removes old nav/view ma
   const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
 
   assert.match(html, /console-layout/u);
+  assert.match(html, /rel="shortcut icon" href="\/favicon\.ico"/u);
+  assert.match(html, /rel="icon" href="\/favicon\.svg" type="image\/svg\+xml"/u);
   assert.match(html, /class="sidebar console-sidebar"/u);
   assert.match(html, /class="main-panel console-main"/u);
   assert.match(html, /id="system-status"/u);
