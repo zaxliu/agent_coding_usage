@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -157,6 +158,41 @@ def fetch_bitable_field_type_map(
     return client._fetch_field_type_map()
 
 
+def fetch_bitable_link_share_entity(
+    app_token: str,
+    bot_token: str,
+    request_timeout_sec: int = 20,
+) -> str:
+    """Return the ``link_share_entity`` value for a Bitable document.
+
+    Uses the Drive permission-public API:
+    ``GET /open-apis/drive/v2/permissions/{token}/public?type=bitable``
+    """
+    url = f"https://open.feishu.cn/open-apis/drive/v2/permissions/{app_token}/public"
+    resp = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {bot_token}"},
+        params={"type": "bitable"},
+        timeout=request_timeout_sec,
+    )
+    payload = _maybe_json(resp)
+    if resp.status_code >= 400:
+        if payload is not None:
+            raise RuntimeError(
+                _format_feishu_api_error(payload, context="feishu get permission public http error")
+            )
+        resp.raise_for_status()
+    if payload is None:
+        resp.raise_for_status()
+        raise RuntimeError("feishu get permission public response is not json")
+    if payload.get("code", 0) != 0:
+        raise RuntimeError(
+            _format_feishu_api_error(payload, context="feishu get permission public error")
+        )
+    perm = payload.get("data", {}).get("permission_public", {})
+    return perm.get("link_share_entity", "")
+
+
 class FeishuBitableClient:
     def __init__(
         self,
@@ -259,6 +295,37 @@ class FeishuBitableClient:
     def create_field(self, field_name: str, field_type: int) -> None:
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
         self._request("POST", url, json={"field_name": field_name, "type": field_type})
+
+    def probe_write_access(self) -> str:
+        probe_key = f"__llm_usage_doctor_probe__{uuid.uuid4().hex}"
+        raw_fields = {
+            "date_local": "1970-01-01",
+            "tool": "__doctor_probe__",
+            "model": "__doctor_probe__",
+            "input_tokens_sum": 0,
+            "cache_tokens_sum": 0,
+            "output_tokens_sum": 0,
+            "row_key": probe_key,
+        }
+        field_type_map = self._fetch_field_type_map()
+        fields = self._normalize_fields_for_table(raw_fields, field_type_map)
+        payload = {
+            "records": [
+                {
+                    "fields": fields
+                }
+            ]
+        }
+        created = self._request("POST", f"{self.base_url}/batch_create", json=payload)
+        records = created.get("data", {}).get("records", [])
+        record_id = records[0].get("record_id") if records else None
+        if not isinstance(record_id, str) or not record_id:
+            raise RuntimeError("feishu doctor write probe did not return record_id")
+        try:
+            self._request("POST", f"{self.base_url}/batch_delete", json={"records": [record_id]})
+        except Exception as exc:
+            raise RuntimeError(f"feishu doctor cleanup failed: {record_id}: {exc}") from exc
+        return record_id
 
     def _normalize_datetime_value(self, value: object) -> object:
         if isinstance(value, (int, float)):

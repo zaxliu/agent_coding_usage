@@ -223,6 +223,109 @@ def test_run_feishu_doctor_wraps_auth_errors_with_target_name(monkeypatch):
         main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
 
 
+def test_run_feishu_doctor_does_not_treat_link_share_mode_as_write_permission_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main,
+        "_resolve_feishu_sync_selection",
+        lambda args: [
+            main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
+        ],
+    )
+    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: [])
+    class _Client:
+        def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
+            pass
+
+        def probe_write_access(self):  # noqa: ANN201
+            return "rec_123"
+
+    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+
+    rc = main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "feishu[team_a]: OK" in output
+    assert "expected 'tenant_editable'" not in output
+    assert "组织内获得链接的人可编辑" not in output
+    assert "无法检查文档分享权限" not in output
+
+
+def test_run_feishu_doctor_reports_write_probe_cleanup_failure(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_resolve_feishu_sync_selection",
+        lambda args: [
+            main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
+        ],
+    )
+    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: [])
+    class _Client:
+        def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
+            pass
+
+        def probe_write_access(self):  # noqa: ANN201
+            raise RuntimeError("feishu doctor cleanup failed: rec_123")
+
+    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
+
+
+def test_run_feishu_doctor_reports_write_probe_create_failure(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_resolve_feishu_sync_selection",
+        lambda args: [
+            main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
+        ],
+    )
+    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: [])
+    class _Client:
+        def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
+            pass
+
+        def probe_write_access(self):  # noqa: ANN201
+            raise RuntimeError("create forbidden")
+
+    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+
+    with pytest.raises(RuntimeError, match="target team_a: create forbidden"):
+        main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
+
+
+def test_run_feishu_doctor_prints_warn_summary_when_schema_has_warnings(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main,
+        "_resolve_feishu_sync_selection",
+        lambda args: [
+            main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
+        ],
+    )
+    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: ["missing cache_tokens_sum"])
+
+    class _Client:
+        def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
+            pass
+
+        def probe_write_access(self):  # noqa: ANN201
+            return "rec_123"
+
+    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+
+    rc = main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "warn: missing cache_tokens_sum" in output
+    assert "feishu[team_a]: WARN" in output
+
+
 def test_cmd_doctor_rejects_target_flags_without_feishu(capsys):
     rc = main.cmd_doctor(
         argparse.Namespace(feishu=False, feishu_target=["team_a"], all_feishu_targets=False, lookback_days=None)

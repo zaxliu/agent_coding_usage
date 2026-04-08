@@ -1,5 +1,7 @@
 from io import StringIO
 
+import pytest
+
 from llm_usage.models import AggregateRecord
 from llm_usage.sinks.feishu_bitable import FeishuBitableClient, UploadProgress
 
@@ -214,3 +216,99 @@ def test_request_prefers_feishu_json_error_over_generic_http_error(monkeypatch):
         assert "hint=" in text
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_probe_write_access_creates_and_deletes_record(monkeypatch):
+    calls = []
+
+    def _fake_request(method, url, **kwargs):  # noqa: ANN001, ANN201
+        calls.append((method, url, kwargs))
+        if url.endswith("/batch_create"):
+            return {"data": {"records": [{"record_id": "rec_probe"}]}}
+        if url.endswith("/batch_delete"):
+            return {"data": {"records": [{"record_id": "rec_probe"}]}}
+        raise AssertionError(url)
+
+    client = FeishuBitableClient(app_token="a", table_id="t", bot_token="x")
+    monkeypatch.setattr(
+        client,
+        "_fetch_field_type_map",
+        lambda: {
+            "date_local": 1,
+            "tool": 1,
+            "model": 1,
+            "input_tokens_sum": 2,
+            "cache_tokens_sum": 2,
+            "output_tokens_sum": 2,
+            "row_key": 1,
+        },
+    )
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    record_id = client.probe_write_access()
+
+    assert record_id == "rec_probe"
+    assert calls[0][0] == "POST"
+    assert calls[0][1].endswith("/batch_create")
+    assert calls[0][2]["json"]["records"][0]["fields"]["date_local"] == "1970-01-01"
+    assert calls[1][0] == "POST"
+    assert calls[1][1].endswith("/batch_delete")
+
+
+def test_probe_write_access_raises_when_delete_fails(monkeypatch):
+    def _fake_request(method, url, **kwargs):  # noqa: ANN001, ANN201
+        if url.endswith("/batch_create"):
+            return {"data": {"records": [{"record_id": "rec_probe"}]}}
+        if url.endswith("/batch_delete"):
+            raise RuntimeError("delete forbidden")
+        raise AssertionError(url)
+
+    client = FeishuBitableClient(app_token="a", table_id="t", bot_token="x")
+    monkeypatch.setattr(
+        client,
+        "_fetch_field_type_map",
+        lambda: {
+            "date_local": 1,
+            "tool": 1,
+            "model": 1,
+            "input_tokens_sum": 2,
+            "cache_tokens_sum": 2,
+            "output_tokens_sum": 2,
+            "row_key": 1,
+        },
+    )
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        client.probe_write_access()
+
+
+def test_probe_write_access_normalizes_datetime_fields(monkeypatch):
+    captured = {}
+
+    def _fake_field_map():  # noqa: ANN201
+        return {
+            "date_local": 5,
+            "tool": 1,
+            "model": 1,
+            "input_tokens_sum": 2,
+            "cache_tokens_sum": 2,
+            "output_tokens_sum": 2,
+            "row_key": 1,
+        }
+
+    def _fake_request(method, url, **kwargs):  # noqa: ANN001, ANN201
+        if url.endswith("/batch_create"):
+            captured["fields"] = kwargs["json"]["records"][0]["fields"]
+            return {"data": {"records": [{"record_id": "rec_probe"}]}}
+        if url.endswith("/batch_delete"):
+            return {"data": {"records": [{"record_id": "rec_probe"}]}}
+        raise AssertionError(url)
+
+    client = FeishuBitableClient(app_token="a", table_id="t", bot_token="x")
+    monkeypatch.setattr(client, "_fetch_field_type_map", _fake_field_map)
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    client.probe_write_access()
+
+    assert isinstance(captured["fields"]["date_local"], int)

@@ -278,8 +278,19 @@ def run_feishu_doctor(args: argparse.Namespace) -> int:
             )
         except RuntimeError as exc:
             raise RuntimeError(f"target {target.name}: {exc}") from exc
-        for msg in feishu_schema_warnings(field_map):
+        warnings = feishu_schema_warnings(field_map)
+        for msg in warnings:
             print(f"warn: {msg}")
+        client = FeishuBitableClient(
+            app_token=target.app_token.strip(),
+            table_id=table_id,
+            bot_token=bot_token,
+        )
+        try:
+            client.probe_write_access()
+        except RuntimeError as exc:
+            raise RuntimeError(f"target {target.name}: {exc}") from exc
+        print(f"feishu[{target.name}]: {'WARN' if warnings else 'OK'}")
     return 0
 
 
