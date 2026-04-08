@@ -704,6 +704,20 @@ input {
   overflow-wrap: anywhere;
 }
 
+.run-confirm-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.run-confirm-list {
+  display: grid;
+  gap: 10px;
+}
+
+#run-confirm-feishu-section[hidden] {
+  display: none;
+}
+
 .empty-state {
   display: grid;
   place-items: center;

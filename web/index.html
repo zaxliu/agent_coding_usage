@@ -244,6 +244,44 @@
       </form>
     </dialog>
 
+    <dialog id="run-confirm-modal" class="credential-modal">
+      <form method="dialog" class="credential-form" id="run-confirm-form">
+        <p class="eyebrow">运行确认</p>
+        <h3 id="run-confirm-title">确认执行</h3>
+        <p id="run-confirm-copy">请先检查本次运行会影响到哪些远端和飞书目标。</p>
+        <section class="settings-list" id="run-confirm-remotes">
+          <p class="panel-note" id="run-confirm-remotes-empty">当前没有可展示的远端。</p>
+        </section>
+        <section class="panel" id="run-confirm-feishu-section">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">飞书</p>
+              <h3>发送范围</h3>
+            </div>
+          </div>
+          <div class="settings-list" id="run-confirm-feishu-modes">
+            <label>
+              <input type="radio" name="run-confirm-feishu" id="run-confirm-feishu-default" value="default" checked>
+              使用默认配置
+            </label>
+            <label>
+              <input type="radio" name="run-confirm-feishu" id="run-confirm-feishu-all" value="all">
+              全部目标
+            </label>
+            <label>
+              <input type="radio" name="run-confirm-feishu" id="run-confirm-feishu-named-targets" value="named">
+              仅命名目标
+            </label>
+          </div>
+          <div id="run-confirm-feishu-targets" class="settings-list"></div>
+        </section>
+        <div class="credential-actions">
+          <button value="cancel" class="button-subtle">取消</button>
+          <button value="submit" class="button-primary" id="run-confirm-submit">继续</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="remote-edit-modal" class="credential-modal">
       <form method="dialog" class="credential-form" id="remote-edit-form">
         <p class="eyebrow">远端配置</p>

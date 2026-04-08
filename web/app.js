@@ -27,6 +27,8 @@ const state = {
   pendingCredentialJobId: "",
   dismissedCredentialJobId: "",
   pendingCredentialRequest: null,
+  pendingRunAction: "",
+  runConfirmSubmitting: false,
   editingRemoteIndex: -1,
   editingFeishuTargetIndex: -1,
 };
@@ -71,6 +73,19 @@ const refs = {
   credentialCancel: document.querySelector("#credential-cancel"),
   credentialForm: document.querySelector("#credential-form"),
   credentialSubmit: document.querySelector("#credential-submit"),
+  runConfirmModal: document.querySelector("#run-confirm-modal"),
+  runConfirmForm: document.querySelector("#run-confirm-form"),
+  runConfirmTitle: document.querySelector("#run-confirm-title"),
+  runConfirmCopy: document.querySelector("#run-confirm-copy"),
+  runConfirmRemotes: document.querySelector("#run-confirm-remotes"),
+  runConfirmRemotesEmpty: document.querySelector("#run-confirm-remotes-empty"),
+  runConfirmFeishuSection: document.querySelector("#run-confirm-feishu-section"),
+  runConfirmFeishuModes: document.querySelector("#run-confirm-feishu-modes"),
+  runConfirmFeishuDefault: document.querySelector("#run-confirm-feishu-default"),
+  runConfirmFeishuAll: document.querySelector("#run-confirm-feishu-all"),
+  runConfirmFeishuNamedTargets: document.querySelector("#run-confirm-feishu-named-targets"),
+  runConfirmFeishuTargets: document.querySelector("#run-confirm-feishu-targets"),
+  runConfirmSubmit: document.querySelector("#run-confirm-submit"),
   remoteEditModal: document.querySelector("#remote-edit-modal"),
   remoteEditForm: document.querySelector("#remote-edit-form"),
   remoteEditTitle: document.querySelector("#remote-edit-title"),
@@ -531,6 +546,158 @@ function renderFeishuTargets(targets = []) {
   }
 }
 
+function syncFeishuTargetSelectionState() {
+  const namedMode = refs.runConfirmFeishuNamedTargets.checked;
+  for (const input of refs.runConfirmFeishuTargets.querySelectorAll("input[data-run-feishu-target]")) {
+    input.disabled = !namedMode;
+  }
+}
+
+function renderRunConfirmRemotes(remotes = []) {
+  refs.runConfirmRemotes.classList.add("run-confirm-grid");
+  refs.runConfirmRemotesEmpty.textContent = "未配置远端，将只采集本地数据。";
+  refs.runConfirmRemotesEmpty.hidden = remotes.length > 0;
+  const remoteItems = remotes.length
+    ? remotes
+        .map(
+          (remote) => `
+            <label class="remote-item run-confirm-list">
+              <span class="checkbox-label">
+                <input type="checkbox" data-run-remote value="${escapeHtml(remote.alias)}" checked>
+                <span>${escapeHtml(remote.alias)}</span>
+              </span>
+              <span class="remote-meta">${escapeHtml(remote.source_label || `${remote.ssh_user}@${remote.ssh_host}`)}</span>
+            </label>
+          `,
+        )
+        .join("")
+    : "";
+  refs.runConfirmRemotes.innerHTML = `${refs.runConfirmRemotesEmpty.outerHTML}${remoteItems}`;
+  refs.runConfirmRemotesEmpty = refs.runConfirmRemotes.querySelector("#run-confirm-remotes-empty");
+}
+
+function renderRunConfirmFeishuTargets(targets = []) {
+  refs.runConfirmFeishuTargets.classList.add("run-confirm-grid");
+  refs.runConfirmFeishuTargets.innerHTML = targets.length
+    ? targets
+        .map(
+          (target) => `
+            <label class="remote-item run-confirm-list">
+              <span class="checkbox-label">
+                <input type="checkbox" data-run-feishu-target value="${escapeHtml(target.name)}" checked>
+                <span>${escapeHtml(target.name)}</span>
+              </span>
+              <span class="remote-meta">table: ${escapeHtml(target.table_id || "-")} | app: ${escapeHtml(target.app_id || "-")}</span>
+            </label>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state empty-state-compact">未配置 named targets，将使用默认目标。</div>`;
+  syncFeishuTargetSelectionState();
+}
+
+function openRunConfirmModal(action) {
+  const isSync = action === "sync";
+  const remotes = state.config?.remotes || [];
+  const feishuTargets = state.config?.feishu_targets || [];
+  resetRunConfirmState();
+  state.pendingRunAction = action;
+  refs.runConfirmTitle.textContent = isSync ? "确认同步" : "确认采集";
+  refs.runConfirmCopy.textContent = isSync
+    ? "请确认本次同步使用的远端和飞书目标。"
+    : "请确认本次采集使用的远端来源。未勾选远端时只采集本地数据。";
+  refs.runConfirmSubmit.textContent = isSync ? "开始同步" : "开始采集";
+  renderRunConfirmRemotes(remotes);
+  refs.runConfirmFeishuSection.hidden = !isSync;
+  refs.runConfirmFeishuDefault.checked = true;
+  refs.runConfirmFeishuAll.checked = false;
+  refs.runConfirmFeishuNamedTargets.checked = false;
+  if (isSync) {
+    renderRunConfirmFeishuTargets(feishuTargets);
+  } else {
+    refs.runConfirmFeishuTargets.innerHTML = "";
+  }
+  refs.runConfirmModal.showModal();
+}
+
+function buildRunConfirmPayload() {
+  const selectedRemotes = [...refs.runConfirmRemotes.querySelectorAll("input[data-run-remote]:checked")].map((input) => input.value);
+  const selectAllFeishuTargets = refs.runConfirmFeishuAll?.checked || false;
+  const selectedFeishuTargets = refs.runConfirmFeishuNamedTargets?.checked
+    ? [...refs.runConfirmFeishuTargets.querySelectorAll("input[data-run-feishu-target]:checked")].map((input) => input.value)
+    : [];
+  return {
+    selected_remotes: selectedRemotes,
+    feishu_targets: selectedFeishuTargets,
+    all_feishu_targets: selectAllFeishuTargets,
+  };
+}
+
+function resetRunConfirmState() {
+  state.pendingRunAction = "";
+  state.runConfirmSubmitting = false;
+  refs.runConfirmSubmit.disabled = false;
+}
+
+async function submitRunConfirm(event) {
+  event.preventDefault();
+  if (state.runConfirmSubmitting) {
+    return;
+  }
+  const submitterValue = event.submitter?.value || "";
+  if (submitterValue === "cancel") {
+    resetRunConfirmState();
+    refs.runConfirmModal.close();
+    return;
+  }
+
+  const action = state.pendingRunAction;
+  if (!action) {
+    resetRunConfirmState();
+    refs.runConfirmModal.close();
+    return;
+  }
+  if (!["collect", "sync"].includes(action)) {
+    resetRunConfirmState();
+    refs.runConfirmModal.close();
+    showFlash("运行确认状态已失效，请重新选择。", "error");
+    return;
+  }
+
+  try {
+    state.runConfirmSubmitting = true;
+    refs.runConfirmSubmit.disabled = true;
+    let url = "";
+    let payload = buildRunConfirmPayload();
+    if (action === "collect") {
+      url = "/api/collect";
+      payload = { selected_remotes: buildRunConfirmPayload().selected_remotes };
+      setActionRuntimeState("collect", "running");
+    } else if (action === "sync") {
+      const syncPayload = buildRunConfirmPayload();
+      url = "/api/sync";
+      payload = {
+        selected_remotes: syncPayload.selected_remotes,
+        feishu_targets: syncPayload.feishu_targets,
+        all_feishu_targets: syncPayload.all_feishu_targets,
+        confirm_sync: true,
+      };
+      setActionRuntimeState("sync", "running");
+    }
+    const job = await getJson(url, { method: "POST", body: JSON.stringify(payload) });
+    resetRunConfirmState();
+    refs.runConfirmModal.close();
+    showFlash(`Started ${job.type}.`);
+    setActionRuntimeState(action, "success");
+    await refreshJobs();
+    await refreshResults();
+  } catch (error) {
+    resetRunConfirmState();
+    setActionRuntimeState(action, "error", error.message);
+    showFlash(error.message, "error");
+  }
+}
+
 function openRemoteEditModal(remote = null, index = -1) {
   state.editingRemoteIndex = index;
   refs.remoteEditTitle.textContent = remote ? `编辑远端: ${remote.alias}` : "新增远端";
@@ -790,19 +957,20 @@ async function runAction(action) {
       }
       return;
     }
+    if (action === "collect") {
+      openRunConfirmModal(action);
+      return;
+    }
+    if (action === "sync") {
+      openRunConfirmModal(action);
+      return;
+    }
 
     let url = "/api/doctor";
     let payload = {};
-    if (action === "collect") {
-      url = "/api/collect";
-      setActionRuntimeState("collect", "running");
-    } else if (action === "sync-preview") {
+    if (action === "sync-preview") {
       url = "/api/sync/preview";
       setActionRuntimeState("sync-preview", "running");
-    } else if (action === "sync") {
-      url = "/api/sync";
-      payload = { confirm_sync: true };
-      setActionRuntimeState("sync", "running");
     } else {
       setActionRuntimeState("doctor", "running");
     }
@@ -867,6 +1035,13 @@ for (const button of document.querySelectorAll("[data-action]")) {
 applySettingsPanelState();
 refs.tableFilter.addEventListener("input", applyTableView);
 refs.credentialForm.addEventListener("submit", submitCredential);
+refs.runConfirmForm.addEventListener("submit", submitRunConfirm);
+refs.runConfirmModal.addEventListener("cancel", resetRunConfirmState);
+refs.runConfirmModal.addEventListener("close", resetRunConfirmState);
+
+for (const input of refs.runConfirmFeishuModes.querySelectorAll('input[name="run-confirm-feishu"]')) {
+  input.addEventListener("change", syncFeishuTargetSelectionState);
+}
 
 for (const button of document.querySelectorAll(".table-filter-button")) {
   button.addEventListener("click", () => openColumnFilter(button.dataset.column || ""));

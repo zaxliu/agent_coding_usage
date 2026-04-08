@@ -19,6 +19,24 @@ import {
   settingsPanelMode,
 } from "../../web/app-state.js";
 
+function matchBlock(source, pattern, message) {
+  const match = source.match(pattern);
+  assert.ok(match, message);
+  return match[0];
+}
+
+function assertContainsAll(source, patterns, messagePrefix = "expected pattern") {
+  for (const pattern of patterns) {
+    assert.match(source, pattern, `${messagePrefix}: ${pattern}`);
+  }
+}
+
+function assertTagWithAttrs(source, tagName, attrs) {
+  const tagPattern = new RegExp(`<${tagName}\\b[^>]*>`, "gu");
+  const tags = source.match(tagPattern) || [];
+  assert.ok(tags.some((tag) => attrs.every((attr) => tag.includes(attr))), `expected <${tagName}> with attrs: ${attrs.join(", ")}`);
+}
+
 test("index.html exposes a single-page console shell and removes old nav/view markers", () => {
   const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
 
@@ -73,18 +91,44 @@ test("app.js wires config summary rendering and inline settings state without ol
   assert.match(js, /buildConfigSummary/u);
   assert.match(js, /createUiFlags/u);
   assert.match(js, /settingsPanelMode/u);
+  assert.match(js, /pendingRunAction:\s*""/u);
+  assert.match(js, /runConfirmSubmitting:\s*false/u);
   assert.match(js, /config-summary-list/u);
   assert.match(js, /toggle-settings/u);
   assert.match(js, /function applyTableView\(/u);
   assert.match(js, /function openColumnFilter\(/u);
+  assert.match(js, /runConfirmModal:\s*document\.querySelector\("#run-confirm-modal"\)/u);
+  assert.match(js, /runConfirmForm:\s*document\.querySelector\("#run-confirm-form"\)/u);
+  assert.match(js, /runConfirmRemotes:\s*document\.querySelector\("#run-confirm-remotes"\)/u);
+  assert.match(js, /runConfirmFeishuSection:\s*document\.querySelector\("#run-confirm-feishu-section"\)/u);
+  assert.match(js, /function openRunConfirmModal\(action\)/u);
+  assert.match(js, /function buildRunConfirmPayload\(\)/u);
+  assert.match(js, /function resetRunConfirmState\(\)/u);
   assert.match(js, /state\.tableFilters/u);
   assert.match(js, /state\.tableSort/u);
   assert.match(js, /data-column/u);
+  assert.match(js, /selected_remotes:\s*selectedRemotes/u);
+  assert.match(js, /feishu_targets:\s*selectedFeishuTargets/u);
+  assert.match(js, /all_feishu_targets:\s*selectAllFeishuTargets/u);
   assert.match(js, /renderRuntimeStatus\("idle", "空闲", "本地控制台已就绪"\)/u);
   assert.match(js, /function setActionRuntimeState\(action, phase = "running", detail = ""\)/u);
   assert.match(js, /action === "validate-config"[\s\S]*setActionRuntimeState\("validate-config", "running"\)/u);
-  assert.match(js, /action === "collect"[\s\S]*setActionRuntimeState\("collect", "running"\)/u);
-  assert.match(js, /action === "sync"[\s\S]*setActionRuntimeState\("sync", "running"\)/u);
+  assert.match(js, /if \(action === "collect"\) \{[\s\S]*openRunConfirmModal\(action\)[\s\S]*return;/u);
+  assert.match(js, /if \(action === "sync"\) \{[\s\S]*openRunConfirmModal\(action\)[\s\S]*return;/u);
+  assert.match(js, /refs\.runConfirmForm\.addEventListener\("submit"/u);
+  assert.match(js, /refs\.runConfirmModal\.addEventListener\("cancel", resetRunConfirmState\)/u);
+  assert.match(js, /refs\.runConfirmModal\.addEventListener\("close", resetRunConfirmState\)/u);
+  const staleActionBlock = matchBlock(
+    js,
+    /if \(!\["collect", "sync"\]\.includes\(action\)\) \{[\s\S]*?return;\n\s*\}/u,
+    "expected stale run-confirm action guard",
+  );
+  assertContainsAll(
+    staleActionBlock,
+    [/resetRunConfirmState\(\)/u, /refs\.runConfirmModal\.close\(\)/u, /showFlash\("运行确认状态已失效，请重新选择。", "error"\)/u],
+    "expected stale-action fail-closed behavior",
+  );
+  assert.doesNotMatch(staleActionBlock, /getJson\(/u);
   assert.match(js, /action === "save-config"[\s\S]*applySettingsPanelState\(false\)/u);
   assert.match(js, /action === "validate-config"[\s\S]*showFlash\("配置校验通过。", "success"\)/u);
   assert.match(html, /id="settings-toggle"/u);
@@ -149,6 +193,8 @@ test("app.css defines responsive console and dialog overflow protections", () =>
   assert.match(css, /\.credential-form[\s\S]*max-height:\s*calc\(100vh - 32px\)/u);
   assert.match(css, /\.credential-form[\s\S]*overflow:\s*auto/u);
   assert.match(css, /\.flashbar\.is-success/u);
+  assert.match(css, /\.run-confirm-grid/u);
+  assert.match(css, /\.run-confirm-list/u);
 });
 
 test("app.css allows shell sections and action rows to shrink and wrap", () => {
@@ -187,11 +233,107 @@ test("dialog markup and styles support viewport-safe modal content", () => {
   const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
   const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
 
-  assert.match(html, /id="credential-modal" class="credential-modal"/u);
+  assertTagWithAttrs(html, "dialog", ['id="credential-modal"', 'class="credential-modal"']);
+  assertTagWithAttrs(html, "dialog", ['id="run-confirm-modal"', 'class="credential-modal"']);
+  assertTagWithAttrs(html, "form", ['id="run-confirm-form"', 'method="dialog"', 'class="credential-form"']);
+  assertTagWithAttrs(html, "section", ['id="run-confirm-remotes"', 'class="settings-list"']);
+  assertTagWithAttrs(html, "p", ['id="run-confirm-remotes-empty"']);
+  assertTagWithAttrs(html, "section", ['id="run-confirm-feishu-section"', 'class="panel"']);
+  assertTagWithAttrs(html, "div", ['id="run-confirm-feishu-modes"', 'class="settings-list"']);
+  assertTagWithAttrs(html, "input", ['id="run-confirm-feishu-default"', 'value="default"']);
+  assertTagWithAttrs(html, "input", ['id="run-confirm-feishu-all"', 'value="all"']);
+  assertTagWithAttrs(html, "input", ['id="run-confirm-feishu-named-targets"', 'value="named"']);
+  assertTagWithAttrs(html, "div", ['id="run-confirm-feishu-targets"', 'class="settings-list"']);
+  assertTagWithAttrs(html, "button", ['id="run-confirm-submit"']);
+  assertContainsAll(
+    html,
+    [/id="run-confirm-title"/u, /id="run-confirm-copy"/u, /data-action="collect"/u, /data-action="sync"/u, /id="run-confirm-feishu-modes"[\s\S]*id="run-confirm-feishu-targets"/u],
+    "expected run-confirm modal hooks",
+  );
   assert.match(css, /\.credential-modal[\s\S]*max-width:\s*calc\(100vw - 16px\)/u);
   assert.match(css, /\.credential-form[\s\S]*width:\s*min\(460px,\s*calc\(100vw - 32px\)\)/u);
   assert.match(css, /\.credential-form[\s\S]*word-break:\s*break-word/u);
   assert.match(css, /\.credential-actions[\s\S]*justify-content:\s*flex-end/u);
+});
+
+test("app.js renders run-confirm empty states and sync-specific feishu controls", () => {
+  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+
+  assertContainsAll(
+    js,
+    [/未配置远端，将只采集本地数据。/u, /未配置 named targets，将使用默认目标。/u, /run-confirm-feishu-section/u, /run-confirm-feishu-targets/u, /data-run-remote/u, /data-run-feishu-target/u],
+    "expected run-confirm rendering hooks",
+  );
+});
+
+test("app.js keeps collect payload scoped to selected_remotes only", () => {
+  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const collectBlock = matchBlock(
+    js,
+    /if \(action === "collect"\) \{[\s\S]*?setActionRuntimeState\("collect", "running"\);/u,
+    "expected collect payload block in submitRunConfirm",
+  );
+
+  assert.match(collectBlock, /url = "\/api\/collect"/u);
+  assert.match(collectBlock, /payload = \{\s*selected_remotes:\s*buildRunConfirmPayload\(\)\.selected_remotes\s*\}/u);
+  assert.doesNotMatch(collectBlock, /feishu_targets/u);
+  assert.doesNotMatch(collectBlock, /all_feishu_targets/u);
+  assert.doesNotMatch(collectBlock, /confirm_sync/u);
+});
+
+test("app.js keeps sync payload scoped to the approved four fields only", () => {
+  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const syncBlock = matchBlock(
+    js,
+    /else if \(action === "sync"\) \{[\s\S]*?setActionRuntimeState\("sync", "running"\);/u,
+    "expected sync payload block in submitRunConfirm",
+  );
+
+  assert.match(syncBlock, /const syncPayload = buildRunConfirmPayload\(\)/u);
+  assert.match(syncBlock, /url = "\/api\/sync"/u);
+  assert.match(syncBlock, /selected_remotes:\s*syncPayload\.selected_remotes/u);
+  assert.match(syncBlock, /feishu_targets:\s*syncPayload\.feishu_targets/u);
+  assert.match(syncBlock, /all_feishu_targets:\s*syncPayload\.all_feishu_targets/u);
+  assert.match(syncBlock, /confirm_sync:\s*true/u);
+  assert.doesNotMatch(syncBlock, /\.\.\.syncPayload/u);
+});
+
+test("app.js ties default sync feishu mode to empty named-target payload fields", () => {
+  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const payloadHelperBlock = matchBlock(
+    js,
+    /function buildRunConfirmPayload\(\) \{[\s\S]*?return \{[\s\S]*?\};\n\}/u,
+    "expected buildRunConfirmPayload helper",
+  );
+
+  assert.match(payloadHelperBlock, /const selectAllFeishuTargets = refs\.runConfirmFeishuAll\?\.checked \|\| false;/u);
+  assertContainsAll(
+    payloadHelperBlock,
+    [/refs\.runConfirmFeishuNamedTargets\?\.checked/u, /input\[data-run-feishu-target\]:checked/u, /:\s*\[\]/u, /feishu_targets:\s*selectedFeishuTargets/u, /all_feishu_targets:\s*selectAllFeishuTargets/u],
+    "expected default sync feishu path",
+  );
+});
+
+test("app.js guards run-confirm double submit and resets modal state on native dismissal", () => {
+  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const resetBlock = matchBlock(js, /function resetRunConfirmState\(\) \{[\s\S]*?\n\}/u, "expected run-confirm reset helper");
+  const submitBlock = matchBlock(js, /async function submitRunConfirm\(event\) \{[\s\S]*?\n\}/u, "expected run-confirm submit handler");
+
+  assertContainsAll(
+    resetBlock,
+    [/state\.pendingRunAction = ""/u, /state\.runConfirmSubmitting = false/u, /refs\.runConfirmSubmit\.disabled = false/u],
+    "expected run-confirm reset state",
+  );
+  assertContainsAll(
+    submitBlock,
+    [/if \(state\.runConfirmSubmitting\) \{/u, /state\.runConfirmSubmitting = true/u, /refs\.runConfirmSubmit\.disabled = true/u],
+    "expected double-submit guard",
+  );
+  assertContainsAll(
+    js,
+    [/refs\.runConfirmModal\.addEventListener\("cancel", resetRunConfirmState\)/u, /refs\.runConfirmModal\.addEventListener\("close", resetRunConfirmState\)/u],
+    "expected native dialog dismissal reset hooks",
+  );
 });
 
 test("normalizeResultsPayload reads dashboard summary totals and names from current backend payload", () => {
