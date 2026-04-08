@@ -485,6 +485,50 @@ button {
   border-radius: 18px;
 }
 
+.table-column-filter {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fafc 100%);
+  box-shadow: var(--shadow);
+}
+
+.table-column-filter-head,
+.table-column-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.table-column-filter-actions {
+  margin-top: 12px;
+}
+
+.table-column-filter-options {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-alt);
+}
+
+.filter-option input {
+  width: auto;
+}
+
 table {
   width: 100%;
   min-width: 640px;
@@ -505,6 +549,50 @@ th {
   font-size: 0.83rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.table-filter-button,
+.table-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  font-weight: 700;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  box-shadow: none;
+}
+
+.table-filter-button::after {
+  content: "筛选";
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--accent);
+}
+
+.table-sort-button::after {
+  content: "排序";
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.table-sort-button.is-asc::after {
+  content: "升序";
+  color: var(--accent);
+}
+
+.table-sort-button.is-desc::after {
+  content: "降序";
+  color: var(--accent);
 }
 
 .job-list,

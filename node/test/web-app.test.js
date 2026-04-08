@@ -73,6 +73,11 @@ test("app.js wires config summary rendering and inline settings state without ol
   assert.match(js, /settingsPanelMode/u);
   assert.match(js, /config-summary-list/u);
   assert.match(js, /toggle-settings/u);
+  assert.match(js, /function applyTableView\(/u);
+  assert.match(js, /function openColumnFilter\(/u);
+  assert.match(js, /state\.tableFilters/u);
+  assert.match(js, /state\.tableSort/u);
+  assert.match(js, /data-column/u);
   assert.match(js, /renderRuntimeStatus\("idle", "空闲", "本地控制台已就绪"\)/u);
   assert.match(js, /function setActionRuntimeState\(action, phase = "running", detail = ""\)/u);
   assert.match(js, /action === "validate-config"[\s\S]*setActionRuntimeState\("validate-config", "running"\)/u);
@@ -150,10 +155,21 @@ test("index.html exposes responsive form hooks for settings and dialogs", () => 
 
   assert.match(html, /class="form-grid settings-form-grid"/u);
   assert.match(html, /class="form-grid modal-form-grid"/u);
-  assert.match(html, /<th>Host<\/th>/u);
+  assert.match(html, /class="table-sort-button" data-column="input"/u);
+  assert.match(html, /class="table-filter-button" data-column="source_host_hash"/u);
+  assert.match(html, /id="table-column-filter" class="table-column-filter" hidden/u);
   assert.match(html, /placeholder="筛选日期、Host、工具或模型"/u);
   assert.match(html, /data-action="validate-config" class="button-subtle settings-action-secondary"/u);
   assert.match(html, /data-action="save-config" class="button-primary settings-action-primary"/u);
+});
+
+test("app.css includes table sorting and column filter popover styling", () => {
+  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+
+  assert.match(css, /\.table-sort-button/u);
+  assert.match(css, /\.table-filter-button/u);
+  assert.match(css, /\.table-column-filter/u);
+  assert.match(css, /\.filter-option/u);
 });
 
 test("dialog markup and styles support viewport-safe modal content", () => {

@@ -185,17 +185,30 @@
             </div>
             <input id="table-filter" class="table-filter" type="search" placeholder="筛选日期、Host、工具或模型">
           </div>
+          <div id="table-column-filter" class="table-column-filter" hidden>
+            <div class="table-column-filter-head">
+              <strong id="table-column-filter-title">列筛选</strong>
+              <button type="button" class="button-subtle button-small" id="table-column-filter-close">关闭</button>
+            </div>
+            <div class="table-column-filter-actions">
+              <button type="button" class="button-subtle button-small" id="table-column-filter-all">全选</button>
+              <button type="button" class="button-subtle button-small" id="table-column-filter-clear">清空</button>
+              <button type="button" class="button-subtle button-small" id="table-column-sort-asc">升序</button>
+              <button type="button" class="button-subtle button-small" id="table-column-sort-desc">降序</button>
+            </div>
+            <div id="table-column-filter-options" class="table-column-filter-options"></div>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>日期</th>
-                  <th>Host</th>
-                  <th>工具</th>
-                  <th>模型</th>
-                  <th>输入</th>
-                  <th>缓存</th>
-                  <th>输出</th>
+                  <th><button type="button" class="table-filter-button" data-column="date">日期</button></th>
+                  <th><button type="button" class="table-filter-button" data-column="source_host_hash">Host</button></th>
+                  <th><button type="button" class="table-filter-button" data-column="tool">工具</button></th>
+                  <th><button type="button" class="table-filter-button" data-column="model">模型</button></th>
+                  <th><button type="button" class="table-sort-button" data-column="input">输入</button></th>
+                  <th><button type="button" class="table-sort-button" data-column="cache">缓存</button></th>
+                  <th><button type="button" class="table-sort-button" data-column="output">输出</button></th>
                 </tr>
               </thead>
               <tbody id="results-table"></tbody>

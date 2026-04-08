@@ -21,6 +21,9 @@ const state = {
   config: null,
   results: null,
   jobs: [],
+  tableFilters: {},
+  tableSort: { column: "date", direction: "asc" },
+  activeTableFilterColumn: "",
   pendingCredentialJobId: "",
   dismissedCredentialJobId: "",
   pendingCredentialRequest: null,
@@ -45,6 +48,14 @@ const refs = {
   modelBreakdown: document.querySelector("#model-breakdown"),
   resultsTable: document.querySelector("#results-table"),
   tableFilter: document.querySelector("#table-filter"),
+  tableColumnFilter: document.querySelector("#table-column-filter"),
+  tableColumnFilterTitle: document.querySelector("#table-column-filter-title"),
+  tableColumnFilterOptions: document.querySelector("#table-column-filter-options"),
+  tableColumnFilterClose: document.querySelector("#table-column-filter-close"),
+  tableColumnFilterAll: document.querySelector("#table-column-filter-all"),
+  tableColumnFilterClear: document.querySelector("#table-column-filter-clear"),
+  tableColumnSortAsc: document.querySelector("#table-column-sort-asc"),
+  tableColumnSortDesc: document.querySelector("#table-column-sort-desc"),
   jobsList: document.querySelector("#jobs-list"),
   remotesList: document.querySelector("#remotes-list"),
   feishuTargetsList: document.querySelector("#feishu-targets-list"),
@@ -305,23 +316,139 @@ function renderBreakdown(target, items = [], className = "") {
     .join("");
 }
 
-function renderTable(rows = []) {
+function currentTableRows() {
+  return normalizeResultsPayload(state.results).table_rows || [];
+}
+
+function columnLabel(column) {
+  const labels = {
+    date: "日期",
+    source_host_hash: "Host",
+    tool: "工具",
+    model: "模型",
+    input: "输入",
+    cache: "缓存",
+    output: "输出",
+  };
+  return labels[column] || column;
+}
+
+function columnDisplayValue(column, value) {
+  if (column === "source_host_hash") {
+    return formatHostHash(value);
+  }
+  return String(value || "-");
+}
+
+function sortedColumnValues(column, rows = currentTableRows()) {
+  const values = [...new Set(rows.map((row) => String(row[column] || "").trim()).filter(Boolean))];
+  values.sort((left, right) => {
+    if (column === "date") {
+      return left.localeCompare(right);
+    }
+    return columnDisplayValue(column, left).localeCompare(columnDisplayValue(column, right), "zh-CN");
+  });
+  return values;
+}
+
+function closeColumnFilter() {
+  state.activeTableFilterColumn = "";
+  refs.tableColumnFilter.hidden = true;
+  refs.tableColumnFilterOptions.innerHTML = "";
+}
+
+function renderColumnFilterOptions(column) {
+  const values = sortedColumnValues(column);
+  const selected = state.tableFilters[column] || new Set();
+  refs.tableColumnFilterTitle.textContent = `${columnLabel(column)}筛选`;
+  refs.tableColumnFilterOptions.innerHTML = values.length
+    ? values
+        .map(
+          (value) => `
+            <label class="filter-option">
+              <input type="checkbox" data-column-value="${escapeHtml(value)}" ${selected.has(value) ? "checked" : ""}>
+              <span>${escapeHtml(columnDisplayValue(column, value))}</span>
+            </label>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state empty-state-compact">当前列没有可筛选值。</div>`;
+
+  for (const input of refs.tableColumnFilterOptions.querySelectorAll("input[data-column-value]")) {
+    input.addEventListener("change", () => {
+      const next = new Set(state.tableFilters[column] || []);
+      const rawValue = input.getAttribute("data-column-value") || "";
+      if (input.checked) {
+        next.add(rawValue);
+      } else {
+        next.delete(rawValue);
+      }
+      if (next.size) {
+        state.tableFilters[column] = next;
+      } else {
+        delete state.tableFilters[column];
+      }
+      applyTableView();
+    });
+  }
+}
+
+function openColumnFilter(column) {
+  state.activeTableFilterColumn = column;
+  refs.tableColumnFilter.hidden = false;
+  renderColumnFilterOptions(column);
+}
+
+function sortRows(rows) {
+  const { column, direction } = state.tableSort;
+  const multiplier = direction === "desc" ? -1 : 1;
+  return [...rows].sort((left, right) => {
+    const leftValue = left[column];
+    const rightValue = right[column];
+    if (["input", "cache", "output"].includes(column)) {
+      return (Number(leftValue || 0) - Number(rightValue || 0)) * multiplier;
+    }
+    return String(leftValue || "").localeCompare(String(rightValue || ""), "zh-CN") * multiplier;
+  });
+}
+
+function updateSortButtons() {
+  for (const button of document.querySelectorAll(".table-sort-button")) {
+    button.classList.remove("is-asc", "is-desc");
+    if (button.dataset.column === state.tableSort.column) {
+      button.classList.add(state.tableSort.direction === "desc" ? "is-desc" : "is-asc");
+    }
+  }
+}
+
+function applyTableView() {
   const query = refs.tableFilter.value.trim().toLowerCase();
-  const visible = rows.filter((row) => {
+  let rows = currentTableRows().filter((row) => {
+    for (const [column, values] of Object.entries(state.tableFilters)) {
+      if (values instanceof Set && values.size && !values.has(String(row[column] || "").trim())) {
+        return false;
+      }
+    }
     if (!query) {
       return true;
     }
     return [row.date, row.source_host_hash, row.tool, row.model].some((value) => String(value || "").toLowerCase().includes(query));
   });
-  refs.resultsTable.innerHTML = visible.length
-    ? visible
+  rows = sortRows(rows);
+  updateSortButtons();
+  renderTable(rows);
+}
+
+function renderTable(rows = []) {
+  refs.resultsTable.innerHTML = rows.length
+    ? rows
         .map(
           (row) => `
             <tr>
-              <td>${row.date || "-"}</td>
+              <td>${escapeHtml(row.date || "-")}</td>
               <td>${escapeHtml(formatHostHash(row.source_host_hash))}</td>
-              <td>${row.tool || "-"}</td>
-              <td>${row.model || "-"}</td>
+              <td>${escapeHtml(row.tool || "-")}</td>
+              <td>${escapeHtml(row.model || "-")}</td>
               <td>${fmtNumber(row.input)}</td>
               <td>${fmtNumber(row.cache)}</td>
               <td>${fmtNumber(row.output)}</td>
@@ -583,6 +710,9 @@ async function refreshConfig() {
 async function refreshResults() {
   state.results = await getJson("/api/results/latest");
   renderDashboard(state.results);
+  if (state.activeTableFilterColumn) {
+    renderColumnFilterOptions(state.activeTableFilterColumn);
+  }
 }
 
 async function refreshJobs() {
@@ -735,8 +865,63 @@ for (const button of document.querySelectorAll("[data-action]")) {
 }
 
 applySettingsPanelState();
-refs.tableFilter.addEventListener("input", () => renderTable(normalizeResultsPayload(state.results).table_rows || []));
+refs.tableFilter.addEventListener("input", applyTableView);
 refs.credentialForm.addEventListener("submit", submitCredential);
+
+for (const button of document.querySelectorAll(".table-filter-button")) {
+  button.addEventListener("click", () => openColumnFilter(button.dataset.column || ""));
+}
+
+for (const button of document.querySelectorAll(".table-sort-button")) {
+  button.addEventListener("click", () => {
+    const column = button.dataset.column || "";
+    if (!column) {
+      return;
+    }
+    if (state.tableSort.column === column) {
+      state.tableSort.direction = state.tableSort.direction === "asc" ? "desc" : "asc";
+    } else {
+      state.tableSort = { column, direction: "desc" };
+    }
+    applyTableView();
+  });
+}
+
+refs.tableColumnFilterClose.addEventListener("click", closeColumnFilter);
+refs.tableColumnFilterAll.addEventListener("click", () => {
+  const column = state.activeTableFilterColumn;
+  if (!column) {
+    return;
+  }
+  state.tableFilters[column] = new Set(sortedColumnValues(column));
+  renderColumnFilterOptions(column);
+  applyTableView();
+});
+refs.tableColumnFilterClear.addEventListener("click", () => {
+  const column = state.activeTableFilterColumn;
+  if (!column) {
+    return;
+  }
+  delete state.tableFilters[column];
+  renderColumnFilterOptions(column);
+  applyTableView();
+});
+refs.tableColumnSortAsc.addEventListener("click", () => {
+  const column = state.activeTableFilterColumn;
+  if (!column) {
+    return;
+  }
+  state.tableSort = { column, direction: "asc" };
+  applyTableView();
+});
+refs.tableColumnSortDesc.addEventListener("click", () => {
+  const column = state.activeTableFilterColumn;
+  if (!column) {
+    return;
+  }
+  state.tableSort = { column, direction: "desc" };
+  applyTableView();
+});
 
 refs.remoteEditForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -810,3 +995,4 @@ setInterval(() => {
 }, 3000);
 
 await Promise.all([refreshRuntime(), refreshConfig(), refreshResults(), refreshJobs()]);
+applyTableView();
