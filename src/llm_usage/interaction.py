@@ -14,6 +14,7 @@ from llm_usage.feishu_targets import (
     resolve_feishu_targets_from_env,
 )
 from llm_usage.interaction_flow import RemotePromptRunner
+from llm_usage.runtime_preflight import ensure_runtime_bootstrap, validate_runtime_config
 from llm_usage.remotes import (
     RemoteDraft,
     RemoteHostConfig,
@@ -420,6 +421,11 @@ def run_config_editor(
 ) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
+    ensure_runtime_bootstrap(
+        env_path=env_path,
+        reports_dir=env_path.parent / "reports",
+        bootstrap_text="",
+    )
     draft = ConfigDraft.from_document(load_env_document(env_path))
 
     while True:
@@ -452,6 +458,8 @@ def run_config_editor(
             _edit_raw_env_menu(draft, stdin=stdin, stdout=stdout, env_path=env_path)
             continue
         if answer == "s":
+            if not _validate_config_save(draft, stdout):
+                continue
             _save_config_draft(env_path, draft)
             return 0
         if answer == "d":
@@ -466,10 +474,36 @@ def run_config_editor(
                 use_prompt_toolkit=False,
             ).strip().lower()
             if decision == "s":
+                if not _validate_config_save(draft, stdout):
+                    continue
                 _save_config_draft(env_path, draft)
                 return 0
             if decision == "d":
                 return 0
+
+
+def _validate_config_save(draft: ConfigDraft, stdout: TextIO) -> bool:
+    validation = validate_runtime_config(
+        basic={key: draft.values.get(key, "") for key in BASIC_KEYS},
+        feishu_default={key: draft.values.get(key, "") for key in FEISHU_KEYS},
+        feishu_targets=[
+            {
+                "name": target.name,
+                "app_token": target.app_token,
+                "table_id": target.table_id,
+                "app_id": target.app_id,
+                "app_secret": target.app_secret,
+                "bot_token": target.bot_token,
+            }
+            for target in draft.feishu_named_targets
+        ],
+        mode="config_save",
+    )
+    if validation.ok:
+        return True
+    for error in validation.errors:
+        stdout.write(f"{error}\n")
+    return False
 
 
 def _save_config_draft(env_path: Path, draft: ConfigDraft) -> None:

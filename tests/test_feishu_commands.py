@@ -392,3 +392,48 @@ def test_init_rejects_feishu_target_flags_without_schema_mode(monkeypatch, capsy
 
     assert rc == 2
     assert "--feishu-target" in capsys.readouterr().out
+
+
+def test_sync_rows_to_feishu_targets_fails_preflight_before_upload(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_execution_preflight",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {
+                "ok": False,
+                "errors": ["feishu[default]: missing BOT_TOKEN or APP_ID+APP_SECRET"],
+                "warnings": [],
+                "auto_fixes": [],
+                "bootstrap_applied": False,
+                "resolved_feishu_targets": [],
+            },
+        )(),
+    )
+
+    rc = main._sync_rows_to_feishu_targets([_row()], dry_run=False, feishu_target=[], all_feishu_targets=False)
+
+    assert rc == 1
+
+
+def test_run_feishu_doctor_fails_preflight_before_api_calls(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_execution_preflight",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {
+                "ok": False,
+                "errors": ["feishu[default]: default target is required"],
+                "warnings": [],
+                "auto_fixes": [],
+                "bootstrap_applied": False,
+                "resolved_feishu_targets": [],
+            },
+        )(),
+    )
+
+    with pytest.raises(RuntimeError, match="default target is required"):
+        main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=[], all_feishu_targets=False))

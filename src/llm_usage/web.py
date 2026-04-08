@@ -52,6 +52,7 @@ from llm_usage.main import (
 from llm_usage.paths import read_bootstrap_env_text
 from llm_usage.remotes import RemoteDraft, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.runtime_state import save_selected_remote_aliases
+from llm_usage.runtime_preflight import ensure_runtime_bootstrap, validate_runtime_config
 
 
 def _repo_root() -> Path:
@@ -285,6 +286,7 @@ def _dashboard_payload_from_rows(rows: list[dict[str, Any]], csv_path: Path, gen
 
 
 def load_config_payload() -> dict[str, Any]:
+    bootstrap = _bootstrap_runtime_for_web()
     document = load_env_document(_env_path())
     draft = ConfigDraft.from_document(document)
     return {
@@ -296,23 +298,28 @@ def load_config_payload() -> dict[str, Any]:
         "raw_env": _raw_env_entries(draft.values),
         "reports_dir": str(_reports_dir()),
         "env_path": str(_env_path()),
+        "bootstrap_applied": bootstrap["bootstrap_applied"],
+        "auto_fixes": bootstrap["auto_fixes"],
     }
 
 
-def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _bootstrap_runtime_for_web() -> dict[str, Any]:
+    result = ensure_runtime_bootstrap(
+        env_path=_env_path(),
+        reports_dir=_reports_dir(),
+        bootstrap_text=read_bootstrap_env_text(),
+    )
+    return {
+        "bootstrap_applied": result.bootstrap_applied,
+        "auto_fixes": result.auto_fixes,
+        "created_env": result.created_env,
+        "created_reports": result.created_reports,
+    }
+
+
+def _validate_remote_payload(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
-
-    for target in payload.get("feishu_targets", []) or []:
-        name = str(target.get("name", "")).strip()
-        if not name:
-            errors.append("Feishu target name is required")
-            continue
-        try:
-            normalize_feishu_target_name(name)
-        except RuntimeError as exc:
-            errors.append(str(exc))
-
     seen_aliases: set[str] = set()
     for remote in payload.get("remotes", []) or []:
         alias = str(remote.get("alias", "")).strip().upper()
@@ -334,18 +341,52 @@ def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError
         except (TypeError, ValueError):
             errors.append(f"remote {alias or '<new>'}: SSH port must be a positive integer")
-
     basic = payload.get("basic", {}) or {}
     if basic.get("ORG_USERNAME", "") and not basic.get("HASH_SALT", ""):
         warnings.append("HASH_SALT is empty; collect/sync will fail until set")
+    return errors, warnings
 
-    return {"ok": not errors, "errors": errors, "warnings": warnings}
+
+def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    bootstrap = _bootstrap_runtime_for_web()
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for target in payload.get("feishu_targets", []) or []:
+        name = str(target.get("name", "")).strip()
+        if not name:
+            errors.append("Feishu target name is required")
+            continue
+        try:
+            normalize_feishu_target_name(name)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    remote_errors, remote_warnings = _validate_remote_payload(payload)
+    validation = validate_runtime_config(
+        basic=payload.get("basic", {}) or {},
+        feishu_default=payload.get("feishu_default", {}) or {},
+        feishu_targets=payload.get("feishu_targets", []) or [],
+        mode="config_save",
+    )
+    errors.extend(remote_errors)
+    errors.extend(validation.errors)
+    warnings.extend(remote_warnings)
+    warnings.extend(validation.warnings)
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "auto_fixes": bootstrap["auto_fixes"],
+        "bootstrap_applied": bootstrap["bootstrap_applied"],
+    }
 
 
 def save_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     validation = validate_config_payload(payload)
     if not validation["ok"]:
-        return validation
+        return {**validation, "saved": False}
 
     document = load_env_document(_env_path())
     values: dict[str, str] = {}
@@ -398,7 +439,7 @@ def save_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     _save_config_draft(_env_path(), draft)
     _overlay_runtime_env()
-    return {"ok": True, "errors": [], "warnings": validation["warnings"]}
+    return {**validation, "ok": True, "errors": [], "saved": True}
 
 
 def load_latest_results() -> dict[str, Any]:
