@@ -13,49 +13,14 @@ from typing import Optional
 from llm_usage.aggregation import aggregate_events
 from llm_usage.feishu_schema import feishu_schema_warnings
 from llm_usage.feishu_targets import FeishuTargetConfig, resolve_feishu_targets_from_env, select_feishu_targets
-from llm_usage.collectors import (
-    BaseCollector,
-    build_claude_collector,
-    build_copilot_cli_collector,
-    build_copilot_vscode_collector,
-    build_codex_collector,
-    build_cursor_collector,
-    build_opencode_collector,
-)
-from llm_usage.cursor_login import (
-    fetch_cursor_workos_id_from_local_browsers,
-    fetch_cursor_session_token_via_browser,
-    open_cursor_dashboard_login_page,
-    resolve_cursor_login_browser_choice,
-)
 from llm_usage.env import load_dotenv, load_env_document, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
-from llm_usage.interaction import (
-    BASIC_KEYS,
-    FEISHU_KEYS,
-    ConfigDraft,
-    confirm_save_temporary_remote,
-    feishu_config_add_target,
-    feishu_config_delete_target,
-    feishu_config_list_targets,
-    feishu_config_set_target,
-    feishu_config_show_target,
-    run_config_editor,
-    select_remotes,
-)
 from llm_usage.offline_bundle import OfflineBundleError, read_offline_bundle, write_offline_bundle
 from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
 from llm_usage.remotes import RemoteHostConfig, append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.reporting import print_terminal_report, write_csv_report
 from llm_usage.runtime_preflight import validate_runtime_config
 from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
-from llm_usage.sinks.feishu_bitable import (
-    FeishuBitableClient,
-    create_missing_feishu_fields,
-    fetch_bitable_field_type_map,
-    fetch_first_table_id,
-    fetch_tenant_access_token,
-)
 
 
 class _HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
@@ -111,6 +76,15 @@ def _should_require_manual_cursor_token_prompt(browser: str) -> bool:
 
 
 def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
+    from llm_usage.collectors import (
+        build_claude_collector,
+        build_codex_collector,
+        build_copilot_cli_collector,
+        build_copilot_vscode_collector,
+        build_cursor_collector,
+        build_opencode_collector,
+    )
+
     return [
         build_claude_collector(source_host_hash=local_source_host_hash),
         build_codex_collector(source_host_hash=local_source_host_hash),
@@ -247,6 +221,8 @@ def _execution_preflight(
     feishu_target: Optional[list[str]] = None,
     all_feishu_targets: bool = False,
 ) -> object:
+    from llm_usage.interaction import BASIC_KEYS, FEISHU_KEYS, ConfigDraft
+
     _load_runtime_env()
     document = load_env_document(_env_path())
     draft = ConfigDraft.from_document(document)
@@ -273,6 +249,8 @@ def _execution_preflight(
 
 
 def _basic_preflight() -> int:
+    from llm_usage.interaction import BASIC_KEYS, ConfigDraft
+
     _load_runtime_env()
     document = load_env_document(_env_path())
     draft = ConfigDraft.from_document(document)
@@ -298,6 +276,8 @@ _FEISHU_CONNECTIVITY_TIMEOUT_SEC = 5
 def _probe_feishu_connectivity(targets: list[FeishuTargetConfig]) -> Optional[str]:
     """Return an error message if Feishu API is unreachable, or None on success."""
     import requests as _requests
+
+    from llm_usage.sinks.feishu_bitable import fetch_tenant_access_token
 
     # Pick the first target with app credentials for a real auth probe;
     # otherwise fall back to a lightweight HTTPS connectivity check.
@@ -352,6 +332,8 @@ def _sync_execution_preflight(
 
 
 def _feishu_bot_token_for_target(target: FeishuTargetConfig) -> str:
+    from llm_usage.sinks.feishu_bitable import fetch_tenant_access_token
+
     bot = target.bot_token.strip()
     if bot:
         return bot
@@ -363,6 +345,8 @@ def _feishu_bot_token_for_target(target: FeishuTargetConfig) -> str:
 
 
 def _feishu_table_id_for_target(target: FeishuTargetConfig, bot_token: str) -> str:
+    from llm_usage.sinks.feishu_bitable import fetch_first_table_id
+
     table_id = target.table_id.strip()
     if table_id:
         return table_id
@@ -375,6 +359,8 @@ def _feishu_table_id_for_target(target: FeishuTargetConfig, bot_token: str) -> s
 
 
 def run_feishu_doctor(args: argparse.Namespace) -> int:
+    from llm_usage.sinks.feishu_bitable import FeishuBitableClient, fetch_bitable_field_type_map
+
     preflight = _execution_preflight(
         feishu_target=list(getattr(args, "feishu_target", []) or []),
         all_feishu_targets=bool(getattr(args, "all_feishu_targets", False)),
@@ -417,6 +403,8 @@ def run_feishu_doctor(args: argparse.Namespace) -> int:
 
 
 def ensure_feishu_schema_for_targets(*, dry_run: bool, targets: list[FeishuTargetConfig]) -> None:
+    from llm_usage.sinks.feishu_bitable import FeishuBitableClient, create_missing_feishu_fields
+
     for target in targets:
         print(f"feishu[{target.name}]: ensuring bitable columns...")
         bot_token = _feishu_bot_token_for_target(target)
@@ -435,6 +423,8 @@ def ensure_feishu_schema_for_targets(*, dry_run: bool, targets: list[FeishuTarge
 
 
 def _sync_rows_to_single_feishu_target(rows: list, target: FeishuTargetConfig) -> int:
+    from llm_usage.sinks.feishu_bitable import FeishuBitableClient
+
     bot_token = _feishu_bot_token_for_target(target)
     table_id = _feishu_table_id_for_target(target, bot_token)
     client = FeishuBitableClient(
@@ -674,6 +664,15 @@ def cmd_whoami(_: argparse.Namespace) -> int:
 
 
 def cmd_config(args: argparse.Namespace) -> int:
+    from llm_usage.interaction import (
+        feishu_config_add_target,
+        feishu_config_delete_target,
+        feishu_config_list_targets,
+        feishu_config_set_target,
+        feishu_config_show_target,
+        run_config_editor,
+    )
+
     env_path = _ensure_env_file_exists()
     shortcut_flags = sum(
         [
@@ -716,6 +715,11 @@ def _capture_and_save_cursor_token(
     *,
     login_mode: str = "auto",
 ) -> str:
+    from llm_usage.cursor_login import (
+        fetch_cursor_session_token_via_browser,
+        fetch_cursor_workos_id_from_local_browsers,
+    )
+
     token = fetch_cursor_session_token_via_browser(
         timeout_sec=timeout_sec,
         browser=browser,
@@ -728,6 +732,8 @@ def _capture_and_save_cursor_token(
 
 
 def _prompt_for_manual_cursor_token(browser: str, *, automatic_capture_failed: bool) -> Optional[str]:
+    from llm_usage.cursor_login import open_cursor_dashboard_login_page
+
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return None
 
@@ -760,6 +766,8 @@ def _clear_saved_cursor_token() -> None:
 
 
 def _resolve_cursor_login_mode(login_mode: str, browser: str) -> str:
+    from llm_usage.cursor_login import resolve_cursor_login_browser_choice
+
     normalized_mode = (login_mode or "auto").strip().lower() or "auto"
     normalized_browser = resolve_cursor_login_browser_choice(browser)
     if normalized_mode != "auto":
@@ -776,6 +784,9 @@ def _maybe_capture_cursor_token(
     login_mode: str = "auto",
     lookback_days: Optional[int] = None,
 ) -> Optional[str]:
+    from llm_usage.collectors import build_cursor_collector
+    from llm_usage.cursor_login import resolve_cursor_login_browser_choice
+
     _load_runtime_env()
     effective_login_mode = _resolve_cursor_login_mode(login_mode, browser)
     capture_browser = browser
@@ -862,6 +873,8 @@ def _resolve_remote_selection(
     args: argparse.Namespace,
     configured_remotes,
 ) -> tuple[list[str], list, dict[str, str]]:
+    from llm_usage.interaction import select_remotes
+
     state_aliases = load_selected_remote_aliases(_runtime_state_path())
     configured_aliases = [config.alias for config in configured_remotes]
     if getattr(args, "ui", "auto") == "none":
@@ -895,6 +908,8 @@ def _resolve_remote_selection(
 
 
 def _save_temporary_remotes(args: argparse.Namespace, remotes: list, configured_aliases: list[str]) -> None:
+    from llm_usage.interaction import confirm_save_temporary_remote
+
     for remote in remotes:
         if confirm_save_temporary_remote(remote, ui_mode=getattr(args, "ui", "auto")):
             alias = append_remote_to_env(_env_path(), remote, configured_aliases)

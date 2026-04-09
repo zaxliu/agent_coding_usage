@@ -34,7 +34,7 @@ def test_maybe_capture_skips_when_token_exists(monkeypatch):
         def probe(self):  # noqa: ANN201
             return True, "dashboard token valid"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     called = {"capture": 0}
 
     def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
@@ -64,7 +64,7 @@ def test_maybe_capture_refreshes_expired_token(monkeypatch):
         def probe(self):  # noqa: ANN201
             return False, "authentication failed (session cookie may be expired)"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     called = {"clear": 0, "capture": 0}
 
     def _fake_clear():  # noqa: ANN201
@@ -96,7 +96,7 @@ def test_maybe_capture_uses_local_files_without_browser(monkeypatch):
         def collect(self, start, end):  # noqa: ANN001, ANN201
             return type("Out", (), {"events": [object()]})()
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
 
     called = {"capture": 0}
 
@@ -130,7 +130,7 @@ def test_maybe_capture_triggers_browser_when_local_logs_have_no_events(monkeypat
         def collect(self, start, end):  # noqa: ANN001, ANN201
             return type("Out", (), {"events": []})()
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     called = {"capture": 0}
 
     def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
@@ -168,7 +168,7 @@ def test_maybe_capture_triggers_browser_when_needed(monkeypatch):
         def probe(self):  # noqa: ANN201
             return False, "no local cursor files"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     called = {"capture": 0}
 
     def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
@@ -202,7 +202,7 @@ def test_maybe_capture_windows_chromium_auto_uses_managed_profile(monkeypatch):
         def probe(self):  # noqa: ANN201
             return False, "no local cursor files"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     capture_called = {"count": 0}
 
     def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
@@ -243,7 +243,7 @@ def test_maybe_capture_windows_chromium_managed_profile_falls_back_to_manual_pro
         def probe(self):  # noqa: ANN201
             return False, "no local cursor files"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     capture_called = {"count": 0}
 
     def _fake_capture(timeout_sec, browser, user_data_dir, login_mode="auto"):  # noqa: ANN001, ANN201
@@ -286,7 +286,7 @@ def test_maybe_capture_windows_expired_token_retries_managed_profile_before_manu
         def probe(self):  # noqa: ANN201
             return False, "authentication failed (session cookie may be expired)"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     state = {"clear": 0, "capture": 0, "prompt": 0}
 
     def _fake_clear():  # noqa: ANN201
@@ -333,7 +333,7 @@ def test_maybe_capture_cursor_token_windows_chromium_auto_uses_managed_profile(m
         def probe(self):  # noqa: ANN201
             return False, "cursor dashboard unavailable"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
 
     calls = []
 
@@ -380,7 +380,7 @@ def test_resolve_cursor_login_mode_windows_default_uses_managed_profile(monkeypa
             popen=main.os.popen,
         ),
     )
-    monkeypatch.setattr(main, "resolve_cursor_login_browser_choice", lambda browser: "chrome")
+    monkeypatch.setattr("llm_usage.cursor_login.resolve_cursor_login_browser_choice", lambda browser: "chrome")
 
     assert main._resolve_cursor_login_mode("auto", "default") == "managed-profile"
 
@@ -399,7 +399,7 @@ def test_maybe_capture_uses_manual_token_when_auto_login_fails(monkeypatch):
         def probe(self):  # noqa: ANN201
             return False, "no local cursor files"
 
-    monkeypatch.setattr(main, "build_cursor_collector", lambda: _Collector())
+    monkeypatch.setattr("llm_usage.collectors.cursor.build_cursor_collector", lambda: _Collector())
     monkeypatch.setattr(
         main,
         "_capture_and_save_cursor_token",
@@ -425,11 +425,10 @@ def test_capture_and_save_cursor_token(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     monkeypatch.setattr(main, "_env_path", lambda: env_path)
     monkeypatch.setattr(
-        main,
-        "fetch_cursor_session_token_via_browser",
+        "llm_usage.cursor_login.fetch_cursor_session_token_via_browser",
         lambda timeout_sec, browser, user_data_dir, login_mode="auto": "token-from-browser",
     )
-    monkeypatch.setattr(main, "fetch_cursor_workos_id_from_local_browsers", lambda browser="default": "workos-1")
+    monkeypatch.setattr("llm_usage.cursor_login.fetch_cursor_workos_id_from_local_browsers", lambda browser="default": "workos-1")
 
     token = main._capture_and_save_cursor_token(
         timeout_sec=60,
@@ -463,7 +462,7 @@ def test_prompt_for_manual_cursor_token_saves_value(monkeypatch, tmp_path):
     stdout = _Stdout()
     stdin = _Stdin()
     monkeypatch.setattr(main, "_env_path", lambda: env_path)
-    monkeypatch.setattr(main, "open_cursor_dashboard_login_page", lambda browser="default": None)
+    monkeypatch.setattr("llm_usage.cursor_login.open_cursor_dashboard_login_page", lambda browser="default": None)
     monkeypatch.setattr(main.sys, "stdin", stdin)
     monkeypatch.setattr(main.sys, "stdout", stdout)
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(answers))
@@ -585,7 +584,7 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
                 {"created": 0, "updated": 0, "failed": 0, "error_samples": [], "warning_samples": []},
             )()
 
-    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.FeishuBitableClient", _Client)
 
     exit_code = main.cmd_sync(
         argparse.Namespace(

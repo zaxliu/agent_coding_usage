@@ -270,7 +270,7 @@ def test_run_feishu_doctor_wraps_auth_errors_with_target_name(monkeypatch):
             main.FeishuTargetConfig(name="team_a", app_token="app", app_id="id", app_secret="secret"),
         ],
     )
-    monkeypatch.setattr(main, "fetch_tenant_access_token", lambda app_id, app_secret: (_ for _ in ()).throw(RuntimeError("bad auth")))
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_tenant_access_token", lambda app_id, app_secret: (_ for _ in ()).throw(RuntimeError("bad auth")))
 
     with pytest.raises(RuntimeError, match="team_a"):
         main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
@@ -284,7 +284,7 @@ def test_run_feishu_doctor_does_not_treat_link_share_mode_as_write_permission_fa
             main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
         ],
     )
-    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
     monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: [])
     class _Client:
         def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
@@ -293,7 +293,7 @@ def test_run_feishu_doctor_does_not_treat_link_share_mode_as_write_permission_fa
         def probe_write_access(self):  # noqa: ANN201
             return "rec_123"
 
-    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.FeishuBitableClient", _Client)
 
     rc = main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
 
@@ -313,7 +313,7 @@ def test_run_feishu_doctor_reports_write_probe_cleanup_failure(monkeypatch):
             main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
         ],
     )
-    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
     monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: [])
     class _Client:
         def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
@@ -322,7 +322,7 @@ def test_run_feishu_doctor_reports_write_probe_cleanup_failure(monkeypatch):
         def probe_write_access(self):  # noqa: ANN201
             raise RuntimeError("feishu doctor cleanup failed: rec_123")
 
-    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.FeishuBitableClient", _Client)
 
     with pytest.raises(RuntimeError, match="cleanup failed"):
         main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
@@ -336,7 +336,7 @@ def test_run_feishu_doctor_reports_write_probe_create_failure(monkeypatch):
             main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
         ],
     )
-    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
     monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: [])
     class _Client:
         def __init__(self, app_token, table_id, bot_token, request_timeout_sec=20):  # noqa: ANN001
@@ -345,7 +345,7 @@ def test_run_feishu_doctor_reports_write_probe_create_failure(monkeypatch):
         def probe_write_access(self):  # noqa: ANN201
             raise RuntimeError("create forbidden")
 
-    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.FeishuBitableClient", _Client)
 
     with pytest.raises(RuntimeError, match="target team_a: create forbidden"):
         main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
@@ -359,7 +359,7 @@ def test_run_feishu_doctor_prints_warn_summary_when_schema_has_warnings(monkeypa
             main.FeishuTargetConfig(name="team_a", app_token="app", table_id="tbl", bot_token="bot"),
         ],
     )
-    monkeypatch.setattr(main, "fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_bitable_field_type_map", lambda app_token, table_id, bot_token: {})
     monkeypatch.setattr(main, "feishu_schema_warnings", lambda field_map: ["missing cache_tokens_sum"])
 
     class _Client:
@@ -369,7 +369,7 @@ def test_run_feishu_doctor_prints_warn_summary_when_schema_has_warnings(monkeypa
         def probe_write_access(self):  # noqa: ANN201
             return "rec_123"
 
-    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.FeishuBitableClient", _Client)
 
     rc = main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=["team_a"], all_feishu_targets=False))
 
@@ -622,7 +622,7 @@ def _make_target(*, app_id="", app_secret="", bot_token="", app_token="app-t", n
 
 def test_probe_feishu_connectivity_returns_none_on_successful_auth(monkeypatch):
     """When fetch_tenant_access_token succeeds, probe returns None (ok)."""
-    monkeypatch.setattr(main, "fetch_tenant_access_token", lambda **kw: "tok")
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_tenant_access_token", lambda **kw: "tok")
     target = _make_target(app_id="aid", app_secret="sec")
     assert main._probe_feishu_connectivity([target]) is None
 
@@ -633,7 +633,7 @@ def test_probe_feishu_connectivity_returns_none_on_auth_error(monkeypatch):
     def _bad_auth(**kw):
         raise RuntimeError("invalid credentials")
 
-    monkeypatch.setattr(main, "fetch_tenant_access_token", _bad_auth)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_tenant_access_token", _bad_auth)
     target = _make_target(app_id="aid", app_secret="sec")
     assert main._probe_feishu_connectivity([target]) is None
 
@@ -645,7 +645,7 @@ def test_probe_feishu_connectivity_returns_error_on_connection_failure(monkeypat
     def _network_fail(**kw):
         raise _requests.ConnectionError("Name resolution failed")
 
-    monkeypatch.setattr(main, "fetch_tenant_access_token", _network_fail)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_tenant_access_token", _network_fail)
     target = _make_target(app_id="aid", app_secret="sec")
     result = main._probe_feishu_connectivity([target])
     assert result is not None
@@ -659,7 +659,7 @@ def test_probe_feishu_connectivity_returns_error_on_timeout(monkeypatch):
     def _timeout(**kw):
         raise _requests.Timeout("timed out")
 
-    monkeypatch.setattr(main, "fetch_tenant_access_token", _timeout)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.fetch_tenant_access_token", _timeout)
     target = _make_target(app_id="aid", app_secret="sec")
     result = main._probe_feishu_connectivity([target])
     assert result is not None

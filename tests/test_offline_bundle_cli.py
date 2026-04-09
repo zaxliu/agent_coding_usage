@@ -195,7 +195,7 @@ def test_cmd_sync_from_bundle_upserts_original_rows(monkeypatch):
                 {"created": 1, "updated": 1, "failed": 0, "error_samples": [], "warning_samples": []},
             )()
 
-    monkeypatch.setattr(main, "FeishuBitableClient", _Client)
+    monkeypatch.setattr("llm_usage.sinks.feishu_bitable.FeishuBitableClient", _Client)
 
     exit_code = main.cmd_sync(
         Namespace(
