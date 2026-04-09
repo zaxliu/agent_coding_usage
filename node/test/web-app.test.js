@@ -19,6 +19,10 @@ import {
   settingsPanelMode,
 } from "../../web/app-state.js";
 
+function readSource(relativePath) {
+  return fs.readFileSync(new URL(relativePath, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+}
+
 function matchBlock(source, pattern, message) {
   const match = source.match(pattern);
   assert.ok(match, message);
@@ -38,7 +42,7 @@ function assertTagWithAttrs(source, tagName, attrs) {
 }
 
 test("index.html exposes a single-page console shell and removes old nav/view markers", () => {
-  const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
+  const html = readSource("../../web/index.html");
 
   assert.match(html, /console-layout/u);
   assert.match(html, /rel="shortcut icon" href="\/favicon\.ico"/u);
@@ -85,8 +89,8 @@ test("settingsPanelMode maps open state to DOM-ready panel state", () => {
 });
 
 test("app.js wires config summary rendering and inline settings state without old view switching", () => {
-  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
-  const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
+  const js = readSource("../../web/app.js");
+  const html = readSource("../../web/index.html");
 
   assert.match(js, /buildConfigSummary/u);
   assert.match(js, /createUiFlags/u);
@@ -142,8 +146,8 @@ test("createUiFlags keeps inline settings collapsed by default", () => {
 });
 
 test("single-page console layout exposes dedicated sidebar, main, operations, and settings hooks", () => {
-  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
-  const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
+  const css = readSource("../../web/app.css");
+  const html = readSource("../../web/index.html");
 
   assert.match(css, /\.console-layout\b/u);
   assert.match(css, /\.console-sidebar\b/u);
@@ -179,7 +183,7 @@ test("single-page console layout exposes dedicated sidebar, main, operations, an
 });
 
 test("app.css defines responsive console and dialog overflow protections", () => {
-  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+  const css = readSource("../../web/app.css");
 
   assert.match(css, /@media\s*\(max-width:\s*1100px\)/u);
   assert.match(css, /@media\s*\(max-width:\s*720px\)/u);
@@ -198,7 +202,7 @@ test("app.css defines responsive console and dialog overflow protections", () =>
 });
 
 test("app.css allows shell sections and action rows to shrink and wrap", () => {
-  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+  const css = readSource("../../web/app.css");
 
   assert.match(css, /\.console-main,[\s\S]*\.console-sidebar,[\s\S]*\.panel,[\s\S]*\.metric-card[\s\S]*min-width:\s*0/u);
   assert.match(css, /\.panel-head[\s\S]*flex-wrap:\s*wrap/u);
@@ -208,7 +212,7 @@ test("app.css allows shell sections and action rows to shrink and wrap", () => {
 });
 
 test("index.html exposes responsive form hooks for settings and dialogs", () => {
-  const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
+  const html = readSource("../../web/index.html");
 
   assert.match(html, /class="form-grid settings-form-grid"/u);
   assert.match(html, /class="form-grid modal-form-grid"/u);
@@ -221,7 +225,7 @@ test("index.html exposes responsive form hooks for settings and dialogs", () => 
 });
 
 test("app.css includes table sorting and column filter popover styling", () => {
-  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+  const css = readSource("../../web/app.css");
 
   assert.match(css, /\.table-sort-button/u);
   assert.match(css, /\.table-filter-button/u);
@@ -230,8 +234,8 @@ test("app.css includes table sorting and column filter popover styling", () => {
 });
 
 test("dialog markup and styles support viewport-safe modal content", () => {
-  const html = fs.readFileSync(new URL("../../web/index.html", import.meta.url), "utf8");
-  const css = fs.readFileSync(new URL("../../web/app.css", import.meta.url), "utf8");
+  const html = readSource("../../web/index.html");
+  const css = readSource("../../web/app.css");
 
   assertTagWithAttrs(html, "dialog", ['id="credential-modal"', 'class="credential-modal"']);
   assertTagWithAttrs(html, "dialog", ['id="run-confirm-modal"', 'class="credential-modal"']);
@@ -257,7 +261,7 @@ test("dialog markup and styles support viewport-safe modal content", () => {
 });
 
 test("app.js renders run-confirm empty states and sync-specific feishu controls", () => {
-  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const js = readSource("../../web/app.js");
 
   assertContainsAll(
     js,
@@ -267,7 +271,7 @@ test("app.js renders run-confirm empty states and sync-specific feishu controls"
 });
 
 test("app.js keeps collect payload scoped to selected_remotes only", () => {
-  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const js = readSource("../../web/app.js");
   const collectBlock = matchBlock(
     js,
     /if \(action === "collect"\) \{[\s\S]*?setActionRuntimeState\("collect", "running"\);/u,
@@ -282,7 +286,7 @@ test("app.js keeps collect payload scoped to selected_remotes only", () => {
 });
 
 test("app.js keeps sync payload scoped to the approved four fields only", () => {
-  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const js = readSource("../../web/app.js");
   const syncBlock = matchBlock(
     js,
     /else if \(action === "sync"\) \{[\s\S]*?setActionRuntimeState\("sync", "running"\);/u,
@@ -299,7 +303,7 @@ test("app.js keeps sync payload scoped to the approved four fields only", () => 
 });
 
 test("app.js ties default sync feishu mode to empty named-target payload fields", () => {
-  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const js = readSource("../../web/app.js");
   const payloadHelperBlock = matchBlock(
     js,
     /function buildRunConfirmPayload\(\) \{[\s\S]*?return \{[\s\S]*?\};\n\}/u,
@@ -315,7 +319,7 @@ test("app.js ties default sync feishu mode to empty named-target payload fields"
 });
 
 test("app.js guards run-confirm double submit and resets modal state on native dismissal", () => {
-  const js = fs.readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  const js = readSource("../../web/app.js");
   const resetBlock = matchBlock(js, /function resetRunConfirmState\(\) \{[\s\S]*?\n\}/u, "expected run-confirm reset helper");
   const submitBlock = matchBlock(js, /async function submitRunConfirm\(event\) \{[\s\S]*?\n\}/u, "expected run-confirm submit handler");
 
