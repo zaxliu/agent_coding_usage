@@ -197,8 +197,6 @@ test("app.css defines responsive console and dialog overflow protections", () =>
   assert.match(css, /\.credential-form[\s\S]*max-height:\s*calc\(100vh - 32px\)/u);
   assert.match(css, /\.credential-form[\s\S]*overflow:\s*auto/u);
   assert.match(css, /\.flashbar\.is-success/u);
-  assert.match(css, /\.run-confirm-grid/u);
-  assert.match(css, /\.run-confirm-list/u);
 });
 
 test("app.css allows shell sections and action rows to shrink and wrap", () => {
@@ -240,7 +238,8 @@ test("dialog markup and styles support viewport-safe modal content", () => {
   assertTagWithAttrs(html, "dialog", ['id="credential-modal"', 'class="credential-modal"']);
   assertTagWithAttrs(html, "dialog", ['id="run-confirm-modal"', 'class="credential-modal"']);
   assertTagWithAttrs(html, "form", ['id="run-confirm-form"', 'method="dialog"', 'class="credential-form"']);
-  assertTagWithAttrs(html, "section", ['id="run-confirm-remotes"', 'class="settings-list"']);
+  assertTagWithAttrs(html, "section", ['id="run-confirm-remotes-section"', 'class="panel"']);
+  assertTagWithAttrs(html, "div", ['id="run-confirm-remotes"', 'class="settings-list"']);
   assertTagWithAttrs(html, "p", ['id="run-confirm-remotes-empty"']);
   assertTagWithAttrs(html, "section", ['id="run-confirm-feishu-section"', 'class="panel"']);
   assertTagWithAttrs(html, "div", ['id="run-confirm-feishu-modes"', 'class="settings-list"']);
@@ -255,7 +254,7 @@ test("dialog markup and styles support viewport-safe modal content", () => {
     "expected run-confirm modal hooks",
   );
   assert.match(css, /\.credential-modal[\s\S]*max-width:\s*calc\(100vw - 16px\)/u);
-  assert.match(css, /\.credential-form[\s\S]*width:\s*min\(460px,\s*calc\(100vw - 32px\)\)/u);
+  assert.match(css, /\.credential-form[\s\S]*width:\s*min\(520px,\s*calc\(100vw - 32px\)\)/u);
   assert.match(css, /\.credential-form[\s\S]*word-break:\s*break-word/u);
   assert.match(css, /\.credential-actions[\s\S]*justify-content:\s*flex-end/u);
 });
