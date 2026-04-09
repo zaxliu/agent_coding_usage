@@ -132,3 +132,25 @@ def test_validate_runtime_config_rejects_named_target_with_partial_own_auth():
 
     assert result.ok is False
     assert "feishu[finance]: APP_ID and APP_SECRET must be set together" in result.errors
+
+
+def test_validate_runtime_config_allows_execution_with_explicit_named_target_without_default():
+    result = runtime_preflight.validate_runtime_config(
+        basic={},
+        feishu_default={},
+        feishu_targets=[
+            {
+                "name": "team_a",
+                "app_token": "app-team-a",
+                "table_id": "tbl-team-a",
+                "bot_token": "bot-team-a",
+            }
+        ],
+        mode="execution",
+        selected_feishu_targets=["team_a"],
+        all_feishu_targets=False,
+    )
+
+    assert result.ok is True
+    assert result.errors == []
+    assert [target.name for target in result.resolved_feishu_targets] == ["team_a"]

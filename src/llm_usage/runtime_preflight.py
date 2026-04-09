@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from llm_usage.feishu_targets import FeishuTargetConfig
 
@@ -84,10 +84,14 @@ def validate_feishu_targets(
     feishu_default: dict[str, Any],
     feishu_targets: list[dict[str, Any]],
     mode: str,
+    selected_feishu_targets: Optional[list[str]] = None,
+    all_feishu_targets: bool = False,
 ) -> PreflightResult:
-    del basic, mode
+    del basic
     errors: list[str] = []
     resolved_targets: list[FeishuTargetConfig] = []
+    selected_names = {str(name).strip().lower() for name in (selected_feishu_targets or []) if str(name).strip()}
+    explicit_named_selection = mode == "execution" and (all_feishu_targets or bool(selected_names))
     default_app_token = str(feishu_default.get("FEISHU_APP_TOKEN", "")).strip()
     default_bot_token = str(feishu_default.get("FEISHU_BOT_TOKEN", "")).strip()
     default_app_id = str(feishu_default.get("FEISHU_APP_ID", "")).strip()
@@ -101,14 +105,23 @@ def validate_feishu_targets(
         bot_token=default_bot_token,
     )
 
-    if not default_app_token:
+    if not explicit_named_selection and not default_app_token:
         errors.append("feishu[default]: default target is required")
     if default_app_token and not default_bot_token and not (default_app_id and default_app_secret):
         errors.append("feishu[default]: missing BOT_TOKEN or APP_ID+APP_SECRET")
-    if default_app_token:
+    if default_app_token and (all_feishu_targets or not explicit_named_selection):
         resolved_targets.append(default)
 
-    for item in feishu_targets:
+    items_to_validate = feishu_targets
+    if mode == "execution" and not all_feishu_targets:
+        if selected_names:
+            items_to_validate = [
+                item for item in feishu_targets if str(item.get("name", "")).strip().lower() in selected_names
+            ]
+        else:
+            items_to_validate = []
+
+    for item in items_to_validate:
         name = str(item.get("name", "")).strip().lower()
         app_token = str(item.get("app_token", "")).strip()
         if not app_token:
@@ -128,15 +141,20 @@ def validate_runtime_config(
     feishu_default: dict[str, Any],
     feishu_targets: list[dict[str, Any]],
     mode: str,
+    selected_feishu_targets: Optional[list[str]] = None,
+    all_feishu_targets: bool = False,
 ) -> PreflightResult:
     result = validate_feishu_targets(
         basic=basic,
         feishu_default=feishu_default,
         feishu_targets=feishu_targets,
         mode=mode,
+        selected_feishu_targets=selected_feishu_targets,
+        all_feishu_targets=all_feishu_targets,
     )
     warnings = list(result.warnings)
     errors = list(result.errors)
+    selected_names = {str(name).strip().lower() for name in (selected_feishu_targets or []) if str(name).strip()}
 
     default_app_token = str(feishu_default.get("FEISHU_APP_TOKEN", "")).strip()
     default_table_id = str(feishu_default.get("FEISHU_TABLE_ID", "")).strip()
@@ -148,7 +166,16 @@ def validate_runtime_config(
     if default_app_token and not default_table_id:
         warnings.append("feishu[default]: TABLE_ID is empty; first table will be auto-selected")
 
-    for item in feishu_targets:
+    items_to_validate = feishu_targets
+    if mode == "execution" and not all_feishu_targets:
+        if selected_names:
+            items_to_validate = [
+                item for item in feishu_targets if str(item.get("name", "")).strip().lower() in selected_names
+            ]
+        else:
+            items_to_validate = []
+
+    for item in items_to_validate:
         name = str(item.get("name", "")).strip().lower()
         if not name:
             continue

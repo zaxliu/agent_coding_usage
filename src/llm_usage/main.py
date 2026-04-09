@@ -247,7 +247,6 @@ def _execution_preflight(
     feishu_target: Optional[list[str]] = None,
     all_feishu_targets: bool = False,
 ) -> object:
-    del feishu_target, all_feishu_targets
     _load_runtime_env()
     document = load_env_document(_env_path())
     draft = ConfigDraft.from_document(document)
@@ -266,6 +265,8 @@ def _execution_preflight(
             for target in draft.feishu_named_targets
         ],
         mode="execution",
+        selected_feishu_targets=list(feishu_target or []),
+        all_feishu_targets=all_feishu_targets,
     )
 
 
