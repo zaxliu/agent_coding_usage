@@ -426,6 +426,34 @@ def test_web_sync_preview_pauses_for_ssh_password_and_resumes_from_memory_only(t
     assert captured["runtime_passwords"] == {"SERVER_A": "top-secret"}
 
 
+def test_web_sync_fails_preflight_before_collect(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    monkeypatch.setattr(web, "_sync_execution_preflight", lambda **kwargs: 1)
+
+    def _fail_if_called(payload, runtime_passwords=None):  # noqa: ANN001, ANN201
+        raise AssertionError("_build_aggregates_for_web should not be called when sync preflight fails")
+
+    monkeypatch.setattr(web, "_build_aggregates_for_web", _fail_if_called)
+
+    service = web.WebService()
+    started = service.start_sync({"confirm_sync": True})
+
+    for _ in range(100):
+        current = service.jobs.get_job(started["id"])
+        if current and current["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(started["id"])
+    assert current is not None
+    assert current["status"] == "succeeded"
+    assert current["result"]["exit_code"] == 1
+
+
 def test_web_remote_setup_returns_structured_input_request_sequence():
     service = web.WebService()
 

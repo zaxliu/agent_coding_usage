@@ -45,6 +45,7 @@ from llm_usage.main import (
     _required_org_username,
     _resolve_lookback_days,
     _runtime_state_path,
+    _sync_execution_preflight,
     _sync_rows_to_feishu_targets,
     _tool_version,
     run_feishu_doctor,
@@ -775,6 +776,23 @@ class WebService:
         return self.jobs.start("collect", handler, write_operation=True)
 
     def _sync_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
+        preflight_code = _sync_execution_preflight(
+            dry_run=False,
+            feishu_target=[str(item).strip() for item in (payload.get("feishu_targets") or []) if str(item).strip()],
+            all_feishu_targets=bool(payload.get("all_feishu_targets", False)),
+        )
+        if preflight_code != 0:
+            return self.jobs.start(
+                "sync",
+                lambda: {
+                    "row_count": 0,
+                    "warnings": [],
+                    "csv_path": str(_reports_dir() / "usage_report.csv"),
+                    "exit_code": preflight_code,
+                },
+                write_operation=True,
+            )
+
         selected_configs = self._selected_remote_configs(payload)
         input_request = self._missing_runtime_password_request(selected_configs)
         if input_request:

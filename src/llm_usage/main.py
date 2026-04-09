@@ -270,6 +270,22 @@ def _execution_preflight(
     )
 
 
+def _sync_execution_preflight(
+    *,
+    dry_run: bool = False,
+    feishu_target: Optional[list[str]] = None,
+    all_feishu_targets: bool = False,
+) -> int:
+    if dry_run:
+        return 0
+    preflight = _execution_preflight(feishu_target=feishu_target, all_feishu_targets=all_feishu_targets)
+    if not preflight.ok:
+        for error in preflight.errors:
+            print(f"error: {error}")
+        return 1
+    return 0
+
+
 def _feishu_bot_token_for_target(target: FeishuTargetConfig) -> str:
     bot = target.bot_token.strip()
     if bot:
@@ -382,11 +398,6 @@ def _sync_rows_to_feishu_targets(
     if dry_run:
         print("dry-run: bundle validated and upload skipped")
         return 0
-    preflight = _execution_preflight(feishu_target=feishu_target, all_feishu_targets=all_feishu_targets)
-    if not preflight.ok:
-        for error in preflight.errors:
-            print(f"error: {error}")
-        return 1
 
     class _Args:
         pass
@@ -890,6 +901,14 @@ def cmd_sync(args: argparse.Namespace) -> int:
             feishu_target=getattr(args, "feishu_target", None) or [],
             all_feishu_targets=getattr(args, "all_feishu_targets", False),
         )
+
+    preflight_code = _sync_execution_preflight(
+        dry_run=getattr(args, "dry_run", False),
+        feishu_target=getattr(args, "feishu_target", None) or [],
+        all_feishu_targets=getattr(args, "all_feishu_targets", False),
+    )
+    if preflight_code != 0:
+        return preflight_code
 
     cursor_probe_warning = _maybe_capture_cursor_token(
         lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),

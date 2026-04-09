@@ -138,6 +138,57 @@ def test_cmd_sync_all_feishu_targets_calls_upload_with_select_all(monkeypatch):
     assert captured["all"] is True
 
 
+def test_cmd_sync_fails_preflight_before_collect(monkeypatch):
+    calls = {"build_aggregates": 0, "sync_rows": 0}
+
+    monkeypatch.setattr(main, "_maybe_capture_cursor_token", lambda **kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_execution_preflight",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {
+                "ok": False,
+                "errors": ["feishu[default]: missing BOT_TOKEN or APP_ID+APP_SECRET"],
+                "warnings": [],
+                "auto_fixes": [],
+                "bootstrap_applied": False,
+                "resolved_feishu_targets": [],
+            },
+        )(),
+    )
+
+    def _fail_if_called(args):  # noqa: ANN001, ANN201
+        calls["build_aggregates"] += 1
+        raise AssertionError("_build_aggregates should not be called when sync preflight fails")
+
+    def _track_sync(rows, *, dry_run, feishu_target, all_feishu_targets):  # noqa: ANN001, ANN201
+        calls["sync_rows"] += 1
+        return 0
+
+    monkeypatch.setattr(main, "_build_aggregates", _fail_if_called)
+    monkeypatch.setattr(main, "_sync_rows_to_feishu_targets", _track_sync)
+
+    rc = main.cmd_sync(
+        argparse.Namespace(
+            from_bundle=None,
+            dry_run=False,
+            lookback_days=None,
+            ui="auto",
+            cursor_login_timeout_sec=600,
+            cursor_login_browser="default",
+            cursor_login_user_data_dir="",
+            cursor_login_mode="auto",
+            feishu_target=[],
+            all_feishu_targets=False,
+        )
+    )
+
+    assert rc == 1
+    assert calls == {"build_aggregates": 0, "sync_rows": 0}
+
+
 def test_sync_rows_to_feishu_targets_keeps_nonzero_if_any_target_fails(monkeypatch):
     targets = [
         main.FeishuTargetConfig(name="default", app_token="app"),
@@ -394,7 +445,7 @@ def test_init_rejects_feishu_target_flags_without_schema_mode(monkeypatch, capsy
     assert "--feishu-target" in capsys.readouterr().out
 
 
-def test_sync_rows_to_feishu_targets_fails_preflight_before_upload(monkeypatch):
+def test_sync_execution_preflight_fails_before_upload(monkeypatch):
     monkeypatch.setattr(
         main,
         "_execution_preflight",
@@ -412,7 +463,7 @@ def test_sync_rows_to_feishu_targets_fails_preflight_before_upload(monkeypatch):
         )(),
     )
 
-    rc = main._sync_rows_to_feishu_targets([_row()], dry_run=False, feishu_target=[], all_feishu_targets=False)
+    rc = main._sync_execution_preflight(dry_run=False, feishu_target=[], all_feishu_targets=False)
 
     assert rc == 1
 
