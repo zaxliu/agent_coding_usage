@@ -222,6 +222,7 @@ def test_cmd_sync_from_bundle_upserts_original_rows(monkeypatch):
 def test_main_returns_exit_1_for_invalid_bundle(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["llm-usage", "sync", "--from-bundle", "/tmp/bad.zip"])
     _set_basic_runtime_env(monkeypatch)
+    monkeypatch.setattr(main, "_sync_execution_preflight", lambda **kwargs: 0)
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: (_ for _ in ()).throw(OfflineBundleError("bad bundle")))
 
     exit_code = main.main()
