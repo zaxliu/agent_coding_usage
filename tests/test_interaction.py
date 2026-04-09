@@ -12,7 +12,7 @@ class _TTYStringIO(StringIO):
         return True
 
 
-_VALID_DEFAULT_FEISHU_ENV = "FEISHU_APP_TOKEN=app-default\nFEISHU_BOT_TOKEN=bot-default\n"
+_VALID_DEFAULT_FEISHU_ENV = "FEISHU_APP_TOKEN=app-default\nFEISHU_BOT_TOKEN=bot-default\nHASH_SALT=salt\n"
 
 
 def _config(alias: str) -> RemoteHostConfig:
@@ -535,7 +535,13 @@ def test_run_config_editor_save_rejects_incomplete_default_feishu_auth(tmp_path:
 
 def test_run_config_editor_edits_grouped_non_remote_key(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text("FEISHU_APP_TOKEN=old-token\nFEISHU_BOT_TOKEN=bot-default\n", encoding="utf-8")
+    env_path.write_text(
+        "ORG_USERNAME=alice\n"
+        "HASH_SALT=salt\n"
+        "FEISHU_APP_TOKEN=old-token\n"
+        "FEISHU_BOT_TOKEN=bot-default\n",
+        encoding="utf-8",
+    )
 
     exit_code = run_config_editor(
         env_path=env_path,
@@ -592,6 +598,7 @@ def test_run_config_editor_reprompts_for_invalid_remote_ports(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
         _VALID_DEFAULT_FEISHU_ENV +
+        "ORG_USERNAME=alice\n"
         "REMOTE_HOSTS=SERVER_A\n"
         "REMOTE_SERVER_A_SSH_HOST=host-a\n"
         "REMOTE_SERVER_A_SSH_USER=alice\n"
@@ -666,6 +673,7 @@ def test_run_config_editor_enforces_unique_remote_alias_on_edit(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
         _VALID_DEFAULT_FEISHU_ENV +
+        "ORG_USERNAME=alice\n"
         "REMOTE_HOSTS=SERVER_A,SERVER_B\n"
         "REMOTE_SERVER_A_SSH_HOST=host-a\n"
         "REMOTE_SERVER_A_SSH_USER=alice\n"
@@ -692,6 +700,7 @@ def test_run_config_editor_deletes_nested_path_entry(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
         _VALID_DEFAULT_FEISHU_ENV +
+        "ORG_USERNAME=alice\n"
         "REMOTE_HOSTS=SERVER_A\n"
         "REMOTE_SERVER_A_SSH_HOST=host-a\n"
         "REMOTE_SERVER_A_SSH_USER=alice\n"

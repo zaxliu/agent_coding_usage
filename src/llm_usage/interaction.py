@@ -441,7 +441,22 @@ def run_config_editor(
         stdout.write("  q. Quit\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "":
-            answer = "q"
+            if not draft.dirty:
+                return 0
+            decision = _read_line(
+                "未保存的更改：s=保存并退出，d=丢弃并退出，其他任意键继续编辑：",
+                stdin=stdin,
+                stdout=stdout,
+                use_prompt_toolkit=False,
+            ).strip().lower()
+            if decision == "" or decision == "d":
+                return 0
+            if decision == "s":
+                if not _validate_config_save(draft, stdout):
+                    continue
+                _save_config_draft(env_path, draft)
+                return 0
+            continue
         if answer == "1":
             _edit_key_menu(draft, "Basic", BASIC_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
             continue

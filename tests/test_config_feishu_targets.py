@@ -28,6 +28,8 @@ def _env_map(path: Path) -> dict[str, str]:
 def test_save_rewrites_feishu_targets_and_prefixed_keys_deterministically(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
+        "ORG_USERNAME=alice\n"
+        "HASH_SALT=salt\n"
         "FEISHU_APP_TOKEN=legacy-app\n"
         "FEISHU_BOT_TOKEN=legacy-bot\n"
         "FEISHU_TARGETS=beta,alpha\n"
@@ -62,7 +64,13 @@ def test_save_rewrites_feishu_targets_and_prefixed_keys_deterministically(tmp_pa
 
 def test_interactive_default_feishu_menu_still_edits_legacy_keys(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text("FEISHU_APP_TOKEN=old-token\nFEISHU_BOT_TOKEN=default-bot\n", encoding="utf-8")
+    env_path.write_text(
+        "ORG_USERNAME=alice\n"
+        "HASH_SALT=salt\n"
+        "FEISHU_APP_TOKEN=old-token\n"
+        "FEISHU_BOT_TOKEN=default-bot\n",
+        encoding="utf-8",
+    )
     # Feishu -> Default (legacy) -> first key -> new value -> back -> save from main menu
     exit_code = run_config_editor(
         env_path=env_path,
@@ -133,7 +141,10 @@ def test_interactive_add_duplicate_named_target_is_rejected(tmp_path: Path):
 def test_interactive_named_target_edit_accepts_target_name(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
-        _VALID_DEFAULT_TARGET +
+        _VALID_DEFAULT_TARGET
+        + "ORG_USERNAME=u\n"
+        + "HASH_SALT=salt\n"
+        +
         "FEISHU_TARGETS=myself\n"
         "FEISHU_MYSELF_APP_TOKEN=\n",
         encoding="utf-8",
@@ -150,7 +161,7 @@ def test_interactive_named_target_edit_accepts_target_name(tmp_path: Path):
 
 def test_interactive_add_named_target_enters_detail_immediately(tmp_path: Path):
     env_path = tmp_path / ".env"
-    env_path.write_text(_VALID_DEFAULT_TARGET + "ORG_USERNAME=u\n", encoding="utf-8")
+    env_path.write_text(_VALID_DEFAULT_TARGET + "ORG_USERNAME=u\nHASH_SALT=salt\n", encoding="utf-8")
     exit_code = run_config_editor(
         env_path=env_path,
         stdin=_TTYStringIO("2\n2\na\nteam_b\n1\nteam-token\nb\nb\nb\ns\n"),
@@ -168,6 +179,7 @@ def test_save_preserves_named_target_keys_when_feishu_targets_list_is_invalid(tm
         _VALID_DEFAULT_TARGET
         +
         "ORG_USERNAME=alice\n"
+        "HASH_SALT=salt\n"
         "FEISHU_TARGETS=alpha,Alpha\n"
         "FEISHU_ALPHA_APP_TOKEN=alpha-token\n"
         "FEISHU_ALPHA_TABLE_ID=alpha-table\n"
@@ -306,6 +318,41 @@ def test_plain_config_still_runs_interactive_editor(tmp_path: Path, monkeypatch:
     parser = main.build_parser()
     args = parser.parse_args(["config"])
     monkeypatch.setattr(main, "_env_path", lambda: env_path)
-    monkeypatch.setattr(main, "run_config_editor", lambda env_path, stdin=None, stdout=None: 0)
+    monkeypatch.setattr("llm_usage.interaction.run_config_editor", lambda env_path, stdin=None, stdout=None: 0)
     rc = main.cmd_config(args)
     assert rc == 0
+
+
+def test_config_editor_discards_dirty_state_on_eof_after_failed_save(tmp_path: Path):
+    class _BoundedTTYStringIO(StringIO):
+        def __init__(self, limit: int = 12000):
+            super().__init__()
+            self.limit = limit
+
+        def isatty(self):  # noqa: ANN201
+            return True
+
+        def write(self, text: str) -> int:
+            if self.tell() + len(text) > self.limit:
+                raise AssertionError("stdout grew unexpectedly after EOF")
+            return super().write(text)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "FEISHU_APP_TOKEN=legacy-app\n"
+        "FEISHU_BOT_TOKEN=legacy-bot\n"
+        "FEISHU_TARGETS=beta,alpha\n"
+        "FEISHU_BETA_APP_TOKEN=beta-tok\n"
+        "FEISHU_ALPHA_APP_TOKEN=alpha-tok\n",
+        encoding="utf-8",
+    )
+    user_input = "\n".join(["2", "2", "d", "1", "b", "b", "s"]) + "\n"
+    stdout = _BoundedTTYStringIO()
+
+    exit_code = run_config_editor(env_path=env_path, stdin=_TTYStringIO(user_input), stdout=stdout)
+
+    assert exit_code == 0
+    text = stdout.getvalue()
+    assert "missing ORG_USERNAME" in text
+    assert "missing HASH_SALT" in text
+    assert env_path.read_text(encoding="utf-8").count("FEISHU_TARGETS=beta,alpha") == 1
