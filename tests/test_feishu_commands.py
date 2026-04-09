@@ -603,3 +603,154 @@ def test_cmd_sync_from_bundle_runs_feishu_preflight(monkeypatch):
 
     assert rc == 1
     assert calls == {"read_bundle": 0, "sync_rows": 0}
+
+
+# -- _probe_feishu_connectivity tests --
+
+
+def _make_target(*, app_id="", app_secret="", bot_token="", app_token="app-t", name="default"):
+    from llm_usage.feishu_targets import FeishuTargetConfig
+
+    return FeishuTargetConfig(
+        name=name,
+        app_token=app_token,
+        app_id=app_id,
+        app_secret=app_secret,
+        bot_token=bot_token,
+    )
+
+
+def test_probe_feishu_connectivity_returns_none_on_successful_auth(monkeypatch):
+    """When fetch_tenant_access_token succeeds, probe returns None (ok)."""
+    monkeypatch.setattr(main, "fetch_tenant_access_token", lambda **kw: "tok")
+    target = _make_target(app_id="aid", app_secret="sec")
+    assert main._probe_feishu_connectivity([target]) is None
+
+
+def test_probe_feishu_connectivity_returns_none_on_auth_error(monkeypatch):
+    """Auth failure (RuntimeError) means network is reachable — probe returns None."""
+
+    def _bad_auth(**kw):
+        raise RuntimeError("invalid credentials")
+
+    monkeypatch.setattr(main, "fetch_tenant_access_token", _bad_auth)
+    target = _make_target(app_id="aid", app_secret="sec")
+    assert main._probe_feishu_connectivity([target]) is None
+
+
+def test_probe_feishu_connectivity_returns_error_on_connection_failure(monkeypatch):
+    """When the network is unreachable, probe returns an error string."""
+    import requests as _requests
+
+    def _network_fail(**kw):
+        raise _requests.ConnectionError("Name resolution failed")
+
+    monkeypatch.setattr(main, "fetch_tenant_access_token", _network_fail)
+    target = _make_target(app_id="aid", app_secret="sec")
+    result = main._probe_feishu_connectivity([target])
+    assert result is not None
+    assert "cannot reach open.feishu.cn" in result
+
+
+def test_probe_feishu_connectivity_returns_error_on_timeout(monkeypatch):
+    """When the request times out, probe returns an error string."""
+    import requests as _requests
+
+    def _timeout(**kw):
+        raise _requests.Timeout("timed out")
+
+    monkeypatch.setattr(main, "fetch_tenant_access_token", _timeout)
+    target = _make_target(app_id="aid", app_secret="sec")
+    result = main._probe_feishu_connectivity([target])
+    assert result is not None
+    assert "cannot reach open.feishu.cn" in result
+
+
+def test_probe_feishu_connectivity_fallback_get_when_no_app_credentials(monkeypatch):
+    """When targets only have bot_token, fallback to a GET probe."""
+    import requests as _requests
+
+    class FakeResp:
+        status_code = 400
+
+    monkeypatch.setattr(_requests, "get", lambda *a, **kw: FakeResp())
+    target = _make_target(bot_token="bot-tok")
+    assert main._probe_feishu_connectivity([target]) is None
+
+
+def test_probe_feishu_connectivity_fallback_get_network_error(monkeypatch):
+    """When fallback GET also fails with ConnectionError, return error."""
+    import requests as _requests
+
+    def _fail(*a, **kw):
+        raise _requests.ConnectionError("unreachable")
+
+    monkeypatch.setattr(_requests, "get", _fail)
+    target = _make_target(bot_token="bot-tok")
+    result = main._probe_feishu_connectivity([target])
+    assert result is not None
+    assert "cannot reach open.feishu.cn" in result
+
+
+def test_sync_execution_preflight_fails_on_connectivity_error(monkeypatch):
+    """_sync_execution_preflight should fail when Feishu is unreachable."""
+    from llm_usage.feishu_targets import FeishuTargetConfig
+
+    targets = [_make_target(app_id="aid", app_secret="sec")]
+    monkeypatch.setattr(
+        main,
+        "_execution_preflight",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {
+                "ok": True,
+                "errors": [],
+                "warnings": [],
+                "auto_fixes": [],
+                "bootstrap_applied": False,
+                "resolved_feishu_targets": targets,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        main,
+        "_probe_feishu_connectivity",
+        lambda targets: "feishu: cannot reach open.feishu.cn (timeout)",
+    )
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *args, **kw: printed.append(" ".join(str(a) for a in args)))
+
+    rc = main._sync_execution_preflight(dry_run=False, feishu_target=[], all_feishu_targets=False)
+
+    assert rc == 1
+    assert any("cannot reach" in msg for msg in printed)
+
+
+def test_run_feishu_doctor_fails_on_connectivity_error(monkeypatch):
+    """run_feishu_doctor should raise when Feishu is unreachable."""
+    targets = [_make_target(app_id="aid", app_secret="sec")]
+    monkeypatch.setattr(
+        main,
+        "_execution_preflight",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {
+                "ok": True,
+                "errors": [],
+                "warnings": [],
+                "auto_fixes": [],
+                "bootstrap_applied": False,
+                "resolved_feishu_targets": targets,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        main,
+        "_probe_feishu_connectivity",
+        lambda targets: "feishu: cannot reach open.feishu.cn (timeout)",
+    )
+
+    with pytest.raises(RuntimeError, match="cannot reach"):
+        main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=[], all_feishu_targets=False))

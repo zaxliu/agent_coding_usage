@@ -292,6 +292,45 @@ def _basic_preflight() -> int:
     return 0
 
 
+_FEISHU_CONNECTIVITY_TIMEOUT_SEC = 5
+
+
+def _probe_feishu_connectivity(targets: list[FeishuTargetConfig]) -> Optional[str]:
+    """Return an error message if Feishu API is unreachable, or None on success."""
+    import requests as _requests
+
+    # Pick the first target with app credentials for a real auth probe;
+    # otherwise fall back to a lightweight HTTPS connectivity check.
+    for target in targets:
+        app_id = target.app_id.strip()
+        app_secret = target.app_secret.strip()
+        if app_id and app_secret:
+            try:
+                fetch_tenant_access_token(
+                    app_id=app_id,
+                    app_secret=app_secret,
+                    request_timeout_sec=_FEISHU_CONNECTIVITY_TIMEOUT_SEC,
+                )
+                return None
+            except (_requests.ConnectionError, _requests.Timeout, OSError) as exc:
+                return f"feishu: cannot reach open.feishu.cn ({exc})"
+            except RuntimeError:
+                # Auth failed but network is reachable — connectivity is fine
+                return None
+
+    # No app credentials available; try a plain HTTPS GET to the API root.
+    try:
+        resp = _requests.get(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            timeout=_FEISHU_CONNECTIVITY_TIMEOUT_SEC,
+        )
+        # Any HTTP response (even 400) means the network is reachable.
+        _ = resp.status_code
+        return None
+    except (_requests.ConnectionError, _requests.Timeout, OSError) as exc:
+        return f"feishu: cannot reach open.feishu.cn ({exc})"
+
+
 def _sync_execution_preflight(
     *,
     dry_run: bool = False,
@@ -304,6 +343,10 @@ def _sync_execution_preflight(
     if not preflight.ok:
         for error in preflight.errors:
             print(f"error: {error}")
+        return 1
+    connectivity_error = _probe_feishu_connectivity(preflight.resolved_feishu_targets)
+    if connectivity_error:
+        print(f"error: {connectivity_error}")
         return 1
     return 0
 
@@ -338,6 +381,9 @@ def run_feishu_doctor(args: argparse.Namespace) -> int:
     )
     if not preflight.ok:
         raise RuntimeError("; ".join(preflight.errors))
+    connectivity_error = _probe_feishu_connectivity(preflight.resolved_feishu_targets)
+    if connectivity_error:
+        raise RuntimeError(connectivity_error)
     targets = _resolve_feishu_sync_selection(args)
     if not targets:
         print("warn: no Feishu targets configured")
