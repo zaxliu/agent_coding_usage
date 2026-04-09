@@ -548,20 +548,20 @@ function renderFeishuTargets(targets = []) {
 
 function syncFeishuTargetSelectionState() {
   const namedMode = refs.runConfirmFeishuNamedTargets.checked;
+  refs.runConfirmFeishuTargets.hidden = !namedMode;
   for (const input of refs.runConfirmFeishuTargets.querySelectorAll("input[data-run-feishu-target]")) {
     input.disabled = !namedMode;
   }
 }
 
 function renderRunConfirmRemotes(remotes = []) {
-  refs.runConfirmRemotes.classList.add("run-confirm-grid");
   refs.runConfirmRemotesEmpty.textContent = "未配置远端，将只采集本地数据。";
   refs.runConfirmRemotesEmpty.hidden = remotes.length > 0;
   const remoteItems = remotes.length
     ? remotes
         .map(
           (remote) => `
-            <label class="remote-item run-confirm-list">
+            <label class="remote-item">
               <span class="checkbox-label">
                 <input type="checkbox" data-run-remote value="${escapeHtml(remote.alias)}" checked>
                 <span>${escapeHtml(remote.alias)}</span>
@@ -577,12 +577,11 @@ function renderRunConfirmRemotes(remotes = []) {
 }
 
 function renderRunConfirmFeishuTargets(targets = []) {
-  refs.runConfirmFeishuTargets.classList.add("run-confirm-grid");
   refs.runConfirmFeishuTargets.innerHTML = targets.length
     ? targets
         .map(
           (target) => `
-            <label class="remote-item run-confirm-list">
+            <label class="remote-item">
               <span class="checkbox-label">
                 <input type="checkbox" data-run-feishu-target value="${escapeHtml(target.name)}" checked>
                 <span>${escapeHtml(target.name)}</span>

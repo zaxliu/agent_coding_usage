@@ -675,7 +675,7 @@ input {
 }
 
 .credential-form {
-  width: min(460px, calc(100vw - 32px));
+  width: min(520px, calc(100vw - 32px));
   max-width: 100%;
   max-height: calc(100vh - 32px);
   padding: 22px;
@@ -704,17 +704,20 @@ input {
   overflow-wrap: anywhere;
 }
 
-.run-confirm-grid {
-  display: grid;
-  gap: 12px;
-}
-
-.run-confirm-list {
-  display: grid;
-  gap: 10px;
-}
-
 #run-confirm-feishu-section[hidden] {
+  display: none;
+}
+
+#run-confirm-modal .panel + .panel {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+#run-confirm-feishu-targets {
+  padding-left: 28px;
+}
+
+#run-confirm-feishu-targets[hidden] {
   display: none;
 }
 

@@ -249,8 +249,16 @@
         <p class="eyebrow">运行确认</p>
         <h3 id="run-confirm-title">确认执行</h3>
         <p id="run-confirm-copy">请先检查本次运行会影响到哪些远端和飞书目标。</p>
-        <section class="settings-list" id="run-confirm-remotes">
-          <p class="panel-note" id="run-confirm-remotes-empty">当前没有可展示的远端。</p>
+        <section class="panel" id="run-confirm-remotes-section">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">远端</p>
+              <h3>采集来源</h3>
+            </div>
+          </div>
+          <div class="settings-list" id="run-confirm-remotes">
+            <p class="panel-note" id="run-confirm-remotes-empty">当前没有可展示的远端。</p>
+          </div>
         </section>
         <section class="panel" id="run-confirm-feishu-section">
           <div class="panel-head">
@@ -273,7 +281,7 @@
               仅命名目标
             </label>
           </div>
-          <div id="run-confirm-feishu-targets" class="settings-list"></div>
+          <div id="run-confirm-feishu-targets" class="settings-list" hidden></div>
         </section>
         <div class="credential-actions">
           <button value="cancel" class="button-subtle">取消</button>
