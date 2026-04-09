@@ -34,4 +34,4 @@ yarn-error.log*
 *.code-workspace
 ._*
 
-docs/**/*-design.md
+.superpowers/

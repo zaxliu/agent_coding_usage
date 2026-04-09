@@ -187,6 +187,117 @@ Warnings should also remain target-scoped where relevant, for example:
 - run shared preflight with `mode=execution`
 - if preflight fails, return those errors rather than probing Feishu APIs with incomplete credentials
 
+## Web Behavior
+
+The Web layer should use the same bootstrap and preflight rules as CLI flows. The main difference is response shape and frontend rendering.
+
+### Response shape
+
+For Web endpoints that initialize, validate, or save config, use a consistent JSON structure where applicable:
+
+- `ok: bool`
+- `errors: list[str]`
+- `warnings: list[str]`
+- `auto_fixes: list[str]`
+- `bootstrap_applied: bool`
+
+Write-oriented endpoints may add:
+
+- `saved: bool`
+
+Initialization endpoints may add:
+
+- `created_env: bool`
+- `created_reports: bool`
+
+### `POST /api/init`
+
+Behavior:
+
+- explicitly bootstrap runtime skeleton
+- remain idempotent
+- never overwrite existing config values
+
+Response expectations:
+
+- `ok=true`
+- `created_env` reflects whether `.env` was newly created
+- `created_reports` reflects whether `reports/` was newly created
+- `bootstrap_applied=true` if either of those was created
+
+Frontend reaction:
+
+- show a success message when the action is user-triggered
+- if nothing new was created, show a neutral success state rather than an error
+
+### `GET /api/config`
+
+Behavior:
+
+- before loading config payload, ensure runtime bootstrap has been applied
+- return current editable config plus bootstrap metadata when bootstrap happened during the request
+
+Response expectations:
+
+- existing config payload fields remain
+- add `bootstrap_applied`
+- add `auto_fixes` when bootstrap created missing runtime skeleton pieces
+
+Frontend reaction:
+
+- load and render config normally
+- if `bootstrap_applied=true`, show a non-blocking informational notice such as "已自动初始化运行时目录"
+- do not treat bootstrap as a validation error
+
+### `POST /api/config/validate`
+
+Behavior:
+
+- run shared preflight using `mode=config_save`
+- do not persist any changes
+
+Response expectations:
+
+- `ok` is `false` when blocking validation errors exist
+- `errors` contains all blocking issues
+- `warnings` contains non-blocking issues such as empty `TABLE_ID`
+- `auto_fixes` is usually empty here unless request handling also had to bootstrap runtime skeleton
+- `bootstrap_applied` indicates whether a missing runtime skeleton was auto-created before validation
+
+Frontend reaction:
+
+- display all returned errors together
+- display warnings separately from errors
+- preserve unsaved form state
+- do not silently coerce an invalid result into a saveable state
+
+### `PUT /api/config`
+
+Behavior:
+
+- run shared preflight using `mode=config_save`
+- if any blocking errors exist, reject the save and do not write `.env`
+- if only warnings exist, write config successfully
+
+Response expectations:
+
+- on failure:
+  - `ok=false`
+  - `saved=false`
+  - `errors` contains all blocking issues
+- on success:
+  - `ok=true`
+  - `saved=true`
+  - `warnings` may still be present
+- include `bootstrap_applied` and `auto_fixes` if runtime skeleton creation happened during request handling
+
+Frontend reaction:
+
+- on save failure, keep the current draft values in the UI
+- render all blocking errors together, with target-scoped Feishu messages preserved
+- on save success with warnings, show success and warnings together
+- do not require the user to re-open the page after a failed save
+
 ## Module Boundaries
 
 Introduce a shared validation module in Python for the runtime commands and Web layer. The exact file name may vary, but the responsibilities should be:
