@@ -11,6 +11,11 @@ from llm_usage.models import AggregateRecord
 from llm_usage.offline_bundle import OfflineBundleError
 
 
+def _set_basic_runtime_env(monkeypatch) -> None:
+    monkeypatch.setenv("ORG_USERNAME", "alice")
+    monkeypatch.setenv("HASH_SALT", "team-salt")
+
+
 def _row(*, tool: str = "codex", row_key: str = "row-key") -> AggregateRecord:
     return AggregateRecord(
         date_local="2026-03-31",
@@ -106,6 +111,7 @@ def test_cmd_sync_from_bundle_dry_run_without_identity_uses_empty_host_labels(mo
         captured["kwargs"] = kwargs
 
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(main, "_sync_execution_preflight", lambda **kwargs: 0)
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: ([_row()], [], {"row_count": 1}))
     monkeypatch.setattr(main, "print_terminal_report", _capture_print)
     monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: None)
@@ -140,8 +146,7 @@ def test_cmd_sync_from_bundle_dry_run_skips_feishu_credentials(monkeypatch):
         lambda rows, **kwargs: output_lines.append(f"rows:{len(rows)}"),
     )
     monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: output_lines.append(" ".join(str(v) for v in args)))
-    monkeypatch.setenv("ORG_USERNAME", "alice")
-    monkeypatch.setenv("HASH_SALT", "team-salt")
+    _set_basic_runtime_env(monkeypatch)
     feishu_calls: list[str] = []
 
     def _track_required_env(name: str) -> str:
@@ -177,8 +182,7 @@ def test_cmd_sync_from_bundle_upserts_original_rows(monkeypatch):
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: (rows, [], {"row_count": 2}))
     monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
-    monkeypatch.setenv("ORG_USERNAME", "alice")
-    monkeypatch.setenv("HASH_SALT", "team-salt")
+    _set_basic_runtime_env(monkeypatch)
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
     monkeypatch.setenv("FEISHU_TABLE_ID", "tbl")
     monkeypatch.setenv("FEISHU_BOT_TOKEN", "bot")
@@ -217,6 +221,7 @@ def test_cmd_sync_from_bundle_upserts_original_rows(monkeypatch):
 
 def test_main_returns_exit_1_for_invalid_bundle(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["llm-usage", "sync", "--from-bundle", "/tmp/bad.zip"])
+    _set_basic_runtime_env(monkeypatch)
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: (_ for _ in ()).throw(OfflineBundleError("bad bundle")))
 
     exit_code = main.main()

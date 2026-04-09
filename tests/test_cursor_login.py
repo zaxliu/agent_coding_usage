@@ -8,6 +8,11 @@ from llm_usage.env import upsert_env_var
 from llm_usage.models import AggregateRecord
 
 
+def _set_basic_runtime_env(monkeypatch) -> None:
+    monkeypatch.setenv("ORG_USERNAME", "test")
+    monkeypatch.setenv("HASH_SALT", "salt")
+
+
 def test_upsert_env_var_appends_when_missing(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("A=1\n", encoding="utf-8")
@@ -515,6 +520,7 @@ def test_clear_saved_cursor_token(monkeypatch, tmp_path):
 
 def test_cmd_collect_triggers_maybe_capture(monkeypatch):
     called = {"timeout": None, "browser": None, "user_data_dir": None, "login_mode": None, "lookback_days": None}
+    _set_basic_runtime_env(monkeypatch)
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
@@ -551,6 +557,7 @@ def test_cmd_collect_triggers_maybe_capture(monkeypatch):
 
 def test_cmd_sync_triggers_maybe_capture(monkeypatch):
     called = {"timeout": None, "browser": None, "user_data_dir": None, "login_mode": None, "lookback_days": None}
+    _set_basic_runtime_env(monkeypatch)
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
@@ -604,6 +611,7 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
 
 def test_cmd_collect_suppresses_cursor_probe_warning_when_cursor_rows_exist(monkeypatch):
     printed: list[str] = []
+    _set_basic_runtime_env(monkeypatch)
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
@@ -651,6 +659,7 @@ def test_cmd_collect_suppresses_cursor_probe_warning_when_cursor_rows_exist(monk
 
 def test_cmd_collect_keeps_cursor_probe_warning_when_no_cursor_rows(monkeypatch):
     printed: list[str] = []
+    _set_basic_runtime_env(monkeypatch)
     monkeypatch.setattr(
         main,
         "_maybe_capture_cursor_token",
