@@ -250,6 +250,7 @@ def _execution_preflight(
     _load_runtime_env()
     document = load_env_document(_env_path())
     draft = ConfigDraft.from_document(document)
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
     return validate_runtime_config(
         basic={key: os.getenv(key, draft.values.get(key, "")) for key in BASIC_KEYS},
         feishu_default={key: os.getenv(key, draft.values.get(key, "")) for key in FEISHU_KEYS},
@@ -267,7 +268,28 @@ def _execution_preflight(
         mode="execution",
         selected_feishu_targets=list(feishu_target or []),
         all_feishu_targets=all_feishu_targets,
+        is_interactive_tty=is_tty,
     )
+
+
+def _basic_preflight() -> int:
+    _load_runtime_env()
+    document = load_env_document(_env_path())
+    draft = ConfigDraft.from_document(document)
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    result = validate_runtime_config(
+        basic={key: os.getenv(key, draft.values.get(key, "")) for key in BASIC_KEYS},
+        feishu_default={},
+        feishu_targets=[],
+        mode="execution",
+        is_interactive_tty=is_tty,
+        skip_feishu=True,
+    )
+    if not result.ok:
+        for error in result.errors:
+            print(f"error: {error}")
+        return 1
+    return 0
 
 
 def _sync_execution_preflight(
@@ -277,7 +299,7 @@ def _sync_execution_preflight(
     all_feishu_targets: bool = False,
 ) -> int:
     if dry_run:
-        return 0
+        return _basic_preflight()
     preflight = _execution_preflight(feishu_target=feishu_target, all_feishu_targets=all_feishu_targets)
     if not preflight.ok:
         for error in preflight.errors:
@@ -866,6 +888,9 @@ def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str], dict[s
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
+    preflight_code = _basic_preflight()
+    if preflight_code != 0:
+        return preflight_code
     cursor_probe_warning = _maybe_capture_cursor_token(
         lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
         timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
@@ -890,6 +915,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
     if getattr(args, "from_bundle", None):
         _load_runtime_env()
         _validate_sync_bundle_args(args)
+        preflight_code = _sync_execution_preflight(
+            dry_run=getattr(args, "dry_run", False),
+            feishu_target=getattr(args, "feishu_target", None) or [],
+            all_feishu_targets=getattr(args, "all_feishu_targets", False),
+        )
+        if preflight_code != 0:
+            return preflight_code
         rows, warnings, _manifest = read_offline_bundle(Path(args.from_bundle).expanduser())
         print(f"env: {_env_path()}")
         if warnings:

@@ -87,7 +87,7 @@ def validate_feishu_targets(
     selected_feishu_targets: Optional[list[str]] = None,
     all_feishu_targets: bool = False,
 ) -> PreflightResult:
-    del basic
+    _ = basic
     errors: list[str] = []
     resolved_targets: list[FeishuTargetConfig] = []
     selected_names = {str(name).strip().lower() for name in (selected_feishu_targets or []) if str(name).strip()}
@@ -135,6 +135,21 @@ def validate_feishu_targets(
     return PreflightResult(ok=not errors, errors=errors, resolved_feishu_targets=resolved_targets)
 
 
+def validate_basic_config(
+    *,
+    basic: dict[str, Any],
+    is_interactive_tty: bool = False,
+) -> PreflightResult:
+    errors: list[str] = []
+    org_username = str(basic.get("ORG_USERNAME", "")).strip()
+    hash_salt = str(basic.get("HASH_SALT", "")).strip()
+    if not org_username and not is_interactive_tty:
+        errors.append("missing ORG_USERNAME (set in .env or run in interactive terminal)")
+    if not hash_salt:
+        errors.append("missing HASH_SALT (set in .env)")
+    return PreflightResult(ok=not errors, errors=errors)
+
+
 def validate_runtime_config(
     *,
     basic: dict[str, Any],
@@ -143,7 +158,16 @@ def validate_runtime_config(
     mode: str,
     selected_feishu_targets: Optional[list[str]] = None,
     all_feishu_targets: bool = False,
+    is_interactive_tty: bool = False,
+    skip_feishu: bool = False,
 ) -> PreflightResult:
+    basic_result = validate_basic_config(basic=basic, is_interactive_tty=is_interactive_tty)
+    warnings = list(basic_result.warnings)
+    errors = list(basic_result.errors)
+
+    if skip_feishu:
+        return PreflightResult(ok=not errors, errors=errors, warnings=warnings)
+
     result = validate_feishu_targets(
         basic=basic,
         feishu_default=feishu_default,
@@ -152,8 +176,8 @@ def validate_runtime_config(
         selected_feishu_targets=selected_feishu_targets,
         all_feishu_targets=all_feishu_targets,
     )
-    warnings = list(result.warnings)
-    errors = list(result.errors)
+    warnings.extend(result.warnings)
+    errors.extend(result.errors)
     selected_names = {str(name).strip().lower() for name in (selected_feishu_targets or []) if str(name).strip()}
 
     default_app_token = str(feishu_default.get("FEISHU_APP_TOKEN", "")).strip()

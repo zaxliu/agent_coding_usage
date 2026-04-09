@@ -161,7 +161,7 @@ def test_save_config_payload_allows_named_target_to_inherit_default_auth(tmp_pat
 
     payload = web.save_config_payload(
         {
-            "basic": {},
+            "basic": {"ORG_USERNAME": "test", "HASH_SALT": "salt"},
             "cursor": {},
             "feishu_default": {
                 "FEISHU_APP_TOKEN": "app-default",
@@ -452,6 +452,35 @@ def test_web_sync_fails_preflight_before_collect(tmp_path: Path, monkeypatch):
     assert current is not None
     assert current["status"] == "succeeded"
     assert current["result"]["exit_code"] == 1
+
+
+def test_web_collect_fails_preflight_before_job(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("ORG_USERNAME", raising=False)
+    monkeypatch.delenv("HASH_SALT", raising=False)
+
+    def _fail_if_called(payload, runtime_passwords=None):  # noqa: ANN001, ANN201
+        raise AssertionError("_build_aggregates_for_web should not be called when collect preflight fails")
+
+    monkeypatch.setattr(web, "_build_aggregates_for_web", _fail_if_called)
+
+    service = web.WebService()
+    started = service.start_collect({})
+
+    for _ in range(100):
+        current = service.jobs.get_job(started["id"])
+        if current and current["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(started["id"])
+    assert current is not None
+    assert current["status"] == "succeeded"
+    assert current["result"]["exit_code"] == 1
+    assert current["result"]["errors"]
 
 
 def test_web_remote_setup_returns_structured_input_request_sequence():

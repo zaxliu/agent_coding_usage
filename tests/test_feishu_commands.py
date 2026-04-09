@@ -76,6 +76,8 @@ def test_cmd_sync_from_bundle_passes_target_selection_to_upload(monkeypatch):
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: ([_row()], [], {"row_count": 1}))
     monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: None)
+    monkeypatch.setenv("ORG_USERNAME", "test")
+    monkeypatch.setenv("HASH_SALT", "salt")
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
     monkeypatch.setenv("FEISHU_TABLE_ID", "tbl")
     monkeypatch.setenv("FEISHU_BOT_TOKEN", "bot")
@@ -488,3 +490,116 @@ def test_run_feishu_doctor_fails_preflight_before_api_calls(monkeypatch):
 
     with pytest.raises(RuntimeError, match="default target is required"):
         main.run_feishu_doctor(argparse.Namespace(feishu=True, feishu_target=[], all_feishu_targets=False))
+
+
+def test_cmd_collect_fails_preflight_on_missing_basic_config(monkeypatch, tmp_path):
+    """collect should fail with clean error when HASH_SALT is missing in non-TTY."""
+    printed: list[str] = []
+    env_path = tmp_path / ".env"
+    env_path.write_text('ORG_USERNAME="test"\n', encoding="utf-8")
+
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setattr(main, "_maybe_capture_cursor_token", lambda **kwargs: None)
+    monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {"isatty": lambda self: False})())
+    monkeypatch.setattr("sys.stdout", type("FakeTTY", (), {"isatty": lambda self: False, "write": lambda self, s: None, "flush": lambda self: None})())
+    monkeypatch.setenv("ORG_USERNAME", "test")
+    monkeypatch.delenv("HASH_SALT", raising=False)
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: printed.append(" ".join(str(a) for a in args)))
+
+    rc = main.cmd_collect(
+        argparse.Namespace(
+            lookback_days=None,
+            cursor_login_timeout_sec=600,
+            cursor_login_browser="default",
+            cursor_login_user_data_dir="",
+            cursor_login_mode="auto",
+        )
+    )
+
+    assert rc == 1
+    assert any("HASH_SALT" in msg for msg in printed)
+
+
+def test_cmd_sync_dry_run_validates_basic_config(monkeypatch, tmp_path):
+    """sync --dry-run should still catch missing HASH_SALT."""
+    printed: list[str] = []
+    env_path = tmp_path / ".env"
+    env_path.write_text('ORG_USERNAME="test"\n', encoding="utf-8")
+
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setattr(main, "_maybe_capture_cursor_token", lambda **kwargs: None)
+    monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {"isatty": lambda self: False})())
+    monkeypatch.setattr("sys.stdout", type("FakeTTY", (), {"isatty": lambda self: False, "write": lambda self, s: None, "flush": lambda self: None})())
+    monkeypatch.setenv("ORG_USERNAME", "test")
+    monkeypatch.delenv("HASH_SALT", raising=False)
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: printed.append(" ".join(str(a) for a in args)))
+
+    rc = main.cmd_sync(
+        argparse.Namespace(
+            from_bundle=None,
+            dry_run=True,
+            lookback_days=None,
+            ui="auto",
+            cursor_login_timeout_sec=600,
+            cursor_login_browser="default",
+            cursor_login_user_data_dir="",
+            cursor_login_mode="auto",
+            feishu_target=[],
+            all_feishu_targets=False,
+        )
+    )
+
+    assert rc == 1
+    assert any("HASH_SALT" in msg for msg in printed)
+
+
+def test_cmd_sync_from_bundle_runs_feishu_preflight(monkeypatch):
+    """sync --from-bundle should run feishu preflight before reading bundle."""
+    calls = {"read_bundle": 0, "sync_rows": 0}
+
+    monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {"isatty": lambda self: False})())
+    monkeypatch.setattr("sys.stdout", type("FakeTTY", (), {"isatty": lambda self: False, "write": lambda self, s: None, "flush": lambda self: None})())
+    monkeypatch.setenv("ORG_USERNAME", "test")
+    monkeypatch.setenv("HASH_SALT", "salt")
+    monkeypatch.setattr(
+        main,
+        "_execution_preflight",
+        lambda **kwargs: type(
+            "Result",
+            (),
+            {
+                "ok": False,
+                "errors": ["feishu[default]: missing BOT_TOKEN or APP_ID+APP_SECRET"],
+                "warnings": [],
+                "auto_fixes": [],
+                "bootstrap_applied": False,
+                "resolved_feishu_targets": [],
+            },
+        )(),
+    )
+
+    def _fail_if_called(path):  # noqa: ANN001, ANN201
+        calls["read_bundle"] += 1
+        raise AssertionError("read_offline_bundle should not be called when preflight fails")
+
+    monkeypatch.setattr(main, "read_offline_bundle", _fail_if_called)
+
+    rc = main.cmd_sync(
+        argparse.Namespace(
+            from_bundle="/tmp/b.zip",
+            dry_run=False,
+            lookback_days=None,
+            ui="auto",
+            cursor_login_timeout_sec=600,
+            cursor_login_browser="default",
+            cursor_login_user_data_dir="",
+            cursor_login_mode="auto",
+            feishu_target=[],
+            all_feishu_targets=False,
+        )
+    )
+
+    assert rc == 1
+    assert calls == {"read_bundle": 0, "sync_rows": 0}

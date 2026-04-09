@@ -79,9 +79,54 @@ def test_validate_feishu_config_rejects_named_target_without_app_token():
     assert "feishu[finance]: missing APP_TOKEN" in result.errors
 
 
+def test_validate_basic_config_missing_org_username_non_interactive():
+    result = runtime_preflight.validate_basic_config(
+        basic={"ORG_USERNAME": "", "HASH_SALT": "some-salt"},
+        is_interactive_tty=False,
+    )
+    assert result.ok is False
+    assert any("ORG_USERNAME" in e for e in result.errors)
+
+
+def test_validate_basic_config_missing_hash_salt():
+    result = runtime_preflight.validate_basic_config(
+        basic={"ORG_USERNAME": "alice", "HASH_SALT": ""},
+        is_interactive_tty=False,
+    )
+    assert result.ok is False
+    assert any("HASH_SALT" in e for e in result.errors)
+
+
+def test_validate_basic_config_missing_both():
+    result = runtime_preflight.validate_basic_config(
+        basic={"ORG_USERNAME": "", "HASH_SALT": ""},
+        is_interactive_tty=False,
+    )
+    assert result.ok is False
+    assert len(result.errors) == 2
+
+
+def test_validate_basic_config_skips_org_username_in_interactive_tty():
+    result = runtime_preflight.validate_basic_config(
+        basic={"ORG_USERNAME": "", "HASH_SALT": "some-salt"},
+        is_interactive_tty=True,
+    )
+    assert result.ok is True
+    assert result.errors == []
+
+
+def test_validate_basic_config_all_present():
+    result = runtime_preflight.validate_basic_config(
+        basic={"ORG_USERNAME": "alice", "HASH_SALT": "some-salt"},
+        is_interactive_tty=False,
+    )
+    assert result.ok is True
+    assert result.errors == []
+
+
 def test_validate_runtime_config_reports_table_id_as_warning():
     result = runtime_preflight.validate_runtime_config(
-        basic={},
+        basic={"ORG_USERNAME": "test", "HASH_SALT": "salt"},
         feishu_default={
             "FEISHU_APP_TOKEN": "app-default",
             "FEISHU_BOT_TOKEN": "bot-default",
@@ -98,7 +143,7 @@ def test_validate_runtime_config_reports_table_id_as_warning():
 
 def test_validate_runtime_config_rejects_partial_default_app_credentials():
     result = runtime_preflight.validate_runtime_config(
-        basic={},
+        basic={"ORG_USERNAME": "test", "HASH_SALT": "salt"},
         feishu_default={
             "FEISHU_APP_TOKEN": "app-default",
             "FEISHU_APP_ID": "cli_a",
@@ -114,7 +159,7 @@ def test_validate_runtime_config_rejects_partial_default_app_credentials():
 
 def test_validate_runtime_config_rejects_named_target_with_partial_own_auth():
     result = runtime_preflight.validate_runtime_config(
-        basic={},
+        basic={"ORG_USERNAME": "test", "HASH_SALT": "salt"},
         feishu_default={
             "FEISHU_APP_TOKEN": "app-default",
             "FEISHU_BOT_TOKEN": "bot-default",
@@ -136,7 +181,7 @@ def test_validate_runtime_config_rejects_named_target_with_partial_own_auth():
 
 def test_validate_runtime_config_allows_execution_with_explicit_named_target_without_default():
     result = runtime_preflight.validate_runtime_config(
-        basic={},
+        basic={"ORG_USERNAME": "test", "HASH_SALT": "salt"},
         feishu_default={},
         feishu_targets=[
             {

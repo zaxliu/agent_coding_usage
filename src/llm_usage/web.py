@@ -53,7 +53,7 @@ from llm_usage.main import (
 from llm_usage.paths import read_bootstrap_env_text
 from llm_usage.remotes import RemoteDraft, build_remote_collectors, parse_remote_configs_from_env
 from llm_usage.runtime_state import save_selected_remote_aliases
-from llm_usage.runtime_preflight import ensure_runtime_bootstrap, validate_runtime_config
+from llm_usage.runtime_preflight import ensure_runtime_bootstrap, validate_basic_config, validate_runtime_config
 
 
 def _repo_root() -> Path:
@@ -760,6 +760,26 @@ class WebService:
         return {"row_count": len(rows), "warnings": warnings, "csv_path": str(csv_path), "exit_code": exit_code}
 
     def _collect_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
+        _load_runtime_env()
+        _overlay_runtime_env()
+        basic_result = validate_basic_config(
+            basic={key: os.getenv(key, "") for key in BASIC_KEYS},
+            is_interactive_tty=False,
+        )
+        if not basic_result.ok:
+            errors = list(basic_result.errors)
+            return self.jobs.start(
+                "collect",
+                lambda: {
+                    "row_count": 0,
+                    "warnings": [],
+                    "host_labels": {},
+                    "csv_path": str(_reports_dir() / "usage_report.csv"),
+                    "exit_code": 1,
+                    "errors": errors,
+                },
+                write_operation=True,
+            )
         selected_configs = self._selected_remote_configs(payload)
         input_request = self._missing_runtime_password_request(selected_configs)
         if input_request:
