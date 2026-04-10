@@ -875,6 +875,8 @@ class SshTarget:
     host: str
     user: str
     port: int
+    jump_host: str = ""
+    jump_port: int = 2222
 
     @property
     def destination(self) -> str:
@@ -1449,6 +1451,8 @@ class RemoteFileCollector(BaseCollector):
             use_connection_sharing=self._use_connection_sharing,
             use_sshpass=self.use_sshpass,
             ssh_password=self.ssh_password,
+            jump_host=self.target.jump_host,
+            jump_port=self.target.jump_port,
         )
 
     def _log_progress(self, message: str) -> None:
@@ -1576,7 +1580,14 @@ def _ssh_base_command(
     port: int,
     use_connection_sharing: bool = True,
     batch_mode: bool = False,
+    jump_host: str = "",
+    jump_port: int = 2222,
 ) -> list[str]:
+    if jump_host:
+        # 堡垒机模式: ssh user@user@目标IP@跳板机IP -p 跳板机端口
+        user, host = destination.split("@", 1)
+        destination = f"{user}@{user}@{host}@{jump_host}"
+        port = jump_port
     command = [
         "ssh",
         "-o",
@@ -1608,6 +1619,8 @@ def _ssh_command_and_env(
     use_connection_sharing: bool = True,
     use_sshpass: bool = False,
     ssh_password: Optional[str] = None,
+    jump_host: str = "",
+    jump_port: int = 2222,
 ) -> tuple[list[str], Optional[dict[str, str]]]:
     remote_command = " ".join(_shell_quote(arg) for arg in remote_args)
 
@@ -1626,6 +1639,7 @@ def _ssh_command_and_env(
     batch_mode = not has_password
     command = _ssh_base_command(
         destination, port, use_connection_sharing=use_connection_sharing, batch_mode=batch_mode,
+        jump_host=jump_host, jump_port=jump_port,
     ) + [remote_command]
 
     if has_password:

@@ -70,12 +70,24 @@ def _json_now() -> str:
 
 def _overlay_runtime_env() -> dict[str, str]:
     document = load_env_document(_env_path())
+    # Clean stale REMOTE_* keys from os.environ before re-applying
+    stale_remote_keys = [k for k in os.environ if k.startswith("REMOTE_")]
+    for k in stale_remote_keys:
+        del os.environ[k]
     env_map: dict[str, str] = {}
     for line in document.lines:
         if line.kind == "entry" and line.key is not None and line.value is not None:
             env_map[line.key] = line.value
             os.environ[line.key] = line.value
     return env_map
+
+
+def _safe_jump_port(raw: object) -> int:
+    try:
+        port = int(raw or 2222)
+        return port if port > 0 else 2222
+    except (TypeError, ValueError):
+        return 2222
 
 
 def _serialize_remote(remote: Any) -> dict[str, Any]:
@@ -90,6 +102,8 @@ def _serialize_remote(remote: Any) -> dict[str, Any]:
         "copilot_cli_log_paths": list(remote.copilot_cli_log_paths),
         "copilot_vscode_session_paths": list(remote.copilot_vscode_session_paths),
         "use_sshpass": bool(getattr(remote, "use_sshpass", False)),
+        "ssh_jump_host": getattr(remote, "ssh_jump_host", ""),
+        "ssh_jump_port": getattr(remote, "ssh_jump_port", 2222),
     }
 
 
@@ -342,6 +356,16 @@ def _validate_remote_payload(payload: dict[str, Any]) -> tuple[list[str], list[s
                 raise ValueError
         except (TypeError, ValueError):
             errors.append(f"remote {alias or '<new>'}: SSH port must be a positive integer")
+        jump_host = str(remote.get("ssh_jump_host", "")).strip()
+        if jump_host:
+            if "@" in jump_host or any(c in jump_host for c in " \t\n\r"):
+                errors.append(f"remote {alias or '<new>'}: Jump host must not contain '@' or whitespace")
+            try:
+                jump_port = int(remote.get("ssh_jump_port", 2222))
+                if jump_port <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                errors.append(f"remote {alias or '<new>'}: Jump port must be a positive integer")
     basic = payload.get("basic", {}) or {}
     if basic.get("ORG_USERNAME", "") and not basic.get("HASH_SALT", ""):
         warnings.append("HASH_SALT is empty; collect/sync will fail until set")
@@ -416,6 +440,8 @@ def save_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
             copilot_cli_log_paths=list(remote.get("copilot_cli_log_paths", []) or []),
             copilot_vscode_session_paths=list(remote.get("copilot_vscode_session_paths", []) or []),
             use_sshpass=bool(remote.get("use_sshpass", False)),
+            ssh_jump_host=str(remote.get("ssh_jump_host", "")).strip(),
+            ssh_jump_port=_safe_jump_port(remote.get("ssh_jump_port", 2222)),
         )
         for remote in payload.get("remotes", []) or []
     ]

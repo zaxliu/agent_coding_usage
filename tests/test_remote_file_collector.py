@@ -1960,3 +1960,67 @@ def test_is_ssh_auth_failure_helper():
     assert not _is_ssh_auth_failure("Connection timed out")
     assert not _is_ssh_auth_failure("No route to host")
     assert not _is_ssh_auth_failure("")
+
+
+# --- _ssh_base_command jump host tests ---
+
+def test_ssh_base_command_no_jump_host():
+    from llm_usage.collectors.remote_file import _ssh_base_command
+
+    cmd = _ssh_base_command("deploy@10.0.0.5", 22, use_connection_sharing=False, batch_mode=False)
+    assert cmd == ["ssh", "-o", "ConnectTimeout=10", "-p", "22", "deploy@10.0.0.5"]
+
+
+def test_ssh_base_command_with_jump_host():
+    from llm_usage.collectors.remote_file import _ssh_base_command
+
+    cmd = _ssh_base_command(
+        "deploy@10.0.0.5", 22,
+        use_connection_sharing=False, batch_mode=False,
+        jump_host="bastion.example.com", jump_port=2222,
+    )
+    assert cmd == [
+        "ssh", "-o", "ConnectTimeout=10",
+        "-p", "2222",
+        "deploy@deploy@10.0.0.5@bastion.example.com",
+    ]
+
+
+def test_ssh_base_command_jump_host_with_batch_mode():
+    from llm_usage.collectors.remote_file import _ssh_base_command
+
+    cmd = _ssh_base_command(
+        "alice@server", 22,
+        use_connection_sharing=False, batch_mode=True,
+        jump_host="jump.host", jump_port=3333,
+    )
+    assert "-p" in cmd
+    port_idx = cmd.index("-p")
+    assert cmd[port_idx + 1] == "3333"
+    assert "alice@alice@server@jump.host" in cmd
+    assert cmd[3:5] == ["-o", "BatchMode=yes"]
+
+
+def test_ssh_base_command_jump_host_with_connection_sharing():
+    from llm_usage.collectors.remote_file import _ssh_base_command
+
+    cmd = _ssh_base_command(
+        "bob@host-b", 22,
+        use_connection_sharing=True, batch_mode=False,
+        jump_host="bastion", jump_port=2222,
+    )
+    assert "ControlMaster=auto" in cmd
+    assert "bob@bob@host-b@bastion" in cmd
+    assert cmd[cmd.index("-p") + 1] == "2222"
+
+
+def test_ssh_base_command_jump_host_custom_port_overrides_target_port():
+    from llm_usage.collectors.remote_file import _ssh_base_command
+
+    cmd = _ssh_base_command(
+        "user@target", 8022,
+        use_connection_sharing=False, batch_mode=False,
+        jump_host="jump", jump_port=9999,
+    )
+    # Target port 8022 should be replaced by jump port 9999
+    assert cmd[cmd.index("-p") + 1] == "9999"

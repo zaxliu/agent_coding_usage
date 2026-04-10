@@ -912,6 +912,13 @@ def _prompt_remote(existing_aliases: list[str], stdin: TextIO, stdout: TextIO) -
         stdout.write("SSH host 和 SSH user 为必填项。\n")
         return None
     port = _read_port(stdin=stdin, stdout=stdout, prompt_text="SSH port [22]: ", default=22)
+    jump_host = _read_line("Jump host (leave empty to skip): ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
+    if jump_host and ("@" in jump_host or any(c in jump_host for c in " \t\n\r")):
+        stdout.write("跳板机地址不能包含 @ 或空白字符。\n")
+        jump_host = ""
+    jump_port = 2222
+    if jump_host:
+        jump_port = _read_port(stdin=stdin, stdout=stdout, prompt_text="Jump port [2222]: ", default=2222)
     default_label = default_source_label(user, host)
     label = _read_line(
         f"Label [{default_label}]: ",
@@ -933,6 +940,8 @@ def _prompt_remote(existing_aliases: list[str], stdin: TextIO, stdout: TextIO) -
         copilot_cli_log_paths=[],
         copilot_vscode_session_paths=[],
         use_sshpass=use_sshpass,
+        ssh_jump_host=jump_host,
+        ssh_jump_port=jump_port,
     )
 
 
@@ -944,6 +953,7 @@ def _edit_remote_detail(
 ) -> bool:
     changed = False
     while True:
+        jump_display = remote.ssh_jump_host or "(none)"
         stdout.write("Remote Detail\n")
         stdout.write(f"  1. Alias = {remote.alias}\n")
         stdout.write(f"  2. SSH host = {remote.ssh_host}\n")
@@ -951,6 +961,9 @@ def _edit_remote_detail(
         stdout.write(f"  4. SSH port = {remote.ssh_port}\n")
         stdout.write(f"  5. Label = {remote.source_label}\n")
         stdout.write(f"  6. Use sshpass = {'yes' if remote.use_sshpass else 'no'}\n")
+        stdout.write(f"  7. Jump host = {jump_display}\n")
+        if remote.ssh_jump_host:
+            stdout.write(f"  8. Jump port = {remote.ssh_jump_port}\n")
         stdout.write("  p. Edit paths\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
@@ -987,6 +1000,20 @@ def _edit_remote_detail(
             next_use_sshpass = _prompt_yes_no("Use sshpass? [y/N]: ", stdin=stdin, stdout=stdout)
             if next_use_sshpass != remote.use_sshpass:
                 remote.use_sshpass = next_use_sshpass
+                changed = True
+        elif answer == "7":
+            next_jump = _read_line("Jump host (leave empty to clear): ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
+            if next_jump and ("@" in next_jump or any(c in next_jump for c in " \t\n\r")):
+                stdout.write("跳板机地址不能包含 @ 或空白字符。\n")
+            elif next_jump != remote.ssh_jump_host:
+                remote.ssh_jump_host = next_jump
+                if next_jump and remote.ssh_jump_port == 2222:
+                    pass  # keep default
+                changed = True
+        elif answer == "8" and remote.ssh_jump_host:
+            next_jump_port = _read_port(stdin=stdin, stdout=stdout, prompt_text="Jump port: ", default=remote.ssh_jump_port)
+            if next_jump_port != remote.ssh_jump_port:
+                remote.ssh_jump_port = next_jump_port
                 changed = True
         elif answer == "p":
             if _edit_remote_paths(remote, stdin=stdin, stdout=stdout):
@@ -1279,6 +1306,25 @@ def _prompt_temporary_remote(
                         break
                     stdout.write("请输入 y 或 n。\n")
                 continue
+            if request.kind == "ssh_jump_host":
+                while True:
+                    jump = _read_line(request.message, stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit)
+                    if runner.apply_input(jump):
+                        break
+                    stdout.write("跳板机地址不能包含 @ 或空白字符。\n")
+                continue
+            if request.kind == "ssh_jump_port":
+                while True:
+                    port_raw = _read_line(
+                        request.message,
+                        stdin=stdin,
+                        stdout=stdout,
+                        use_prompt_toolkit=use_prompt_toolkit,
+                    )
+                    if runner.apply_input(port_raw):
+                        break
+                    stdout.write("端口格式不正确，请重新输入。\n")
+                continue
             return None
         host = runner.state.ssh_host
         if not host:
@@ -1288,6 +1334,8 @@ def _prompt_temporary_remote(
             return None
         port = runner.state.ssh_port
         use_sshpass = runner.state.use_sshpass
+        jump_host = runner.state.ssh_jump_host
+        jump_port = runner.state.ssh_jump_port
         ssh_password = None
         if use_sshpass:
             ssh_password = password_getter() if password_getter is not None else None
@@ -1314,7 +1362,8 @@ def _prompt_temporary_remote(
                 continue
             if password_setter is not None:
                 password_setter(ssh_password)
-        config = replace(build_temporary_remote(host, user, port, use_sshpass=use_sshpass), alias=runner.state.alias)
+        config = replace(build_temporary_remote(host, user, port, use_sshpass=use_sshpass,
+                                                ssh_jump_host=jump_host, ssh_jump_port=jump_port), alias=runner.state.alias)
         stdout.write("正在检查 SSH 连通性...\n")
         ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
         if ok:

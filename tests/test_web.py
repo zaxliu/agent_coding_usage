@@ -544,6 +544,20 @@ def test_web_remote_setup_returns_structured_input_request_sequence():
     current = service.jobs.get_job(job_id)
     assert current is not None
     assert current["status"] == "needs_input"
+    assert current["input_request"]["kind"] == "ssh_jump_host"
+
+    resumed = service.jobs.submit_input(job_id, "")
+    assert resumed["status"] in {"queued", "running", "needs_input"}
+
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] == "needs_input":
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
     assert current["input_request"]["kind"] == "use_sshpass"
 
     finished = service.jobs.submit_input(job_id, "n")
@@ -565,6 +579,8 @@ def test_web_remote_setup_returns_structured_input_request_sequence():
             "ssh_user": "bob",
             "ssh_port": 2200,
             "use_sshpass": False,
+            "ssh_jump_host": "",
+            "ssh_jump_port": 2222,
         }
     }
 

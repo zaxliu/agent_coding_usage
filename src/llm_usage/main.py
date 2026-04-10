@@ -139,13 +139,37 @@ def _terminal_host_labels_for_report() -> dict[str, str]:
 
 
 def _collect_all(lookback_days: int, collectors: list[BaseCollector]) -> tuple[list, list[str]]:
+    import getpass
+
+    from llm_usage.collectors.remote_file import RemoteFileCollector, SshAuthenticationError
+
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=max(1, lookback_days))
 
     events = []
     warnings: list[str] = []
     for collector in collectors:
-        out = collector.collect(start=start, end=end)
+        try:
+            out = collector.collect(start=start, end=end)
+        except SshAuthenticationError as exc:
+            if not isinstance(collector, RemoteFileCollector):
+                raise
+            alias = getattr(collector, "source_name", "unknown")
+            print(f"warn: SSH key 认证失败（{alias}）：{exc}")
+            try:
+                password = getpass.getpass(f"请输入 {alias} 的 SSH 密码（留空跳过）：")
+            except (EOFError, KeyboardInterrupt):
+                password = ""
+            if not password.strip():
+                warnings.append(f"remote[{alias}]: 跳过（未提供密码）")
+                continue
+            collector.ssh_password = password
+            collector.use_sshpass = True
+            try:
+                out = collector.collect(start=start, end=end)
+            except Exception as retry_exc:
+                warnings.append(f"remote[{alias}]: 密码重试失败：{retry_exc}")
+                continue
         for event in out.events:
             events.append(
                 event
@@ -646,7 +670,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"collector {collector.name}[{collector.source_name}]: {'OK' if ok else 'WARN'} - {msg}")
 
     for collector in build_remote_collectors(parse_remote_configs_from_env(), username=username, salt=salt):
-        ok, msg = collector.probe()
+        try:
+            ok, msg = collector.probe()
+        except Exception as exc:
+            ok, msg = False, str(exc)
         print(f"collector {collector.name}[{collector.source_name}]: {'OK' if ok else 'WARN'} - {msg}")
     return 0
 

@@ -61,7 +61,7 @@ def test_select_remotes_cli_supports_temporary_remote():
         configs,
         ["SERVER_A"],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
@@ -77,7 +77,7 @@ def test_select_remotes_cli_reprompts_for_invalid_temporary_remote_port():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n0\n-1\n2200\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n0\n-1\n2200\n\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
@@ -91,7 +91,7 @@ def test_select_remotes_cli_supports_temporary_remote_without_configured_hosts()
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
@@ -116,7 +116,8 @@ def test_select_remotes_cli_drives_remote_prompt_runner_in_terminal_order(monkey
             self.state = type(
                 "State",
                 (),
-                {"alias": "", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "use_sshpass": False},
+                {"alias": "", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "use_sshpass": False,
+                 "ssh_jump_host": "", "ssh_jump_port": 2222},
             )()
             self._index = 0
 
@@ -181,7 +182,7 @@ def test_select_remotes_cli_preserves_runner_alias_when_temporary_alias_collides
         configs,
         ["BOB_HOST_B"],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
@@ -196,7 +197,7 @@ def test_select_remotes_cli_reprompts_invalid_use_sshpass_input():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n22\nmaybe\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n22\n\nmaybe\nn\n"),
         stdout=stdout,
         remote_validator=lambda config: (True, "ok"),
     )
@@ -218,7 +219,7 @@ def test_select_remotes_cli_supports_validator_with_positional_password_paramete
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         interactive_password_reader=lambda prompt_text: "hunter2",
@@ -251,7 +252,7 @@ def test_select_remotes_cli_supports_sshpass_password_capture():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         password_getter=_password_getter,
@@ -273,7 +274,7 @@ def test_select_remotes_cli_supports_sshpass_password_capture():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-c\ncarol\n2222\ny\n"),
+        stdin=_TTYStringIO("+\nhost-c\ncarol\n2222\n\ny\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         password_getter=_password_getter,
@@ -310,7 +311,7 @@ def test_select_remotes_cli_uses_getpass_when_prompt_toolkit_is_unavailable(monk
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
     )
@@ -344,7 +345,7 @@ def test_select_remotes_cli_retries_when_ssh_probe_fails():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\nr\nhost-c\nroot\n22\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\nr\nhost-c\nroot\n22\n\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
     )
@@ -377,7 +378,7 @@ def test_select_remotes_cli_reprompts_for_new_password_after_failed_sshpass_prob
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\nr\nhost-c\nroot\n22\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\nr\nhost-c\nroot\n22\n\ny\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         password_getter=_password_getter,
@@ -411,7 +412,7 @@ def test_select_remotes_cli_cancels_when_ssh_probe_fails():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (False, "Permission denied"),
     )
@@ -427,7 +428,7 @@ def test_select_remotes_cli_propagates_validator_type_error():
             [],
             [],
             ui_mode="cli",
-            stdin=_TTYStringIO("+\nhost-b\nbob\n2200\nn\n"),
+            stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
             stdout=_TTYStringIO(),
             remote_validator=_validator,
         )
@@ -447,7 +448,7 @@ def test_select_remotes_cli_clears_cached_password_after_failed_probe():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config, ssh_password=None: (False, "Permission denied"),
         password_setter=_password_setter,
@@ -469,7 +470,7 @@ def test_select_remotes_cli_cleans_up_password_after_blank_password_cancel():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\ny\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config, ssh_password=None: (True, "ok"),
         password_setter=_password_setter,
@@ -568,6 +569,7 @@ def test_run_config_editor_adds_remote_and_path_entries(tmp_path: Path):
             "alice",
             "22",
             "",
+            "",
             "n",
             "p",
             "1",
@@ -616,6 +618,7 @@ def test_run_config_editor_reprompts_for_invalid_remote_ports(tmp_path: Path):
             "0",
             "-1",
             "2200",
+            "",
             "",
             "n",
             "b",
@@ -774,11 +777,12 @@ def _request_kinds(runner: RemotePromptRunner, values: list[str]) -> list[str]:
 
 def test_cli_and_web_share_same_remote_input_sequence():
     runner = RemotePromptRunner(existing_aliases=[])
-    kinds = _request_kinds(runner, ["host-a", "alice", "22", "n"])
+    kinds = _request_kinds(runner, ["host-a", "alice", "22", "", "n"])
 
-    assert kinds == ["ssh_host", "ssh_user", "ssh_port", "use_sshpass"]
+    assert kinds == ["ssh_host", "ssh_user", "ssh_port", "ssh_jump_host", "use_sshpass"]
     assert runner.next_request() is None
     assert runner.state.ssh_host == "host-a"
     assert runner.state.ssh_user == "alice"
     assert runner.state.ssh_port == 22
+    assert runner.state.ssh_jump_host == ""
     assert runner.state.use_sshpass is False

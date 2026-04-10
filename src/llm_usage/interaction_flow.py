@@ -23,6 +23,8 @@ class RemoteFlowState:
     ssh_user: str = ""
     ssh_port: int = 22
     use_sshpass: bool = False
+    ssh_jump_host: str = ""
+    ssh_jump_port: int = 2222
 
 
 class RemotePromptRunner:
@@ -38,6 +40,10 @@ class RemotePromptRunner:
             return InputRequest(kind="ssh_user", message="SSH 用户：")
         if self._stage == "ssh_port":
             return InputRequest(kind="ssh_port", message="SSH 端口 [22]：")
+        if self._stage == "ssh_jump_host":
+            return InputRequest(kind="ssh_jump_host", message="跳板机地址（留空跳过）：")
+        if self._stage == "ssh_jump_port":
+            return InputRequest(kind="ssh_jump_port", message="跳板机端口 [2222]：")
         if self._stage == "use_sshpass":
             return InputRequest(kind="use_sshpass", message="是否使用 sshpass？[y/N]：")
         return None
@@ -60,7 +66,7 @@ class RemotePromptRunner:
         if self._stage == "ssh_port":
             if not value:
                 self.state.ssh_port = 22
-                self._stage = "use_sshpass"
+                self._stage = "ssh_jump_host"
                 return True
             try:
                 port = int(value)
@@ -69,6 +75,30 @@ class RemotePromptRunner:
             if port <= 0:
                 return False
             self.state.ssh_port = port
+            self._stage = "ssh_jump_host"
+            return True
+        if self._stage == "ssh_jump_host":
+            if not value:
+                self.state.ssh_jump_host = ""
+                self._stage = "use_sshpass"
+                return True
+            if "@" in value or any(c in value for c in " \t\n\r"):
+                return False
+            self.state.ssh_jump_host = value
+            self._stage = "ssh_jump_port"
+            return True
+        if self._stage == "ssh_jump_port":
+            if not value:
+                self.state.ssh_jump_port = 2222
+                self._stage = "use_sshpass"
+                return True
+            try:
+                port = int(value)
+            except ValueError:
+                return False
+            if port <= 0:
+                return False
+            self.state.ssh_jump_port = port
             self._stage = "use_sshpass"
             return True
         if self._stage == "use_sshpass":
