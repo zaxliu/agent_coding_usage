@@ -340,6 +340,129 @@ def feishu_config_set_target(
     return 0
 
 
+def feishu_config_setup_target(
+    env_path: Path,
+    name: Optional[str],
+    stdout: TextIO,
+    *,
+    app_token: str,
+    table_id: Optional[str] = None,
+    app_id: Optional[str] = None,
+    app_secret: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> int:
+    """One-step create-and-configure for a Feishu target (default or named)."""
+    want = (name or "default").strip().lower()
+    draft = ConfigDraft.from_document(load_env_document(env_path))
+
+    if want == "default":
+        for key, val in (
+            ("FEISHU_APP_TOKEN", app_token),
+            ("FEISHU_TABLE_ID", table_id),
+            ("FEISHU_APP_ID", app_id),
+            ("FEISHU_APP_SECRET", app_secret),
+            ("FEISHU_BOT_TOKEN", bot_token),
+        ):
+            if val is not None:
+                draft.values[key] = val
+        draft.dirty = True
+        _save_config_draft(env_path, draft)
+        stdout.write("info: configured default Feishu target\n")
+        return 0
+
+    try:
+        normalized = normalize_feishu_target_name(name)  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        stdout.write(f"error: {exc}\n")
+        return 1
+    if not draft.feishu_named_targets_parse_ok:
+        stdout.write("error: FEISHU_TARGETS is invalid; fix it before editing named Feishu targets\n")
+        return 1
+    target: Optional[FeishuTargetDraft] = None
+    for t in draft.feishu_named_targets:
+        if t.name == normalized:
+            target = t
+            break
+    if target is None:
+        target = FeishuTargetDraft(name=normalized)
+        draft.feishu_named_targets.append(target)
+    target.app_token = app_token
+    if table_id is not None:
+        target.table_id = table_id
+    if app_id is not None:
+        target.app_id = app_id
+    if app_secret is not None:
+        target.app_secret = app_secret
+    if bot_token is not None:
+        target.bot_token = bot_token
+    draft.dirty = True
+    _save_config_draft(env_path, draft)
+    stdout.write(f"info: configured Feishu target {normalized!r}\n")
+    return 0
+
+
+def run_feishu_setup_wizard(
+    env_path: Path,
+    stdout: TextIO,
+    stdin: Optional[TextIO] = None,
+) -> int:
+    """Interactive wizard to configure one or more Feishu targets."""
+    stdin = stdin or sys.stdin
+    configured: list[str] = []
+
+    try:
+        while True:
+            stdout.write("\n--- Feishu target setup ---\n")
+            name = _wizard_prompt(stdin, stdout, "Target name (Enter for default): ")
+            if name == "":
+                name = "default"
+
+            app_token = _wizard_prompt(stdin, stdout, "APP_TOKEN (required): ")
+            if not app_token:
+                stdout.write("error: APP_TOKEN is required\n")
+                continue
+
+            if name == "default":
+                app_id = _wizard_prompt(stdin, stdout, "APP_ID (required for default): ")
+                app_secret = _wizard_prompt(stdin, stdout, "APP_SECRET (required for default): ")
+            else:
+                app_id = _wizard_prompt(stdin, stdout, "APP_ID (Enter to inherit from default): ")
+                app_secret = _wizard_prompt(stdin, stdout, "APP_SECRET (Enter to inherit from default): ")
+
+            table_id = _wizard_prompt(stdin, stdout, "TABLE_ID (Enter for auto-select): ")
+
+            rc = feishu_config_setup_target(
+                env_path,
+                name,
+                stdout,
+                app_token=app_token,
+                table_id=table_id or None,
+                app_id=app_id or None,
+                app_secret=app_secret or None,
+            )
+            if rc == 0:
+                configured.append(name)
+
+            again = _wizard_prompt(stdin, stdout, "Add another target? (y/N): ")
+            if again.lower() != "y":
+                break
+    except EOFError:
+        pass
+
+    if configured:
+        stdout.write(f"\nConfigured {len(configured)} target(s): {', '.join(configured)}\n")
+    return 0
+
+
+def _wizard_prompt(stdin: TextIO, stdout: TextIO, text: str) -> str:
+    stdout.write(text)
+    stdout.flush()
+    answer = stdin.readline()
+    if answer == "":
+        raise EOFError
+    return answer.rstrip("\n").strip()
+
+
 def can_use_tui() -> bool:
     return pt_prompt is not None
 

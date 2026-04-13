@@ -696,8 +696,10 @@ def cmd_config(args: argparse.Namespace) -> int:
         feishu_config_delete_target,
         feishu_config_list_targets,
         feishu_config_set_target,
+        feishu_config_setup_target,
         feishu_config_show_target,
         run_config_editor,
+        run_feishu_setup_wizard,
     )
 
     env_path = _ensure_env_file_exists()
@@ -708,6 +710,7 @@ def cmd_config(args: argparse.Namespace) -> int:
             getattr(args, "add_feishu_target", None) is not None,
             getattr(args, "delete_feishu_target", None) is not None,
             getattr(args, "set_feishu_target", None) is not None,
+            bool(getattr(args, "setup_feishu", False)),
         ]
     )
     if shortcut_flags > 1:
@@ -732,6 +735,20 @@ def cmd_config(args: argparse.Namespace) -> int:
             app_secret=getattr(args, "set_feishu_app_secret", None),
             bot_token=getattr(args, "set_feishu_bot_token", None),
         )
+    if getattr(args, "setup_feishu", False):
+        app_token = getattr(args, "set_feishu_app_token", None)
+        if app_token is not None:
+            return feishu_config_setup_target(
+                env_path,
+                getattr(args, "setup_feishu_name", None),
+                sys.stdout,
+                app_token=app_token,
+                table_id=getattr(args, "set_feishu_table_id", None),
+                app_id=getattr(args, "set_feishu_app_id", None),
+                app_secret=getattr(args, "set_feishu_app_secret", None),
+                bot_token=getattr(args, "set_feishu_bot_token", None),
+            )
+        return run_feishu_setup_wizard(env_path, sys.stdout)
     return run_config_editor(env_path)
 
 
@@ -1268,12 +1285,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="With --set-feishu-target, set BOT_TOKEN (or FEISHU_BOT_TOKEN when NAME is default)",
     )
+    config_parser.add_argument(
+        "--setup-feishu",
+        action="store_true",
+        help=(
+            "One-step Feishu target setup: create (if needed) and configure a target. "
+            "Pass --app-token and auth fields for non-interactive mode, or omit for guided wizard."
+        ),
+    )
+    config_parser.add_argument(
+        "--name",
+        dest="setup_feishu_name",
+        default=None,
+        metavar="NAME",
+        help="With --setup-feishu, target name to configure (default: legacy default target)",
+    )
     config_parser.set_defaults(
         list_feishu_targets=False,
         show_feishu_target=None,
         add_feishu_target=None,
         delete_feishu_target=None,
         set_feishu_target=None,
+        setup_feishu=False,
+        setup_feishu_name=None,
     )
     web_parser = sub.add_parser(
         "web",
