@@ -61,7 +61,7 @@ def _repo_root() -> Path:
 
 
 def _web_root() -> Path:
-    return _repo_root() / "web"
+    return Path(__file__).resolve().parent / "web_static"
 
 
 def _json_now() -> str:

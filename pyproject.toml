@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-usage-horizon"
-version = "0.2.0rc4"
+version = "0.2.0rc5"
 description = "Local LLM coding usage collector and Feishu Bitable sync"
 readme = "README.md"
 license = { text = "MIT" }
@@ -49,7 +49,7 @@ package-dir = {"" = "src"}
 license-files = ["LICENSE"]
 
 [tool.setuptools.package-data]
-llm_usage = ["resources/*.env"]
+llm_usage = ["resources/*.env", "web_static/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

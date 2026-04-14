@@ -1,0 +1,330 @@
+function toNumber(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function textOrDash(value) {
+  const text = String(value || "").trim();
+  return text || "-";
+}
+
+export function escapeHtml(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+export function createUiFlags() {
+  return {
+    settingsOpen: false,
+  };
+}
+
+export function buildConfigSummary(config = {}) {
+  const source = config && typeof config === "object" ? config : {};
+  const basic = source.basic || {};
+  const remotes = Array.isArray(source.remotes) ? source.remotes : [];
+  const lookbackDays = String(basic.LOOKBACK_DAYS || "").trim();
+  return [
+    { label: "用户", value: textOrDash(basic.ORG_USERNAME) },
+    { label: "时区", value: textOrDash(basic.TIMEZONE) },
+    { label: "回看", value: lookbackDays ? `${lookbackDays} 天` : "-" },
+    { label: "远端", value: `${remotes.length} 个` },
+  ];
+}
+
+export function settingsPanelMode(isOpen = false) {
+  return {
+    className: isOpen ? "expanded" : "collapsed",
+    hidden: !isOpen,
+  };
+}
+
+export function dashboardSummaryText(summary = {}) {
+  return {
+    totalTokens: formatCompactNumber(summary.total_tokens),
+    activeDays: formatCompactNumber(summary.active_days),
+    topTool: textOrDash(summary.top_tool),
+    topModel: textOrDash(summary.top_model),
+    generatedAt: summary.generated_at || null,
+  };
+}
+
+export function formatCompactNumber(value) {
+  const parsed = Number(value || 0);
+  if (!Number.isFinite(parsed)) {
+    return "-";
+  }
+  const abs = Math.abs(parsed);
+  const units = [
+    { value: 1e12, suffix: "T" },
+    { value: 1e9, suffix: "B" },
+    { value: 1e6, suffix: "M" },
+    { value: 1e3, suffix: "K" },
+  ];
+  for (const unit of units) {
+    if (abs >= unit.value) {
+      const scaled = parsed / unit.value;
+      const digits = Math.abs(scaled) >= 10 ? 1 : 2;
+      return `${Number(scaled.toFixed(digits)).toString()}${unit.suffix}`;
+    }
+  }
+  return Number(parsed.toFixed(abs >= 100 ? 0 : 2)).toString();
+}
+
+export function formatHostHash(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "-";
+  }
+  if (text.length <= 8) {
+    return text;
+  }
+  return `${text.slice(0, 4)}…${text.slice(-4)}`;
+}
+
+export function buildSemilogTicks(maxValue) {
+  const limit = Math.max(0, Number(maxValue || 0));
+  const ticks = [1];
+  let current = 1;
+  while (current < limit) {
+    current *= 10;
+    ticks.push(current);
+  }
+  return [...new Set(ticks)];
+}
+
+function totalFromParts(input, cache, output) {
+  return toNumber(input) + toNumber(cache) + toNumber(output);
+}
+
+export function normalizeResultsPayload(results) {
+  if (results?.summary && results?.timeseries && results?.breakdowns && results?.table_rows) {
+    const summary = results.summary || {};
+    const totals = summary.totals || {};
+    const breakdowns = results.breakdowns || {};
+    return {
+      summary: {
+        total_tokens:
+          toNumber(totals.total_tokens) ||
+          totalFromParts(totals.input_tokens_sum, totals.cache_tokens_sum, totals.output_tokens_sum),
+        active_days: toNumber(summary.active_days),
+        top_tool: summary.top_tool?.name || (breakdowns.tools || breakdowns.tool || [])[0]?.name || "-",
+        top_model: summary.top_model?.name || (breakdowns.models || breakdowns.model || [])[0]?.name || "-",
+        generated_at: summary.generated_at || results.generated_at || null,
+      },
+      timeseries: (results.timeseries || []).map((item) => ({
+        date: item.date || item.date_local,
+        input: toNumber(item.input ?? item.input_tokens_sum),
+        cache: toNumber(item.cache ?? item.cache_tokens_sum),
+        output: toNumber(item.output ?? item.output_tokens_sum),
+      })),
+      breakdowns: {
+        tools: (breakdowns.tools || breakdowns.tool || []).map((item) => ({
+          label: item.label || item.name,
+          total: toNumber(item.total ?? item.total_tokens) || totalFromParts(item.input_tokens_sum, item.cache_tokens_sum, item.output_tokens_sum),
+        })),
+        models: (breakdowns.models || breakdowns.model || []).map((item) => ({
+          label: item.label || item.name,
+          total: toNumber(item.total ?? item.total_tokens) || totalFromParts(item.input_tokens_sum, item.cache_tokens_sum, item.output_tokens_sum),
+        })),
+      },
+      table_rows: (results.table_rows || []).map((row) => ({
+        date: row.date || row.date_local,
+        source_host_hash: row.source_host_hash || "",
+        tool: row.tool,
+        model: row.model,
+        input: toNumber(row.input ?? row.input_tokens_sum),
+        cache: toNumber(row.cache ?? row.cache_tokens_sum),
+        output: toNumber(row.output ?? row.output_tokens_sum),
+      })),
+      warnings: results.warnings || [],
+    };
+  }
+
+  const rows = results?.rows || [];
+  const summary = {
+    total_tokens: rows.reduce(
+      (sum, row) => sum + totalFromParts(row.input_tokens_sum || row.input, row.cache_tokens_sum || row.cache, row.output_tokens_sum || row.output),
+      0,
+    ),
+    active_days: new Set(rows.map((row) => row.date_local)).size,
+    top_tool: topBy(rows, "tool"),
+    top_model: topBy(rows, "model"),
+    generated_at: results?.generated_at || null,
+  };
+  return {
+    summary,
+    timeseries: rows.map((row) => ({
+      date: row.date_local,
+      input: toNumber(row.input_tokens_sum || row.input),
+      cache: toNumber(row.cache_tokens_sum || row.cache),
+      output: toNumber(row.output_tokens_sum || row.output),
+    })),
+    breakdowns: {
+      tools: groupBy(rows, "tool"),
+      models: groupBy(rows, "model"),
+    },
+    table_rows: rows.map((row) => ({
+      date: row.date_local,
+      source_host_hash: row.source_host_hash || "",
+      tool: row.tool,
+      model: row.model,
+      input: toNumber(row.input_tokens_sum || row.input),
+      cache: toNumber(row.cache_tokens_sum || row.cache),
+      output: toNumber(row.output_tokens_sum || row.output),
+    })),
+    warnings: results?.warnings || [],
+  };
+}
+
+function topBy(rows, key) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const label = row[key] || "Unknown";
+    grouped.set(
+      label,
+      (grouped.get(label) || 0) + totalFromParts(row.input_tokens_sum || row.input, row.cache_tokens_sum || row.cache, row.output_tokens_sum || row.output),
+    );
+  }
+  return [...grouped.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || "-";
+}
+
+function groupBy(rows, key) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const label = row[key] || "Unknown";
+    grouped.set(
+      label,
+      (grouped.get(label) || 0) + totalFromParts(row.input_tokens_sum || row.input, row.cache_tokens_sum || row.cache, row.output_tokens_sum || row.output),
+    );
+  }
+  return [...grouped.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([label, total]) => ({ label, total }));
+}
+
+export function credentialSubmissionMode({ submitterValue = "" } = {}) {
+  return submitterValue === "cancel" ? "cancel" : "submit";
+}
+
+function normalizeChoices(choices = []) {
+  return Array.isArray(choices) ? choices.map((choice) => String(choice || "").trim()).filter(Boolean) : [];
+}
+
+function titleForInputKind(kind) {
+  if (kind === "confirm") {
+    return "需要确认";
+  }
+  if (kind === "ssh_password") {
+    return "需要 SSH 密码";
+  }
+  if (kind === "ssh_host") {
+    return "需要 SSH 主机";
+  }
+  if (kind === "ssh_user") {
+    return "需要 SSH 用户";
+  }
+  if (kind === "ssh_port") {
+    return "需要 SSH 端口";
+  }
+  if (kind === "use_sshpass") {
+    return "是否使用 sshpass";
+  }
+  return "需要输入";
+}
+
+function fieldLabelForInputKind(kind) {
+  if (kind === "ssh_password") {
+    return "密码";
+  }
+  if (kind === "ssh_port") {
+    return "端口";
+  }
+  if (kind === "confirm") {
+    return "";
+  }
+  return "输入值";
+}
+
+function placeholderForInputKind(kind) {
+  if (kind === "ssh_password") {
+    return "输入密码";
+  }
+  if (kind === "ssh_port") {
+    return "22";
+  }
+  if (kind === "confirm") {
+    return "";
+  }
+  return "请输入";
+}
+
+export function describeInputRequest(request = {}) {
+  const kind = String(request.kind || "").trim();
+  const choices = normalizeChoices(request.choices);
+  if (kind === "confirm") {
+    const submitChoice = choices[0] || "yes";
+    const cancelChoice = choices[1] || "no";
+    return {
+      kind,
+      inputType: "confirm",
+      title: titleForInputKind(kind),
+      message: String(request.message || "").trim(),
+      choices: choices.length ? choices : ["yes", "no"],
+      fieldLabel: "",
+      placeholder: "",
+      submitLabel: submitChoice,
+      submitValue: submitChoice,
+      cancelLabel: cancelChoice,
+      cancelValue: cancelChoice,
+    };
+  }
+  if (kind === "ssh_password") {
+    return {
+      kind,
+      inputType: "password",
+      title: titleForInputKind(kind),
+      message: String(request.message || "").trim(),
+      choices: [],
+      fieldLabel: fieldLabelForInputKind(kind),
+      placeholder: placeholderForInputKind(kind),
+      submitLabel: "继续",
+      submitValue: "submit",
+      cancelLabel: "取消",
+      cancelValue: "cancel",
+    };
+  }
+  return {
+    kind,
+    inputType: "text",
+    title: titleForInputKind(kind),
+    message: String(request.message || "").trim(),
+    choices: [],
+    fieldLabel: fieldLabelForInputKind(kind),
+    placeholder: placeholderForInputKind(kind),
+    submitLabel: "继续",
+    submitValue: "submit",
+    cancelLabel: "取消",
+    cancelValue: "cancel",
+  };
+}
+
+export function inputRequestSubmissionValue({ descriptor, submitterValue = "", fieldValue = "" } = {}) {
+  if ((descriptor || {}).inputType === "confirm") {
+    return String(submitterValue || descriptor?.submitValue || "");
+  }
+  return String(fieldValue || "");
+}
+
+export function canDismissInputRequest(request = {}) {
+  return String(request.kind || "").trim() === "ssh_password";
+}
+
+export function nextCredentialPromptJob(jobs = [], dismissedJobId = "") {
+  const pending = jobs.find(
+    (job) => job.status === "needs_input" && job.input_request && (!dismissedJobId || job.id !== dismissedJobId),
+  );
+  if (!pending) {
+    return null;
+  }
+  return pending;
+}
