@@ -12,7 +12,7 @@ import pytest
 from llm_usage.collectors import OpenCodeCollector, build_opencode_collector
 from llm_usage.collectors.opencode import (
     _extract_tokens_from_part_data,
-    _extract_model_from_part_data,
+    _extract_model_from_message_data,
 )
 
 
@@ -46,19 +46,34 @@ class TestOpenCodeCollectorHelpers:
         result = _extract_tokens_from_part_data(data)
         assert result is None
 
-    def test_extract_model_from_data(self) -> None:
-        """Test extracting model name."""
+    def test_extract_model_from_message_data_modelid(self) -> None:
+        """Test extracting model name from message data via modelID."""
         data = json.dumps({
-            "type": "step-start",
+            "role": "assistant",
+            "modelID": "glm-5.1",
+            "providerID": "opencode",
+        })
+        result = _extract_model_from_message_data(data)
+        assert result == "glm-5.1"
+
+    def test_extract_model_from_message_data_fallback_model(self) -> None:
+        """Test fallback to 'model' key when modelID is absent."""
+        data = json.dumps({
+            "role": "assistant",
             "model": "claude-3-5-sonnet",
         })
-        result = _extract_model_from_part_data(data)
+        result = _extract_model_from_message_data(data)
         assert result == "claude-3-5-sonnet"
 
     def test_extract_model_returns_unknown(self) -> None:
         """Test that unknown model returns 'unknown'."""
-        data = json.dumps({"type": "other"})
-        result = _extract_model_from_part_data(data)
+        data = json.dumps({"role": "user"})
+        result = _extract_model_from_message_data(data)
+        assert result == "unknown"
+
+    def test_extract_model_invalid_json(self) -> None:
+        """Test that invalid JSON returns 'unknown'."""
+        result = _extract_model_from_message_data("not json")
         assert result == "unknown"
 
 
@@ -97,7 +112,9 @@ class TestOpenCodeCollector:
             CREATE TABLE message (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
-                time_created INTEGER NOT NULL
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL
             )
         """)
         cursor.execute("""
@@ -106,7 +123,9 @@ class TestOpenCodeCollector:
                 message_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 time_created INTEGER NOT NULL,
-                data TEXT NOT NULL
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL,
+                FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
             )
         """)
 
@@ -117,15 +136,26 @@ class TestOpenCodeCollector:
             ("sess-1", "proj-1", "/tmp/test", "Test Session"),
         )
         cursor.execute(
-            "INSERT INTO message (id, session_id, time_created) VALUES (?, ?, ?)",
-            ("msg-1", "sess-1", now_ms),
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+            (
+                "msg-1",
+                "sess-1",
+                now_ms,
+                now_ms,
+                json.dumps({
+                    "role": "assistant",
+                    "modelID": "glm-5.1",
+                    "providerID": "opencode",
+                }),
+            ),
         )
         cursor.execute(
-            "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 "part-1",
                 "msg-1",
                 "sess-1",
+                now_ms,
                 now_ms,
                 json.dumps({
                     "type": "step-finish",
@@ -149,6 +179,7 @@ class TestOpenCodeCollector:
         assert len(output.events) == 1
         event = output.events[0]
         assert event.tool == "opencode"
+        assert event.model == "glm-5.1"
         assert event.input_tokens == 100
         assert event.output_tokens == 50
         assert event.cache_tokens == 210
