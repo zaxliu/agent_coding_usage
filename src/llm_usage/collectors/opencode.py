@@ -67,24 +67,22 @@ def _extract_tokens_from_part_data(data: str) -> Optional[tuple[int, int, int]]:
     return input_tokens, cache_tokens, output_tokens
 
 
-def _extract_model_from_part_data(data: str) -> str:
-    """Extract model name from part data JSON.
+def _extract_model_from_message_data(data: str) -> str:
+    """Extract model name from message data JSON.
 
-    Looks for model info in step-start events.
+    OpenCode stores the model identifier in the message table's data field
+    as ``modelID``, not in the part table's step-finish/step-start events.
     """
     try:
         obj: dict[str, Any] = json.loads(data)
     except json.JSONDecodeError:
         return "unknown"
 
-    # Check for model in various places
-    if obj.get("type") == "step-start":
-        # Some step-start events may have model info
-        model = obj.get("model")
-        if isinstance(model, str) and model.strip():
-            return model.strip()
+    model = obj.get("modelID")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
 
-    # Also check for model in nested structures
+    # Fallback: check common alternative keys
     for key in ("model", "model_name", "modelName"):
         value = obj.get(key)
         if isinstance(value, str) and value.strip():
@@ -142,10 +140,10 @@ class OpenCodeCollector(BaseCollector):
             cursor = conn.cursor()
 
             # Query parts with Token Data
-            # Join with Message and Session to get timestamps
+            # Join with Message and Session to get timestamps and model info
             # Use LIKE patterns that match both compact and pretty-printed JSON
             query = """
-                SELECT p.data, p.time_created, s.directory
+                SELECT p.data, p.time_created, s.directory, m.data as message_data
                 FROM part p
                 JOIN message m ON p.message_id = m.id
                 JOIN session s ON m.session_id = s.id
@@ -157,7 +155,7 @@ class OpenCodeCollector(BaseCollector):
             rows = cursor.fetchall()
             conn.close()
 
-            for data, time_created, directory in rows:
+            for data, time_created, directory, message_data in rows:
                 tokens = _extract_tokens_from_part_data(str(data))
                 if tokens is None:
                     continue
@@ -172,7 +170,7 @@ class OpenCodeCollector(BaseCollector):
                 if not (start <= event_time <= end):
                     continue
 
-                model = _extract_model_from_part_data(str(data))
+                model = _extract_model_from_message_data(str(message_data))
 
                 events.append(
                     UsageEvent(
