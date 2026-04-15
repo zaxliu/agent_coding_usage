@@ -75,7 +75,10 @@ def _should_require_manual_cursor_token_prompt(browser: str) -> bool:
     return os.name == "nt" and normalized in {"default", "chrome", "chromium", "edge", "msedge"}
 
 
-def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
+ALL_TOOL_NAMES = ("claude_code", "codex", "copilot_cli", "copilot_vscode", "cursor", "opencode")
+
+
+def _collectors(local_source_host_hash: str, skip_tools: Optional[set] = None) -> list[BaseCollector]:
     from llm_usage.collectors import (
         build_claude_collector,
         build_codex_collector,
@@ -85,7 +88,7 @@ def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
         build_opencode_collector,
     )
 
-    return [
+    all_collectors = [
         build_claude_collector(source_host_hash=local_source_host_hash),
         build_codex_collector(source_host_hash=local_source_host_hash),
         build_copilot_cli_collector(source_host_hash=local_source_host_hash),
@@ -93,6 +96,9 @@ def _collectors(local_source_host_hash: str) -> list[BaseCollector]:
         build_cursor_collector(source_host_hash=local_source_host_hash),
         build_opencode_collector(source_host_hash=local_source_host_hash),
     ]
+    if not skip_tools:
+        return all_collectors
+    return [c for c in all_collectors if c.name not in skip_tools]
 
 
 def _required_env(name: str) -> str:
@@ -518,19 +524,24 @@ def _validate_sync_bundle_args(args: argparse.Namespace) -> None:
         conflicts.append("--cursor-login-user-data-dir")
     if getattr(args, "cursor_login_mode", "auto") != "auto":
         conflicts.append("--cursor-login-mode")
+    if getattr(args, "skip", None):
+        conflicts.append("--skip")
     if conflicts:
         joined = ", ".join(conflicts)
         raise RuntimeError(f"--from-bundle cannot be combined with online collection flags: {joined}")
 
 
 def cmd_export_bundle(args: argparse.Namespace) -> int:
-    cursor_probe_warning = _maybe_capture_cursor_token(
-        lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
-        timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
-        browser=getattr(args, "cursor_login_browser", "default"),
-        user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
-        login_mode=getattr(args, "cursor_login_mode", "auto"),
-    )
+    skip_tools = set(getattr(args, "skip", None) or [])
+    cursor_probe_warning: Optional[str] = None
+    if "cursor" not in skip_tools:
+        cursor_probe_warning = _maybe_capture_cursor_token(
+            lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
+            timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
+            browser=getattr(args, "cursor_login_browser", "default"),
+            user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+            login_mode=getattr(args, "cursor_login_mode", "auto"),
+        )
     rows, warnings, _host_labels = _build_aggregates(args)
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
         warnings = [cursor_probe_warning, *warnings]
@@ -974,13 +985,15 @@ def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str], dict[s
     selected_configs = [config for config in configured_remotes if config.alias in selected_aliases]
     selected_configs.extend(temporary_remotes)
 
-    collectors = _collectors(local_source_host_hash)
+    skip_tools = set(getattr(args, "skip", None) or [])
+    collectors = _collectors(local_source_host_hash, skip_tools=skip_tools)
     collectors.extend(
         build_remote_collectors(
             selected_configs,
             username=username,
             salt=salt,
             runtime_passwords=runtime_passwords,
+            skip_tools=skip_tools,
         )
     )
     events, warnings = _collect_all(lookback_days, collectors)
@@ -996,13 +1009,16 @@ def cmd_collect(args: argparse.Namespace) -> int:
     preflight_code = _basic_preflight()
     if preflight_code != 0:
         return preflight_code
-    cursor_probe_warning = _maybe_capture_cursor_token(
-        lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
-        timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
-        browser=getattr(args, "cursor_login_browser", "default"),
-        user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
-        login_mode=getattr(args, "cursor_login_mode", "auto"),
-    )
+    skip_tools = set(getattr(args, "skip", None) or [])
+    cursor_probe_warning: Optional[str] = None
+    if "cursor" not in skip_tools:
+        cursor_probe_warning = _maybe_capture_cursor_token(
+            lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
+            timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
+            browser=getattr(args, "cursor_login_browser", "default"),
+            user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+            login_mode=getattr(args, "cursor_login_mode", "auto"),
+        )
     rows, warnings, host_labels = _build_aggregates(args)
     print(f"env: {_env_path()}")
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
@@ -1047,13 +1063,16 @@ def cmd_sync(args: argparse.Namespace) -> int:
     if preflight_code != 0:
         return preflight_code
 
-    cursor_probe_warning = _maybe_capture_cursor_token(
-        lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
-        timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
-        browser=getattr(args, "cursor_login_browser", "default"),
-        user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
-        login_mode=getattr(args, "cursor_login_mode", "auto"),
-    )
+    skip_tools = set(getattr(args, "skip", None) or [])
+    cursor_probe_warning: Optional[str] = None
+    if "cursor" not in skip_tools:
+        cursor_probe_warning = _maybe_capture_cursor_token(
+            lookback_days=_resolve_lookback_days(getattr(args, "lookback_days", None)),
+            timeout_sec=getattr(args, "cursor_login_timeout_sec", 600),
+            browser=getattr(args, "cursor_login_browser", "default"),
+            user_data_dir=getattr(args, "cursor_login_user_data_dir", ""),
+            login_mode=getattr(args, "cursor_login_mode", "auto"),
+        )
     rows, warnings, host_labels = _build_aggregates(args)
     print(f"env: {_env_path()}")
     if cursor_probe_warning and not any(row.tool == "cursor" for row in rows):
@@ -1421,6 +1440,14 @@ def build_parser() -> argparse.ArgumentParser:
             "selector, cli uses prompt-based selection, none disables remotes"
         ),
     )
+    collect_parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        choices=ALL_TOOL_NAMES,
+        metavar="TOOL",
+        help="Skip collecting from the specified tool (can be repeated); choices: " + ", ".join(ALL_TOOL_NAMES),
+    )
     export_parser = sub.add_parser(
         "export-bundle",
         help="Collect usage and write an offline bundle for later upload",
@@ -1502,6 +1529,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not include usage_report.csv inside the bundle",
     )
     export_parser.set_defaults(include_csv=True)
+    export_parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        choices=ALL_TOOL_NAMES,
+        metavar="TOOL",
+        help="Skip collecting from the specified tool (can be repeated); choices: " + ", ".join(ALL_TOOL_NAMES),
+    )
     sync_parser = sub.add_parser(
         "sync",
         help="Collect usage and upsert aggregated rows to Feishu",
@@ -1595,6 +1630,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_feishu_target_arguments(sync_parser)
     sync_parser.set_defaults(feishu_target=[], all_feishu_targets=False)
+    sync_parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        choices=ALL_TOOL_NAMES,
+        metavar="TOOL",
+        help="Skip collecting from the specified tool (can be repeated); choices: " + ", ".join(ALL_TOOL_NAMES),
+    )
     return parser
 
 

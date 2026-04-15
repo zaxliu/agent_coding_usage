@@ -104,9 +104,9 @@ def test_build_aggregates_passes_runtime_passwords_to_remote_collectors(monkeypa
         "_resolve_remote_selection",
         lambda args, configured_remotes: ([config.alias], [], {config.alias: "run-secret"}),
     )
-    monkeypatch.setattr(main, "_collectors", lambda local_hash: [])
+    monkeypatch.setattr(main, "_collectors", lambda local_hash, skip_tools=None: [])
 
-    def _fake_build_remote_collectors(configs, username, salt, runtime_passwords=None):  # noqa: ANN001, ANN201
+    def _fake_build_remote_collectors(configs, username, salt, runtime_passwords=None, skip_tools=None):  # noqa: ANN001, ANN201
         captured["configs"] = configs
         captured["runtime_passwords"] = runtime_passwords
         return []
@@ -155,7 +155,7 @@ def test_build_aggregates_prefers_cli_lookback_over_env(monkeypatch):
     monkeypatch.setenv("LOOKBACK_DAYS", "7")
     monkeypatch.setattr(main, "parse_remote_configs_from_env", lambda: [])
     monkeypatch.setattr(main, "_resolve_remote_selection", lambda args, configured_remotes: ([], [], {}))
-    monkeypatch.setattr(main, "_collectors", lambda local_hash: [])
+    monkeypatch.setattr(main, "_collectors", lambda local_hash, skip_tools=None: [])
     monkeypatch.setattr(main, "build_remote_collectors", lambda *args, **kwargs: [])
 
     def _fake_collect_all(lookback_days, collectors):  # noqa: ANN001, ANN201
@@ -182,7 +182,7 @@ def test_build_aggregates_uses_30_day_default_when_env_invalid(monkeypatch):
     monkeypatch.setenv("LOOKBACK_DAYS", "not-a-number")
     monkeypatch.setattr(main, "parse_remote_configs_from_env", lambda: [])
     monkeypatch.setattr(main, "_resolve_remote_selection", lambda args, configured_remotes: ([], [], {}))
-    monkeypatch.setattr(main, "_collectors", lambda local_hash: [])
+    monkeypatch.setattr(main, "_collectors", lambda local_hash, skip_tools=None: [])
     monkeypatch.setattr(main, "build_remote_collectors", lambda *args, **kwargs: [])
 
     def _fake_collect_all(lookback_days, collectors):  # noqa: ANN001, ANN201

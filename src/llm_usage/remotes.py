@@ -185,21 +185,23 @@ def build_remote_collectors(
     username: str,
     salt: str,
     runtime_passwords: Optional[dict[str, str]] = None,
+    skip_tools: Optional[set] = None,
 ) -> list[BaseCollector]:
     collectors: list[BaseCollector] = []
     runtime_passwords = runtime_passwords or {}
+    skip = skip_tools or set()
     for config in configs:
         source_host_hash = hash_source_host(username, config.source_label, salt)
         target = SshTarget(host=config.ssh_host, user=config.ssh_user, port=config.ssh_port,
                            jump_host=config.ssh_jump_host, jump_port=config.ssh_jump_port)
         jobs = []
-        if config.claude_log_paths:
+        if config.claude_log_paths and "claude_code" not in skip:
             jobs.append(RemoteCollectJob(tool="claude_code", patterns=config.claude_log_paths))
-        if config.codex_log_paths:
+        if config.codex_log_paths and "codex" not in skip:
             jobs.append(RemoteCollectJob(tool="codex", patterns=config.codex_log_paths))
-        if config.copilot_cli_log_paths:
+        if config.copilot_cli_log_paths and "copilot_cli" not in skip:
             jobs.append(RemoteCollectJob(tool="copilot_cli", patterns=config.copilot_cli_log_paths))
-        if config.copilot_vscode_session_paths:
+        if config.copilot_vscode_session_paths and "copilot_vscode" not in skip:
             jobs.append(RemoteCollectJob(tool="copilot_vscode", patterns=config.copilot_vscode_session_paths))
         if jobs:
             collectors.append(
