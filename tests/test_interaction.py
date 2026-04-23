@@ -522,7 +522,7 @@ def test_run_config_editor_discards_unsaved_changes(tmp_path: Path):
     assert env_path.read_text(encoding="utf-8") == "ORG_USERNAME=alice\n"
 
 
-def test_run_config_editor_validates_saved_remotes_before_writing(tmp_path: Path):
+def test_run_config_editor_save_does_not_validate_existing_remotes(tmp_path: Path):
     env_path = tmp_path / ".env"
     original = (
         _VALID_DEFAULT_FEISHU_ENV
@@ -533,21 +533,24 @@ def test_run_config_editor_validates_saved_remotes_before_writing(tmp_path: Path
         "REMOTE_SERVER_A_SSH_PORT=22\n"
     )
     env_path.write_text(original, encoding="utf-8")
-    stdout = _TTYStringIO()
+
+    def _validator(config, ssh_password=None):  # noqa: ANN001
+        raise AssertionError(f"existing remote should not be validated on save: {config.alias}")
 
     exit_code = run_config_editor(
         env_path=env_path,
-        stdin=_TTYStringIO("s\nd\n"),
-        stdout=stdout,
-        remote_validator=lambda config, ssh_password=None: (False, "Connection timed out"),
+        stdin=_TTYStringIO("s\n"),
+        stdout=_TTYStringIO(),
+        remote_validator=_validator,
     )
 
     assert exit_code == 0
-    assert "remote SERVER_A: SSH check failed: Connection timed out" in stdout.getvalue()
-    assert env_path.read_text(encoding="utf-8") == original
+    text = env_path.read_text(encoding="utf-8")
+    assert "REMOTE_HOSTS=SERVER_A" in text
+    assert "REMOTE_SERVER_A_SSH_HOST=host-a" in text
 
 
-def test_run_config_editor_password_fallback_keeps_saved_sshpass_flag(tmp_path: Path):
+def test_run_config_editor_add_validates_only_new_remote_and_saves_immediately(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
         _VALID_DEFAULT_FEISHU_ENV
@@ -559,25 +562,28 @@ def test_run_config_editor_password_fallback_keeps_saved_sshpass_flag(tmp_path: 
         "REMOTE_SERVER_A_USE_SSHPASS=0\n",
         encoding="utf-8",
     )
-    validator_calls: list[tuple[bool, Optional[str]]] = []
+    validator_calls: list[tuple[str, bool, Optional[str]]] = []
 
     def _validator(config, ssh_password=None):  # noqa: ANN001
-        validator_calls.append((config.use_sshpass, ssh_password))
-        if ssh_password is None:
-            return False, "Permission denied (publickey)."
+        validator_calls.append((config.alias, config.use_sshpass, ssh_password))
+        if config.alias != "PROD_A":
+            return False, f"unexpected validation for {config.alias}"
         return True, "ok"
 
     exit_code = run_config_editor(
         env_path=env_path,
-        stdin=_TTYStringIO("s\n"),
+        stdin=_TTYStringIO("4\na\nprod-a\nhost-b\nbob\n2200\n\n\nn\nb\nq\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
-        interactive_password_reader=lambda prompt_text: "hunter2",
     )
 
     assert exit_code == 0
-    assert validator_calls == [(False, None), (True, "hunter2")]
-    assert "REMOTE_SERVER_A_USE_SSHPASS=0" in env_path.read_text(encoding="utf-8")
+    assert validator_calls == [("PROD_A", False, None)]
+    text = env_path.read_text(encoding="utf-8")
+    assert "REMOTE_HOSTS=SERVER_A,PROD_A" in text
+    assert "REMOTE_PROD_A_SSH_HOST=host-b" in text
+    assert "REMOTE_PROD_A_SSH_PORT=2200" in text
+    assert "REMOTE_SERVER_A_USE_SSHPASS=0" in text
 
 
 def test_run_config_editor_saves_draft_changes(tmp_path: Path):
@@ -819,10 +825,14 @@ def test_run_config_editor_deletes_remote_without_touching_other_keys(tmp_path: 
         encoding="utf-8",
     )
 
+    def _validator(config, ssh_password=None):  # noqa: ANN001
+        raise AssertionError(f"deleted remote should not be validated on save: {config.alias}")
+
     exit_code = run_config_editor(
         env_path=env_path,
         stdin=_TTYStringIO("4\nd\n1\nb\ns\n"),
         stdout=_TTYStringIO(),
+        remote_validator=_validator,
     )
 
     assert exit_code == 0

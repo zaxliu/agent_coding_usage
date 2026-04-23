@@ -25,8 +25,10 @@ const state = {
   tableSort: { column: "date", direction: "asc" },
   activeTableFilterColumn: "",
   pendingCredentialJobId: "",
+  pendingCredentialMode: "job",
   dismissedCredentialJobId: "",
   pendingCredentialRequest: null,
+  lastConfigSaveError: "",
   pendingRunAction: "",
   runConfirmSubmitting: false,
   editingRemoteIndex: -1,
@@ -101,8 +103,10 @@ async function getJson(url, options = {}) {
   });
   const payload = await response.json();
   if (!response.ok) {
-    const message = payload.error || payload.message || `Request failed: ${response.status}`;
-    throw new Error(message);
+    const message = payload.error || payload.message || payload.errors?.[0] || `Request failed: ${response.status}`;
+    const error = new Error(message);
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
@@ -712,6 +716,8 @@ function openRemoteEditModal(remote = null, index = -1) {
   document.querySelector("#remote-edit-ssh-host").value = remote?.ssh_host || "";
   document.querySelector("#remote-edit-ssh-user").value = remote?.ssh_user || "";
   document.querySelector("#remote-edit-ssh-port").value = remote?.ssh_port || 22;
+  document.querySelector("#remote-edit-ssh-jump-host").value = remote?.ssh_jump_host || "";
+  document.querySelector("#remote-edit-ssh-jump-port").value = remote?.ssh_jump_port || 2222;
   document.querySelector("#remote-edit-source-label").value = remote?.source_label || "";
   document.querySelector("#remote-edit-use-sshpass").checked = remote?.use_sshpass || false;
   document.querySelector("#remote-edit-ssh-password").value = "";
@@ -729,6 +735,8 @@ function collectRemoteFromModal() {
     ssh_host: document.querySelector("#remote-edit-ssh-host").value.trim(),
     ssh_user: document.querySelector("#remote-edit-ssh-user").value.trim(),
     ssh_port: parseInt(document.querySelector("#remote-edit-ssh-port").value, 10) || 22,
+    ssh_jump_host: document.querySelector("#remote-edit-ssh-jump-host").value.trim(),
+    ssh_jump_port: parseInt(document.querySelector("#remote-edit-ssh-jump-port").value, 10) || 2222,
     source_label: document.querySelector("#remote-edit-source-label").value.trim(),
     use_sshpass: document.querySelector("#remote-edit-use-sshpass").checked,
     ssh_password: document.querySelector("#remote-edit-ssh-password").value,
@@ -790,28 +798,72 @@ function handleFeishuTargetAction(action, index) {
 }
 
 async function saveCurrentConfig() {
+  state.lastConfigSaveError = "";
   try {
     const result = await getJson("/api/config", {
       method: "PUT",
       body: JSON.stringify(settingsPayload()),
     });
+    if (result.input_request) {
+      openConfigCredentialPrompt(result.input_request);
+      return "pending_input";
+    }
     if (!result.ok) {
-      showFlash(result.errors?.[0] || "保存失败。", "error");
+      const message = result.errors?.[0] || "保存失败。";
+      state.lastConfigSaveError = message;
+      showFlash(message, "error");
       return false;
     }
     showFlash("配置已保存。");
     await refreshConfig();
     return true;
   } catch (error) {
+    if (error.payload?.input_request) {
+      openConfigCredentialPrompt(error.payload.input_request);
+      return "pending_input";
+    }
+    state.lastConfigSaveError = error.message;
     showFlash(error.message, "error");
     return false;
   }
 }
 
+function openConfigCredentialPrompt(inputRequest) {
+  const descriptor = describeInputRequest(inputRequest);
+  state.pendingCredentialMode = "config_save";
+  state.pendingCredentialJobId = "";
+  state.dismissedCredentialJobId = "";
+  state.pendingCredentialRequest = inputRequest;
+  refs.credentialTitle.textContent = descriptor.title;
+  refs.credentialCopy.textContent =
+    descriptor.message || `Provide input for ${inputRequest.remote_alias || "current remote"}.`;
+  refs.credentialField.hidden = descriptor.inputType === "confirm";
+  refs.credentialFieldLabel.textContent = descriptor.fieldLabel || "";
+  refs.credentialValue.type = descriptor.inputType === "password" ? "password" : "text";
+  refs.credentialValue.inputMode = inputRequest.kind === "ssh_port" ? "numeric" : "text";
+  refs.credentialValue.placeholder = descriptor.placeholder || "";
+  refs.credentialValue.value = "";
+  refs.credentialCancel.value = descriptor.cancelValue || "cancel";
+  refs.credentialCancel.textContent = descriptor.cancelLabel;
+  refs.credentialSubmit.value = descriptor.submitValue || "submit";
+  refs.credentialSubmit.textContent = descriptor.submitLabel;
+  if (refs.remoteEditModal.open) {
+    refs.remoteEditModal.close();
+  }
+  if (!refs.credentialModal.open) {
+    refs.credentialModal.showModal();
+  }
+  refs.credentialValue.focus();
+}
+
 function maybePromptForCredential(jobs = []) {
+  if (state.pendingCredentialMode === "config_save") {
+    return;
+  }
   const pending = nextCredentialPromptJob(jobs, state.dismissedCredentialJobId);
   if (!pending) {
     state.pendingCredentialRequest = null;
+    state.pendingCredentialMode = "job";
     if (refs.credentialModal.open) {
       refs.credentialModal.close();
     }
@@ -826,6 +878,7 @@ function maybePromptForCredential(jobs = []) {
     return;
   }
   const descriptor = describeInputRequest(pending.input_request);
+  state.pendingCredentialMode = "job";
   state.pendingCredentialJobId = pending.id;
   state.dismissedCredentialJobId = "";
   state.pendingCredentialRequest = pending.input_request;
@@ -941,14 +994,15 @@ async function runAction(action) {
     }
     if (action === "save-config") {
       setActionRuntimeState("save-config", "running");
-      await getJson("/api/config", {
-        method: "PUT",
-        body: JSON.stringify(settingsPayload()),
-      });
-      showFlash("设置已保存。", "success");
-      await refreshConfig();
-      applySettingsPanelState(false);
-      setActionRuntimeState("save-config", "success", "配置已写入，设置面板已收起");
+      const result = await saveCurrentConfig();
+      if (result === true) {
+        applySettingsPanelState(false);
+        setActionRuntimeState("save-config", "success", "配置已写入，设置面板已收起");
+      } else if (result === "pending_input") {
+        setActionRuntimeState("save-config", "running", "等待 SSH 密码");
+      } else {
+        setActionRuntimeState("save-config", "error", "请修正配置后重试");
+      }
       return;
     }
     if (action === "validate-config") {
@@ -999,17 +1053,36 @@ async function submitCredential(event) {
   const request = state.pendingCredentialRequest || {};
   const descriptor = describeInputRequest(request);
   const mode = credentialSubmissionMode({ submitterValue: event.submitter?.value || "" });
-  if (descriptor.inputType !== "confirm" && mode === "cancel") {
-    if (canDismissInputRequest(request)) {
-      state.dismissedCredentialJobId = state.pendingCredentialJobId;
-      showFlash("Credential prompt dismissed.", "warning");
-    } else {
-      state.dismissedCredentialJobId = "";
-      showFlash("This input is still required for the current job.", "warning");
+  if (mode === "cancel") {
+    await cancelCredentialInput();
+    return;
+  }
+  if (state.pendingCredentialMode === "config_save") {
+    try {
+      const value = inputRequestSubmissionValue({
+        descriptor,
+        submitterValue: event.submitter?.value || "",
+        fieldValue: refs.credentialValue.value,
+      });
+      const alias = String(request.remote_alias || "").toUpperCase();
+      const remote = (state.config?.remotes || []).find((item) => String(item.alias || "").toUpperCase() === alias);
+      if (remote) {
+        remote.ssh_password = value;
+      }
+      showFlash("SSH 密码已填写，正在重试保存。");
+      const result = await saveCurrentConfig();
+      if (result === true) {
+        state.pendingCredentialMode = "job";
+        state.pendingCredentialJobId = "";
+        state.pendingCredentialRequest = null;
+        refs.credentialModal.close();
+      } else if (result === false) {
+        refs.credentialCopy.textContent = state.lastConfigSaveError || "SSH 密码校验失败，请检查后重试。";
+        refs.credentialValue.focus();
+      }
+    } catch (error) {
+      showFlash(error.message, "error");
     }
-    state.pendingCredentialJobId = "";
-    state.pendingCredentialRequest = null;
-    refs.credentialModal.close();
     return;
   }
   if (!state.pendingCredentialJobId) {
@@ -1028,6 +1101,7 @@ async function submitCredential(event) {
     });
     state.dismissedCredentialJobId = "";
     state.pendingCredentialJobId = "";
+    state.pendingCredentialMode = "job";
     state.pendingCredentialRequest = null;
     refs.credentialModal.close();
     showFlash("Runtime credential submitted.");
@@ -1037,6 +1111,47 @@ async function submitCredential(event) {
   }
 }
 
+async function cancelCredentialInput() {
+  const request = state.pendingCredentialRequest || {};
+  const descriptor = describeInputRequest(request);
+  if (state.pendingCredentialMode === "config_save") {
+    state.pendingCredentialMode = "job";
+    state.pendingCredentialJobId = "";
+    state.pendingCredentialRequest = null;
+    refs.credentialModal.close();
+    showFlash("已取消 SSH 密码输入。", "warning");
+    return;
+  }
+  if (descriptor.inputType === "confirm" && state.pendingCredentialJobId) {
+    try {
+      await getJson(`/api/jobs/${state.pendingCredentialJobId}/input`, {
+        method: "POST",
+        body: JSON.stringify({ value: descriptor.cancelValue || "cancel" }),
+      });
+      state.dismissedCredentialJobId = "";
+      state.pendingCredentialJobId = "";
+      state.pendingCredentialMode = "job";
+      state.pendingCredentialRequest = null;
+      refs.credentialModal.close();
+      await refreshJobs();
+    } catch (error) {
+      showFlash(error.message, "error");
+    }
+    return;
+  }
+  if (canDismissInputRequest(request)) {
+    state.dismissedCredentialJobId = state.pendingCredentialJobId;
+    showFlash("Credential prompt dismissed.", "warning");
+  } else {
+    state.dismissedCredentialJobId = "";
+    showFlash("This input is still required for the current job.", "warning");
+  }
+  state.pendingCredentialJobId = "";
+  state.pendingCredentialMode = "job";
+  state.pendingCredentialRequest = null;
+  refs.credentialModal.close();
+}
+
 for (const button of document.querySelectorAll("[data-action]")) {
   button.addEventListener("click", () => runAction(button.dataset.action));
 }
@@ -1044,6 +1159,7 @@ for (const button of document.querySelectorAll("[data-action]")) {
 applySettingsPanelState();
 refs.tableFilter.addEventListener("input", applyTableView);
 refs.credentialForm.addEventListener("submit", submitCredential);
+refs.credentialCancel.addEventListener("click", cancelCredentialInput);
 refs.runConfirmForm.addEventListener("submit", submitRunConfirm);
 refs.runConfirmModal.addEventListener("cancel", resetRunConfirmState);
 refs.runConfirmModal.addEventListener("close", resetRunConfirmState);
@@ -1134,9 +1250,9 @@ refs.remoteEditForm.addEventListener("submit", async (event) => {
   }
   state.config.remotes = remotes;
   const ok = await saveCurrentConfig();
-  if (ok) {
+  if (ok === true) {
     refs.remoteEditModal.close();
-  } else {
+  } else if (ok !== "pending_input") {
     state.config.remotes = prevRemotes;
   }
 });

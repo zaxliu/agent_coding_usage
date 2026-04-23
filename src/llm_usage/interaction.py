@@ -708,15 +708,7 @@ def _validate_config_save(
         stdout.write(f"{error}\n")
     if not validation.ok:
         return False
-    if remote_validator is None:
-        return True
-    return _validate_config_remotes(
-        draft,
-        stdin=stdin,
-        stdout=stdout,
-        remote_validator=remote_validator,
-        interactive_password_reader=interactive_password_reader,
-    )
+    return True
 
 
 def _remote_config_from_draft(remote: RemoteDraft) -> RemoteHostConfig:
@@ -736,53 +728,51 @@ def _remote_config_from_draft(remote: RemoteDraft) -> RemoteHostConfig:
     )
 
 
-def _validate_config_remotes(
-    draft: ConfigDraft,
+def _validate_config_remote(
+    remote: RemoteDraft,
     *,
     stdin: TextIO,
     stdout: TextIO,
     remote_validator: RemoteValidator,
     interactive_password_reader: Optional[Callable[[str], str]],
 ) -> bool:
-    for remote in draft.remotes:
-        config = _remote_config_from_draft(remote)
-        ssh_password: Optional[str] = None
-        if config.use_sshpass:
-            ssh_password = _read_password(
-                f"SSH password for {config.alias}: ",
-                stdin=stdin,
-                stdout=stdout,
-                use_prompt_toolkit=False,
-                interactive_password_reader=interactive_password_reader,
-            )
-            if not ssh_password.strip():
-                stdout.write(f"remote {config.alias}: SSH password is required for validation\n")
-                return False
-        ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
+    config = _remote_config_from_draft(remote)
+    ssh_password: Optional[str] = None
+    if config.use_sshpass:
+        ssh_password = _read_password(
+            f"SSH password for {config.alias}: ",
+            stdin=stdin,
+            stdout=stdout,
+            use_prompt_toolkit=False,
+            interactive_password_reader=interactive_password_reader,
+        )
+        if not ssh_password.strip():
+            stdout.write(f"remote {config.alias}: SSH password is required for validation\n")
+            return False
+    ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
+    if ok:
+        return True
+    if (
+        not config.use_sshpass
+        and is_ssh_auth_failure_message(message)
+        and _remote_validator_accepts_password(remote_validator)
+    ):
+        ssh_password = _read_password(
+            f"SSH password for {config.alias}: ",
+            stdin=stdin,
+            stdout=stdout,
+            use_prompt_toolkit=False,
+            interactive_password_reader=interactive_password_reader,
+        )
+        if not ssh_password.strip():
+            stdout.write(f"remote {config.alias}: SSH password is required after key auth failed\n")
+            return False
+        retry_config = replace(config, use_sshpass=True)
+        ok, message = _invoke_remote_validator(remote_validator, retry_config, ssh_password=ssh_password)
         if ok:
-            continue
-        if (
-            not config.use_sshpass
-            and is_ssh_auth_failure_message(message)
-            and _remote_validator_accepts_password(remote_validator)
-        ):
-            ssh_password = _read_password(
-                f"SSH password for {config.alias}: ",
-                stdin=stdin,
-                stdout=stdout,
-                use_prompt_toolkit=False,
-                interactive_password_reader=interactive_password_reader,
-            )
-            if not ssh_password.strip():
-                stdout.write(f"remote {config.alias}: SSH password is required after key auth failed\n")
-                return False
-            retry_config = replace(config, use_sshpass=True)
-            ok, message = _invoke_remote_validator(remote_validator, retry_config, ssh_password=ssh_password)
-            if ok:
-                continue
-        stdout.write(f"remote {config.alias}: SSH check failed: {message}\n")
-        return False
-    return True
+            return True
+    stdout.write(f"remote {config.alias}: SSH check failed: {message}\n")
+    return False
 
 
 def _save_config_draft_if_valid(
@@ -1260,14 +1250,34 @@ def _edit_remotes_menu(
             remote = _prompt_remote(existing_aliases=[item.alias for item in draft.remotes], stdin=stdin, stdout=stdout)
             if remote is None:
                 continue
+            if remote_validator is not None and not _validate_config_remote(
+                remote,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            ):
+                continue
             draft.remotes.append(remote)
+            draft.dirty = True
+            if env_path is not None and _validate_config_save(
+                draft,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            ):
+                _save_config_draft(env_path, draft)
+                stdout.write("Saved.\n")
+                draft.dirty = False
             changed = _edit_remote_detail(
                 remote,
                 existing_aliases=[item.alias for item in draft.remotes if item is not remote],
                 stdin=stdin,
                 stdout=stdout,
             )
-            draft.dirty = True or changed
+            if changed:
+                draft.dirty = True
             continue
         if answer == "e":
             index = _read_menu_index("Edit which remote: ", len(draft.remotes), stdin=stdin, stdout=stdout)

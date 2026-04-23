@@ -238,8 +238,8 @@
           <input id="credential-value" type="password" autocomplete="off">
         </label>
         <div class="credential-actions">
-          <button value="cancel" class="button-subtle" id="credential-cancel">取消</button>
-          <button value="submit" class="button-primary" id="credential-submit">继续</button>
+          <button type="button" value="cancel" class="button-subtle" id="credential-cancel">取消</button>
+          <button type="submit" value="submit" class="button-primary" id="credential-submit">继续</button>
         </div>
       </form>
     </dialog>
@@ -299,6 +299,8 @@
           <label>SSH Host<input id="remote-edit-ssh-host"></label>
           <label>SSH User<input id="remote-edit-ssh-user"></label>
           <label>SSH Port<input id="remote-edit-ssh-port" type="number" value="22"></label>
+          <label>Jump Host<input id="remote-edit-ssh-jump-host"></label>
+          <label>Jump Port<input id="remote-edit-ssh-jump-port" type="number" value="2222"></label>
           <label>Source Label<input id="remote-edit-source-label"></label>
           <label class="checkbox-label">
             <input id="remote-edit-use-sshpass" type="checkbox">

@@ -31,6 +31,7 @@ from llm_usage.interaction import (
     FEISHU_KEYS,
     ConfigDraft,
     FeishuTargetDraft,
+    _remote_config_from_draft,
     _save_config_draft,
 )
 from llm_usage.interaction_flow import RemotePromptRunner
@@ -55,6 +56,7 @@ from llm_usage.remotes import (
     RemoteDraft,
     RemoteHostConfig,
     build_remote_collectors,
+    is_ssh_auth_failure_message,
     parse_remote_configs_from_env,
     probe_remote_ssh,
 )
@@ -397,25 +399,61 @@ def _remote_config_from_web_payload(remote: dict[str, Any]) -> RemoteHostConfig:
     )
 
 
-def _validate_remote_ssh_for_web(payload: dict[str, Any]) -> list[str]:
+def _remote_connection_signature(remote: RemoteHostConfig) -> tuple[str, str, int, bool, str, int]:
+    return (
+        remote.ssh_host,
+        remote.ssh_user,
+        remote.ssh_port,
+        remote.use_sshpass,
+        remote.ssh_jump_host,
+        remote.ssh_jump_port,
+    )
+
+
+def _existing_remote_signatures_for_web() -> dict[str, tuple[str, str, int, bool, str, int]]:
+    document = load_env_document(_env_path())
+    return {
+        remote.alias: _remote_connection_signature(_remote_config_from_draft(remote))
+        for remote in ConfigDraft.from_document(document).remotes
+    }
+
+
+def _ssh_password_input_request_for_config(alias: str) -> dict[str, str]:
+    return {
+        "kind": "ssh_password",
+        "remote_alias": alias,
+        "message": f"SSH key 认证失败（{alias}）。请提供 SSH 密码重试，密码仅用于本次配置校验。",
+        "cache_scope": "config_save",
+    }
+
+
+def _validate_remote_ssh_for_web(
+    payload: dict[str, Any],
+    *,
+    existing_signatures: dict[str, tuple[str, str, int, bool, str, int]],
+) -> tuple[list[str], Optional[dict[str, str]]]:
     errors: list[str] = []
     passwords = payload.get("ssh_passwords", {}) or {}
     for remote in payload.get("remotes", []) or []:
         config = _remote_config_from_web_payload(remote)
+        if existing_signatures.get(config.alias) == _remote_connection_signature(config):
+            continue
         ssh_password = str(passwords.get(config.alias, "") or remote.get("ssh_password", "") or "")
         if config.use_sshpass and not ssh_password.strip():
-            errors.append(f"remote {config.alias}: SSH password is required for validation")
-            continue
+            return errors, _ssh_password_input_request_for_config(config.alias)
         ok, message = probe_remote_ssh(config, ssh_password=ssh_password or None)
         if not ok:
+            if not ssh_password.strip() and is_ssh_auth_failure_message(message):
+                return errors, _ssh_password_input_request_for_config(config.alias)
             errors.append(f"remote {config.alias}: SSH check failed: {message}")
-    return errors
+    return errors, None
 
 
 def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     bootstrap = _bootstrap_runtime_for_web()
     errors: list[str] = []
     warnings: list[str] = []
+    existing_remote_signatures = _existing_remote_signatures_for_web()
 
     for target in payload.get("feishu_targets", []) or []:
         name = str(target.get("name", "")).strip()
@@ -436,15 +474,18 @@ def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     errors.extend(remote_errors)
     errors.extend(validation.errors)
+    input_request = None
     if not errors:
-        errors.extend(_validate_remote_ssh_for_web(payload))
+        remote_ssh_errors, input_request = _validate_remote_ssh_for_web(payload, existing_signatures=existing_remote_signatures)
+        errors.extend(remote_ssh_errors)
     warnings.extend(remote_warnings)
     warnings.extend(validation.warnings)
 
     return {
-        "ok": not errors,
+        "ok": not errors and input_request is None,
         "errors": errors,
         "warnings": warnings,
+        "input_request": input_request,
         "auto_fixes": bootstrap["auto_fixes"],
         "bootstrap_applied": bootstrap["bootstrap_applied"],
     }

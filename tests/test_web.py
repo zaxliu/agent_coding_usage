@@ -261,6 +261,306 @@ def test_save_config_payload_uses_web_ssh_password_for_remote_validation(tmp_pat
     assert "top-secret" not in text
 
 
+def test_web_remote_modal_exposes_jump_host_fields():
+    html = (Path(web.__file__).resolve().parent / "web_static" / "index.html").read_text(encoding="utf-8")
+    js = (Path(web.__file__).resolve().parent / "web_static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="remote-edit-ssh-jump-host"' in html
+    assert 'id="remote-edit-ssh-jump-port"' in html
+    assert "remote-edit-ssh-jump-host" in js
+    assert "ssh_jump_host:" in js
+    assert "ssh_jump_port:" in js
+
+
+def test_save_config_payload_persists_web_remote_jump_host(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_probe(config, ssh_password=None):  # noqa: ANN001
+        captured["jump_host"] = config.ssh_jump_host
+        captured["jump_port"] = config.ssh_jump_port
+        return True, "ok"
+
+    monkeypatch.setattr(web, "probe_remote_ssh", fake_probe)
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [
+                {
+                    "alias": "SERVER_A",
+                    "ssh_host": "host-a",
+                    "ssh_user": "alice",
+                    "ssh_port": 22,
+                    "source_label": "alice@host-a",
+                    "use_sshpass": False,
+                    "ssh_jump_host": "jump-a",
+                    "ssh_jump_port": 2201,
+                }
+            ],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is True
+    assert captured == {"jump_host": "jump-a", "jump_port": 2201}
+    text = env_path.read_text(encoding="utf-8")
+    assert "REMOTE_SERVER_A_SSH_JUMP_HOST=jump-a" in text
+    assert "REMOTE_SERVER_A_SSH_JUMP_PORT=2201" in text
+
+
+def test_save_config_payload_requests_password_when_new_web_remote_key_auth_fails(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    monkeypatch.setattr(
+        web,
+        "probe_remote_ssh",
+        lambda config, ssh_password=None: (False, "Permission denied (publickey)."),
+    )
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [
+                {
+                    "alias": "SERVER_A",
+                    "ssh_host": "host-a",
+                    "ssh_user": "alice",
+                    "ssh_port": 22,
+                    "source_label": "alice@host-a",
+                    "use_sshpass": False,
+                }
+            ],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is False
+    assert payload["saved"] is False
+    assert payload["errors"] == []
+    assert payload["input_request"] == {
+        "kind": "ssh_password",
+        "remote_alias": "SERVER_A",
+        "message": "SSH key 认证失败（SERVER_A）。请提供 SSH 密码重试，密码仅用于本次配置校验。",
+        "cache_scope": "config_save",
+    }
+    assert "REMOTE_HOSTS=SERVER_A" not in env_path.read_text(encoding="utf-8")
+
+
+def test_save_config_payload_retries_web_remote_validation_with_prompted_password(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_probe(config, ssh_password=None):  # noqa: ANN001
+        captured["use_sshpass"] = config.use_sshpass
+        captured["ssh_password"] = ssh_password
+        return True, "ok"
+
+    monkeypatch.setattr(web, "probe_remote_ssh", fake_probe)
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [
+                {
+                    "alias": "SERVER_A",
+                    "ssh_host": "host-a",
+                    "ssh_user": "alice",
+                    "ssh_port": 22,
+                    "source_label": "alice@host-a",
+                    "use_sshpass": False,
+                    "ssh_password": "top-secret",
+                }
+            ],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["saved"] is True
+    assert captured == {"use_sshpass": False, "ssh_password": "top-secret"}
+    text = env_path.read_text(encoding="utf-8")
+    assert "REMOTE_HOSTS=SERVER_A" in text
+    assert "REMOTE_SERVER_A_USE_SSHPASS=0" in text
+    assert "top-secret" not in text
+
+
+def test_web_config_save_handles_ssh_password_input_request():
+    html = (Path(web.__file__).resolve().parent / "web_static" / "index.html").read_text(encoding="utf-8")
+    js = (Path(web.__file__).resolve().parent / "web_static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="credential-cancel"' in html
+    assert 'type="button" value="cancel" class="button-subtle" id="credential-cancel"' in html
+    assert 'type="submit" value="submit" class="button-primary" id="credential-submit"' in html
+    assert "pendingCredentialMode" in js
+    assert "openConfigCredentialPrompt" in js
+    assert "input_request" in js
+    assert "remote.ssh_password = value" in js
+    assert "refs.credentialCancel.addEventListener(\"click\", cancelCredentialInput)" in js
+    assert 'state.pendingCredentialMode === "config_save"' in js
+    assert "const result = await saveCurrentConfig();" in js
+    assert "if (result === true)" in js
+    assert "lastConfigSaveError" in js
+    assert "refs.credentialCopy.textContent = state.lastConfigSaveError" in js
+    assert "if (!refs.credentialModal.open)" in js
+    assert 'refs.credentialModal.close();\n      showFlash("SSH 密码已填写，正在重试保存。");' not in js
+
+
+def test_save_config_payload_does_not_validate_existing_web_remote(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "ORG_USERNAME=san.zhang\n"
+        "HASH_SALT=test-salt\n"
+        "FEISHU_APP_TOKEN=app-token\n"
+        "FEISHU_BOT_TOKEN=bot-token\n"
+        "REMOTE_HOSTS=SERVER_A\n"
+        "REMOTE_SERVER_A_SSH_HOST=host-a\n"
+        "REMOTE_SERVER_A_SSH_USER=alice\n"
+        "REMOTE_SERVER_A_SSH_PORT=22\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    def fake_probe(config, ssh_password=None):  # noqa: ANN001
+        raise AssertionError(f"existing remote should not be validated on web save: {config.alias}")
+
+    monkeypatch.setattr(web, "probe_remote_ssh", fake_probe)
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [
+                {
+                    "alias": "SERVER_A",
+                    "ssh_host": "host-a",
+                    "ssh_user": "alice",
+                    "ssh_port": 22,
+                    "source_label": "alice@host-a",
+                    "use_sshpass": False,
+                }
+            ],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["saved"] is True
+    assert "REMOTE_HOSTS=SERVER_A" in env_path.read_text(encoding="utf-8")
+
+
+def test_save_config_payload_validates_existing_web_remote_when_connection_changes(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "ORG_USERNAME=san.zhang\n"
+        "HASH_SALT=test-salt\n"
+        "FEISHU_APP_TOKEN=app-token\n"
+        "FEISHU_BOT_TOKEN=bot-token\n"
+        "REMOTE_HOSTS=SERVER_A\n"
+        "REMOTE_SERVER_A_SSH_HOST=host-a\n"
+        "REMOTE_SERVER_A_SSH_USER=alice\n"
+        "REMOTE_SERVER_A_SSH_PORT=22\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_probe(config, ssh_password=None):  # noqa: ANN001
+        captured["alias"] = config.alias
+        captured["jump_host"] = config.ssh_jump_host
+        captured["jump_port"] = config.ssh_jump_port
+        return True, "ok"
+
+    monkeypatch.setattr(web, "probe_remote_ssh", fake_probe)
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [
+                {
+                    "alias": "SERVER_A",
+                    "ssh_host": "host-a",
+                    "ssh_user": "alice",
+                    "ssh_port": 22,
+                    "source_label": "alice@host-a",
+                    "use_sshpass": False,
+                    "ssh_jump_host": "jump-a",
+                    "ssh_jump_port": 2201,
+                }
+            ],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["saved"] is True
+    assert captured == {"alias": "SERVER_A", "jump_host": "jump-a", "jump_port": 2201}
+
+
+def test_save_config_payload_does_not_validate_deleted_web_remote(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "ORG_USERNAME=san.zhang\n"
+        "HASH_SALT=test-salt\n"
+        "FEISHU_APP_TOKEN=app-token\n"
+        "FEISHU_BOT_TOKEN=bot-token\n"
+        "REMOTE_HOSTS=SERVER_A\n"
+        "REMOTE_SERVER_A_SSH_HOST=host-a\n"
+        "REMOTE_SERVER_A_SSH_USER=alice\n"
+        "REMOTE_SERVER_A_SSH_PORT=22\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    def fake_probe(config, ssh_password=None):  # noqa: ANN001
+        raise AssertionError(f"deleted remote should not be validated on web save: {config.alias}")
+
+    monkeypatch.setattr(web, "probe_remote_ssh", fake_probe)
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["saved"] is True
+    text = env_path.read_text(encoding="utf-8")
+    assert "REMOTE_HOSTS" not in text
+    assert "REMOTE_SERVER_A_SSH_HOST" not in text
+
+
 def test_web_results_payload_is_dashboard_shaped(tmp_path: Path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text(
