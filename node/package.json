@@ -1,6 +1,6 @@
 {
   "name": "@llm-usage-horizon/llm-usage-node",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Local-first Node.js CLI for collecting LLM coding usage and syncing to Feishu",
   "license": "MIT",

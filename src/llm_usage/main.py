@@ -144,7 +144,12 @@ def _terminal_host_labels_for_report() -> dict[str, str]:
     return _build_terminal_host_labels(username, salt, parse_remote_configs_from_env())
 
 
-def _collect_all(lookback_days: int, collectors: list[BaseCollector]) -> tuple[list, list[str]]:
+def _collect_all(
+    lookback_days: int,
+    collectors: list[BaseCollector],
+    *,
+    prompt_for_ssh_password: bool = True,
+) -> tuple[list, list[str]]:
     import getpass
 
     from llm_usage.collectors.remote_file import RemoteFileCollector, SshAuthenticationError
@@ -158,6 +163,8 @@ def _collect_all(lookback_days: int, collectors: list[BaseCollector]) -> tuple[l
         try:
             out = collector.collect(start=start, end=end)
         except SshAuthenticationError as exc:
+            if not prompt_for_ssh_password:
+                raise
             if not isinstance(collector, RemoteFileCollector):
                 raise
             alias = getattr(collector, "source_name", "unknown")
@@ -760,7 +767,9 @@ def cmd_config(args: argparse.Namespace) -> int:
                 bot_token=getattr(args, "set_feishu_bot_token", None),
             )
         return run_feishu_setup_wizard(env_path, sys.stdout)
-    return run_config_editor(env_path)
+    from llm_usage.remotes import probe_remote_ssh
+
+    return run_config_editor(env_path, remote_validator=probe_remote_ssh)
 
 
 def _capture_and_save_cursor_token(

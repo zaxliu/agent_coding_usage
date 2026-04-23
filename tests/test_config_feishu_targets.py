@@ -318,7 +318,7 @@ def test_plain_config_still_runs_interactive_editor(tmp_path: Path, monkeypatch:
     parser = main.build_parser()
     args = parser.parse_args(["config"])
     monkeypatch.setattr(main, "_env_path", lambda: env_path)
-    monkeypatch.setattr("llm_usage.interaction.run_config_editor", lambda env_path, stdin=None, stdout=None: 0)
+    monkeypatch.setattr("llm_usage.interaction.run_config_editor", lambda env_path, stdin=None, stdout=None, **kwargs: 0)
     rc = main.cmd_config(args)
     assert rc == 0
 

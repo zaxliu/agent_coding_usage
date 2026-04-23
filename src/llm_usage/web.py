@@ -51,7 +51,13 @@ from llm_usage.main import (
     run_feishu_doctor,
 )
 from llm_usage.paths import read_bootstrap_env_text
-from llm_usage.remotes import RemoteDraft, build_remote_collectors, parse_remote_configs_from_env
+from llm_usage.remotes import (
+    RemoteDraft,
+    RemoteHostConfig,
+    build_remote_collectors,
+    parse_remote_configs_from_env,
+    probe_remote_ssh,
+)
 from llm_usage.runtime_state import save_selected_remote_aliases
 from llm_usage.runtime_preflight import ensure_runtime_bootstrap, validate_basic_config, validate_runtime_config
 
@@ -372,6 +378,40 @@ def _validate_remote_payload(payload: dict[str, Any]) -> tuple[list[str], list[s
     return errors, warnings
 
 
+def _remote_config_from_web_payload(remote: dict[str, Any]) -> RemoteHostConfig:
+    ssh_host = str(remote.get("ssh_host", "")).strip()
+    ssh_user = str(remote.get("ssh_user", "")).strip()
+    return RemoteHostConfig(
+        alias=str(remote.get("alias", "")).strip().upper(),
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=int(remote.get("ssh_port", 22) or 22),
+        source_label=str(remote.get("source_label", "")).strip() or f"{ssh_user}@{ssh_host}",
+        claude_log_paths=list(remote.get("claude_log_paths", []) or []),
+        codex_log_paths=list(remote.get("codex_log_paths", []) or []),
+        copilot_cli_log_paths=list(remote.get("copilot_cli_log_paths", []) or []),
+        copilot_vscode_session_paths=list(remote.get("copilot_vscode_session_paths", []) or []),
+        use_sshpass=bool(remote.get("use_sshpass", False)),
+        ssh_jump_host=str(remote.get("ssh_jump_host", "")).strip(),
+        ssh_jump_port=_safe_jump_port(remote.get("ssh_jump_port", 2222)),
+    )
+
+
+def _validate_remote_ssh_for_web(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    passwords = payload.get("ssh_passwords", {}) or {}
+    for remote in payload.get("remotes", []) or []:
+        config = _remote_config_from_web_payload(remote)
+        ssh_password = str(passwords.get(config.alias, "") or remote.get("ssh_password", "") or "")
+        if config.use_sshpass and not ssh_password.strip():
+            errors.append(f"remote {config.alias}: SSH password is required for validation")
+            continue
+        ok, message = probe_remote_ssh(config, ssh_password=ssh_password or None)
+        if not ok:
+            errors.append(f"remote {config.alias}: SSH check failed: {message}")
+    return errors
+
+
 def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     bootstrap = _bootstrap_runtime_for_web()
     errors: list[str] = []
@@ -396,6 +436,8 @@ def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     errors.extend(remote_errors)
     errors.extend(validation.errors)
+    if not errors:
+        errors.extend(_validate_remote_ssh_for_web(payload))
     warnings.extend(remote_warnings)
     warnings.extend(validation.warnings)
 
@@ -512,7 +554,7 @@ def _build_aggregates_for_web(
         selected_configs = configured_remotes
     collectors: list[BaseCollector] = _collectors(local_source_host_hash)
     collectors.extend(build_remote_collectors(selected_configs, username=username, salt=salt, runtime_passwords=runtime_passwords))
-    events, warnings = _collect_all(lookback_days, collectors)
+    events, warnings = _collect_all(lookback_days, collectors, prompt_for_ssh_password=False)
     rows = aggregate_events(events, user_hash=hash_user(username, salt), timezone_name=timezone_name)
     host_labels = _build_terminal_host_labels(username, salt, selected_configs)
     return rows, warnings, host_labels

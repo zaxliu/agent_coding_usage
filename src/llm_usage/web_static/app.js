@@ -208,6 +208,13 @@ function setActionRuntimeState(action, phase = "running", detail = "") {
 }
 
 function settingsPayload() {
+  const remotes = state.config?.remotes || [];
+  const sshPasswords = {};
+  for (const remote of remotes) {
+    if (remote.alias && remote.ssh_password) {
+      sshPasswords[remote.alias] = remote.ssh_password;
+    }
+  }
   return {
     basic: {
       ORG_USERNAME: document.querySelector("#org-username").value,
@@ -224,7 +231,8 @@ function settingsPayload() {
       FEISHU_BOT_TOKEN: document.querySelector("#feishu-bot-token").value,
     },
     feishu_targets: state.config?.feishu_targets || [],
-    remotes: state.config?.remotes || [],
+    remotes,
+    ssh_passwords: sshPasswords,
     raw_env: state.config?.raw_env || [],
   };
 }
@@ -706,6 +714,7 @@ function openRemoteEditModal(remote = null, index = -1) {
   document.querySelector("#remote-edit-ssh-port").value = remote?.ssh_port || 22;
   document.querySelector("#remote-edit-source-label").value = remote?.source_label || "";
   document.querySelector("#remote-edit-use-sshpass").checked = remote?.use_sshpass || false;
+  document.querySelector("#remote-edit-ssh-password").value = "";
   document.querySelector("#remote-edit-claude-paths").value = (remote?.claude_log_paths || []).join(",");
   document.querySelector("#remote-edit-codex-paths").value = (remote?.codex_log_paths || []).join(",");
   document.querySelector("#remote-edit-copilot-cli-paths").value = (remote?.copilot_cli_log_paths || []).join(",");
@@ -722,6 +731,7 @@ function collectRemoteFromModal() {
     ssh_port: parseInt(document.querySelector("#remote-edit-ssh-port").value, 10) || 22,
     source_label: document.querySelector("#remote-edit-source-label").value.trim(),
     use_sshpass: document.querySelector("#remote-edit-use-sshpass").checked,
+    ssh_password: document.querySelector("#remote-edit-ssh-password").value,
     claude_log_paths: splitPaths(document.querySelector("#remote-edit-claude-paths").value),
     codex_log_paths: splitPaths(document.querySelector("#remote-edit-codex-paths").value),
     copilot_cli_log_paths: splitPaths(document.querySelector("#remote-edit-copilot-cli-paths").value),

@@ -12,6 +12,7 @@ from llm_usage.collectors.remote_file import (
     RemoteCollectJob,
     RemoteFileCollector,
     SshTarget,
+    _is_ssh_auth_failure,
     _ssh_command_and_env,
 )
 from llm_usage.env import EnvDocument, upsert_env_var
@@ -69,6 +70,10 @@ class RemoteDraft:
 
 
 RemoteValidator = Callable[[RemoteHostConfig, Optional[str]], tuple[bool, str]]
+
+
+def is_ssh_auth_failure_message(message: str) -> bool:
+    return _is_ssh_auth_failure(message or "")
 
 
 def parse_remote_configs_from_env(env: Optional[dict[str, str]] = None) -> list[RemoteHostConfig]:

@@ -11,7 +11,7 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(nodeRoot, "package.json
 test("package metadata is ready for npm publish", () => {
   assert.equal(packageJson.private, undefined);
   assert.equal(packageJson.name, "@llm-usage-horizon/llm-usage-node");
-  assert.equal(packageJson.version, "0.1.3");
+  assert.equal(packageJson.version, "0.1.4");
   assert.equal(packageJson.license, "MIT");
   assert.equal(packageJson.author, "Lewis");
   assert.deepEqual(packageJson.keywords, ["llm", "usage", "cli", "feishu", "codex", "cursor"]);

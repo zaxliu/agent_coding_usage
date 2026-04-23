@@ -23,6 +23,7 @@ from llm_usage.remotes import (
     build_temporary_remote,
     default_source_label,
     drafts_from_env_document,
+    is_ssh_auth_failure_message,
     normalize_alias,
     probe_remote_ssh,
     unique_alias,
@@ -541,6 +542,8 @@ def run_config_editor(
     env_path: Path,
     stdin: Optional[TextIO] = None,
     stdout: Optional[TextIO] = None,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
 ) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
@@ -575,28 +578,79 @@ def run_config_editor(
             if decision == "" or decision == "d":
                 return 0
             if decision == "s":
-                if not _validate_config_save(draft, stdout):
+                if not _validate_config_save(
+                    draft,
+                    stdin=stdin,
+                    stdout=stdout,
+                    remote_validator=remote_validator,
+                    interactive_password_reader=interactive_password_reader,
+                ):
                     continue
                 _save_config_draft(env_path, draft)
                 return 0
             continue
         if answer == "1":
-            _edit_key_menu(draft, "Basic", BASIC_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
+            _edit_key_menu(
+                draft,
+                "Basic",
+                BASIC_KEYS,
+                env_path=env_path,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "2":
-            _edit_feishu_menu(draft, env_path, stdin=stdin, stdout=stdout)
+            _edit_feishu_menu(
+                draft,
+                env_path,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "3":
-            _edit_key_menu(draft, "Cursor", CURSOR_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
+            _edit_key_menu(
+                draft,
+                "Cursor",
+                CURSOR_KEYS,
+                env_path=env_path,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "4":
-            _edit_remotes_menu(draft, stdin=stdin, stdout=stdout, env_path=env_path)
+            _edit_remotes_menu(
+                draft,
+                stdin=stdin,
+                stdout=stdout,
+                env_path=env_path,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "5":
-            _edit_raw_env_menu(draft, stdin=stdin, stdout=stdout, env_path=env_path)
+            _edit_raw_env_menu(
+                draft,
+                stdin=stdin,
+                stdout=stdout,
+                env_path=env_path,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "s":
-            if not _validate_config_save(draft, stdout):
+            if not _validate_config_save(
+                draft,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            ):
                 continue
             _save_config_draft(env_path, draft)
             return 0
@@ -612,7 +666,13 @@ def run_config_editor(
                 use_prompt_toolkit=False,
             ).strip().lower()
             if decision == "s":
-                if not _validate_config_save(draft, stdout):
+                if not _validate_config_save(
+                    draft,
+                    stdin=stdin,
+                    stdout=stdout,
+                    remote_validator=remote_validator,
+                    interactive_password_reader=interactive_password_reader,
+                ):
                     continue
                 _save_config_draft(env_path, draft)
                 return 0
@@ -620,7 +680,14 @@ def run_config_editor(
                 return 0
 
 
-def _validate_config_save(draft: ConfigDraft, stdout: TextIO) -> bool:
+def _validate_config_save(
+    draft: ConfigDraft,
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
+) -> bool:
     validation = validate_runtime_config(
         basic={key: draft.values.get(key, "") for key in BASIC_KEYS},
         feishu_default={key: draft.values.get(key, "") for key in FEISHU_KEYS},
@@ -637,15 +704,103 @@ def _validate_config_save(draft: ConfigDraft, stdout: TextIO) -> bool:
         ],
         mode="config_save",
     )
-    if validation.ok:
-        return True
     for error in validation.errors:
         stdout.write(f"{error}\n")
-    return False
+    if not validation.ok:
+        return False
+    if remote_validator is None:
+        return True
+    return _validate_config_remotes(
+        draft,
+        stdin=stdin,
+        stdout=stdout,
+        remote_validator=remote_validator,
+        interactive_password_reader=interactive_password_reader,
+    )
 
 
-def _save_config_draft_if_valid(env_path: Path, draft: ConfigDraft, stdout: TextIO) -> bool:
-    if not _validate_config_save(draft, stdout):
+def _remote_config_from_draft(remote: RemoteDraft) -> RemoteHostConfig:
+    return RemoteHostConfig(
+        alias=remote.alias,
+        ssh_host=remote.ssh_host,
+        ssh_user=remote.ssh_user,
+        ssh_port=remote.ssh_port,
+        source_label=remote.source_label or default_source_label(remote.ssh_user, remote.ssh_host),
+        claude_log_paths=list(remote.claude_log_paths),
+        codex_log_paths=list(remote.codex_log_paths),
+        copilot_cli_log_paths=list(remote.copilot_cli_log_paths),
+        copilot_vscode_session_paths=list(remote.copilot_vscode_session_paths),
+        use_sshpass=remote.use_sshpass,
+        ssh_jump_host=remote.ssh_jump_host,
+        ssh_jump_port=remote.ssh_jump_port,
+    )
+
+
+def _validate_config_remotes(
+    draft: ConfigDraft,
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    remote_validator: RemoteValidator,
+    interactive_password_reader: Optional[Callable[[str], str]],
+) -> bool:
+    for remote in draft.remotes:
+        config = _remote_config_from_draft(remote)
+        ssh_password: Optional[str] = None
+        if config.use_sshpass:
+            ssh_password = _read_password(
+                f"SSH password for {config.alias}: ",
+                stdin=stdin,
+                stdout=stdout,
+                use_prompt_toolkit=False,
+                interactive_password_reader=interactive_password_reader,
+            )
+            if not ssh_password.strip():
+                stdout.write(f"remote {config.alias}: SSH password is required for validation\n")
+                return False
+        ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
+        if ok:
+            continue
+        if (
+            not config.use_sshpass
+            and is_ssh_auth_failure_message(message)
+            and _remote_validator_accepts_password(remote_validator)
+        ):
+            ssh_password = _read_password(
+                f"SSH password for {config.alias}: ",
+                stdin=stdin,
+                stdout=stdout,
+                use_prompt_toolkit=False,
+                interactive_password_reader=interactive_password_reader,
+            )
+            if not ssh_password.strip():
+                stdout.write(f"remote {config.alias}: SSH password is required after key auth failed\n")
+                return False
+            retry_config = replace(config, use_sshpass=True)
+            ok, message = _invoke_remote_validator(remote_validator, retry_config, ssh_password=ssh_password)
+            if ok:
+                continue
+        stdout.write(f"remote {config.alias}: SSH check failed: {message}\n")
+        return False
+    return True
+
+
+def _save_config_draft_if_valid(
+    env_path: Path,
+    draft: ConfigDraft,
+    stdin: TextIO,
+    stdout: TextIO,
+    *,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
+) -> bool:
+    if not _validate_config_save(
+        draft,
+        stdin=stdin,
+        stdout=stdout,
+        remote_validator=remote_validator,
+        interactive_password_reader=interactive_password_reader,
+    ):
         return False
     _save_config_draft(env_path, draft)
     stdout.write("Saved.\n")
@@ -717,7 +872,15 @@ def _run_feishu_init_schema_from_menu(env_path: Path, stdout: TextIO) -> None:
         stdout.write(f"error: {exc}\n")
 
 
-def _edit_feishu_menu(draft: ConfigDraft, env_path: Path, stdin: TextIO, stdout: TextIO) -> None:
+def _edit_feishu_menu(
+    draft: ConfigDraft,
+    env_path: Path,
+    stdin: TextIO,
+    stdout: TextIO,
+    *,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
+) -> None:
     while True:
         dirty_mark = " *" if draft.dirty else ""
         stdout.write(f"Feishu{dirty_mark}\n")
@@ -731,13 +894,36 @@ def _edit_feishu_menu(draft: ConfigDraft, env_path: Path, stdin: TextIO, stdout:
         if answer == "b" or answer == "":
             return
         if answer == "s":
-            _save_config_draft_if_valid(env_path, draft, stdout)
+            _save_config_draft_if_valid(
+                env_path,
+                draft,
+                stdin,
+                stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "1":
-            _edit_key_menu(draft, "Feishu default (legacy)", FEISHU_KEYS, env_path=env_path, stdin=stdin, stdout=stdout)
+            _edit_key_menu(
+                draft,
+                "Feishu default (legacy)",
+                FEISHU_KEYS,
+                env_path=env_path,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "2":
-            _edit_feishu_named_targets_menu(draft, env_path=env_path, stdin=stdin, stdout=stdout)
+            _edit_feishu_named_targets_menu(
+                draft,
+                env_path=env_path,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "3":
             _run_feishu_doctor_from_menu(env_path, stdout)
@@ -758,7 +944,13 @@ def _validate_new_feishu_target_name(raw: str, existing: list[FeishuTargetDraft]
 
 
 def _edit_feishu_named_targets_menu(
-    draft: ConfigDraft, *, env_path: Optional[Path] = None, stdin: TextIO, stdout: TextIO
+    draft: ConfigDraft,
+    *,
+    env_path: Optional[Path] = None,
+    stdin: TextIO,
+    stdout: TextIO,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
 ) -> None:
     while True:
         dirty_mark = " *" if draft.dirty else ""
@@ -776,7 +968,14 @@ def _edit_feishu_named_targets_menu(
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft_if_valid(env_path, draft, stdout)
+            _save_config_draft_if_valid(
+                env_path,
+                draft,
+                stdin,
+                stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "a":
             name_raw = _read_line("Target name: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
@@ -788,7 +987,15 @@ def _edit_feishu_named_targets_menu(
             target = FeishuTargetDraft(name=normalized)
             draft.feishu_named_targets.append(target)
             draft.dirty = True
-            if _edit_feishu_target_detail(target, env_path=env_path, draft=draft, stdin=stdin, stdout=stdout):
+            if _edit_feishu_target_detail(
+                target,
+                env_path=env_path,
+                draft=draft,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            ):
                 draft.dirty = True
             continue
         if answer == "e":
@@ -797,7 +1004,15 @@ def _edit_feishu_named_targets_menu(
             )
             if target is None:
                 continue
-            if _edit_feishu_target_detail(target, env_path=env_path, draft=draft, stdin=stdin, stdout=stdout):
+            if _edit_feishu_target_detail(
+                target,
+                env_path=env_path,
+                draft=draft,
+                stdin=stdin,
+                stdout=stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            ):
                 draft.dirty = True
             continue
         if answer == "d":
@@ -839,6 +1054,8 @@ def _edit_feishu_target_detail(
     draft: Optional[ConfigDraft] = None,
     stdin: TextIO,
     stdout: TextIO,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
 ) -> bool:
     changed = False
     while True:
@@ -855,7 +1072,14 @@ def _edit_feishu_target_detail(
         if answer == "b" or answer == "":
             return changed
         if answer == "s" and env_path is not None and draft is not None:
-            _save_config_draft_if_valid(env_path, draft, stdout)
+            _save_config_draft_if_valid(
+                env_path,
+                draft,
+                stdin,
+                stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "1":
             v = _read_line("APP_TOKEN: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False)
@@ -892,6 +1116,8 @@ def _edit_key_menu(
     env_path: Optional[Path] = None,
     stdin: TextIO,
     stdout: TextIO,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
 ) -> None:
     while True:
         dirty_mark = " *" if draft.dirty else ""
@@ -905,7 +1131,14 @@ def _edit_key_menu(
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft_if_valid(env_path, draft, stdout)
+            _save_config_draft_if_valid(
+                env_path,
+                draft,
+                stdin,
+                stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if not answer.isdigit():
             continue
@@ -925,7 +1158,15 @@ def _edit_key_menu(
         return
 
 
-def _edit_raw_env_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env_path: Optional[Path] = None) -> None:
+def _edit_raw_env_menu(
+    draft: ConfigDraft,
+    stdin: TextIO,
+    stdout: TextIO,
+    *,
+    env_path: Optional[Path] = None,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
+) -> None:
     while True:
         keys = sorted(draft.values)
         dirty_mark = " *" if draft.dirty else ""
@@ -941,7 +1182,14 @@ def _edit_raw_env_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft_if_valid(env_path, draft, stdout)
+            _save_config_draft_if_valid(
+                env_path,
+                draft,
+                stdin,
+                stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "a":
             key = _read_line("Key: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().upper()
@@ -975,7 +1223,15 @@ def _edit_raw_env_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env
             return
 
 
-def _edit_remotes_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env_path: Optional[Path] = None) -> None:
+def _edit_remotes_menu(
+    draft: ConfigDraft,
+    stdin: TextIO,
+    stdout: TextIO,
+    *,
+    env_path: Optional[Path] = None,
+    remote_validator: Optional[RemoteValidator] = None,
+    interactive_password_reader: Optional[Callable[[str], str]] = None,
+) -> None:
     while True:
         dirty_mark = " *" if draft.dirty else ""
         stdout.write(f"Remotes{dirty_mark}\n")
@@ -991,7 +1247,14 @@ def _edit_remotes_menu(draft: ConfigDraft, stdin: TextIO, stdout: TextIO, *, env
         if answer == "b" or answer == "":
             return
         if answer == "s" and env_path is not None:
-            _save_config_draft_if_valid(env_path, draft, stdout)
+            _save_config_draft_if_valid(
+                env_path,
+                draft,
+                stdin,
+                stdout,
+                remote_validator=remote_validator,
+                interactive_password_reader=interactive_password_reader,
+            )
             continue
         if answer == "a":
             remote = _prompt_remote(existing_aliases=[item.alias for item in draft.remotes], stdin=stdin, stdout=stdout)
@@ -1489,6 +1752,25 @@ def _prompt_temporary_remote(
                                                 ssh_jump_host=jump_host, ssh_jump_port=jump_port), alias=runner.state.alias)
         stdout.write("正在检查 SSH 连通性...\n")
         ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
+        if (
+            not ok
+            and ssh_password is None
+            and is_ssh_auth_failure_message(message)
+            and _remote_validator_accepts_password(remote_validator)
+        ):
+            stdout.write(f"SSH key 认证失败：{message}\n")
+            ssh_password = _read_password(
+                "SSH 密码：",
+                stdin=stdin,
+                stdout=stdout,
+                use_prompt_toolkit=use_prompt_toolkit,
+                interactive_password_reader=interactive_password_reader,
+            )
+            if ssh_password.strip():
+                retry_config = replace(config, use_sshpass=True)
+                ok, message = _invoke_remote_validator(remote_validator, retry_config, ssh_password=ssh_password)
+            else:
+                ssh_password = None
         if ok:
             if ssh_password is not None:
                 runtime_passwords[config.alias] = ssh_password
@@ -1552,6 +1834,24 @@ def _invoke_remote_validator(
         if len(positional_params) >= 2:
             return remote_validator(config, ssh_password)
     return remote_validator(config)
+
+
+def _remote_validator_accepts_password(remote_validator: RemoteValidator) -> bool:
+    try:
+        signature = inspect.signature(remote_validator)
+    except (TypeError, ValueError):
+        return True
+    params = list(signature.parameters.values())
+    if "ssh_password" in signature.parameters:
+        return True
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params):
+        return True
+    positional_params = [
+        param
+        for param in params
+        if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional_params) >= 2
 
 
 def _read_line(prompt_text: str, stdin: TextIO, stdout: TextIO, use_prompt_toolkit: bool) -> str:

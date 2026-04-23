@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from llm_usage.collectors.remote_file import SshAuthenticationError
+from llm_usage.collectors.remote_file import SshAuthenticationError, SshTarget
 
 import llm_usage.main as main
 import llm_usage.paths as paths
@@ -179,6 +179,86 @@ def test_save_config_payload_allows_named_target_to_inherit_default_auth(tmp_pat
     text = env_path.read_text(encoding="utf-8")
     assert "FEISHU_APP_TOKEN=app-default" in text
     assert "FEISHU_TARGETS=finance" in text
+
+
+def test_save_config_payload_rejects_remote_when_ssh_validation_fails(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        web,
+        "probe_remote_ssh",
+        lambda config, ssh_password=None: (False, "Connection timed out"),
+    )
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [
+                {
+                    "alias": "SERVER_A",
+                    "ssh_host": "host-a",
+                    "ssh_user": "alice",
+                    "ssh_port": 22,
+                    "source_label": "alice@host-a",
+                    "use_sshpass": False,
+                }
+            ],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is False
+    assert payload["saved"] is False
+    assert "remote SERVER_A: SSH check failed: Connection timed out" in payload["errors"]
+    assert "REMOTE_HOSTS=SERVER_A" not in env_path.read_text(encoding="utf-8")
+
+
+def test_save_config_payload_uses_web_ssh_password_for_remote_validation(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_probe(config, ssh_password=None):  # noqa: ANN001
+        captured["use_sshpass"] = config.use_sshpass
+        captured["ssh_password"] = ssh_password
+        return True, "ok"
+
+    monkeypatch.setattr(web, "probe_remote_ssh", fake_probe)
+
+    payload = web.save_config_payload(
+        {
+            "basic": {"ORG_USERNAME": "san.zhang", "HASH_SALT": "test-salt", "TIMEZONE": "Asia/Shanghai"},
+            "cursor": {},
+            "feishu_default": {"FEISHU_APP_TOKEN": "app-token", "FEISHU_BOT_TOKEN": "bot-token"},
+            "feishu_targets": [],
+            "remotes": [
+                {
+                    "alias": "SERVER_A",
+                    "ssh_host": "host-a",
+                    "ssh_user": "alice",
+                    "ssh_port": 22,
+                    "source_label": "alice@host-a",
+                    "use_sshpass": True,
+                    "ssh_password": "top-secret",
+                }
+            ],
+            "raw_env": [],
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["saved"] is True
+    assert captured == {"use_sshpass": True, "ssh_password": "top-secret"}
+    text = env_path.read_text(encoding="utf-8")
+    assert "REMOTE_SERVER_A_USE_SSHPASS=1" in text
+    assert "top-secret" not in text
 
 
 def test_web_results_payload_is_dashboard_shaped(tmp_path: Path, monkeypatch):
@@ -652,3 +732,60 @@ def test_web_collect_fallback_on_ssh_auth_failure(tmp_path: Path, monkeypatch):
     assert current is not None
     assert current["status"] == "succeeded"
     assert captured["runtime_passwords"] == {"SERVER_A": "my-password"}
+
+
+def test_web_collect_propagates_remote_auth_failure_to_frontend_prompt(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("REMOTE_SERVER_A_USE_SSHPASS", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "ORG_USERNAME=san.zhang",
+                "HASH_SALT=test-salt",
+                "TIMEZONE=Asia/Shanghai",
+                "REMOTE_HOSTS=server_a",
+                "REMOTE_SERVER_A_SSH_HOST=host-a",
+                "REMOTE_SERVER_A_SSH_USER=alice",
+                "REMOTE_SERVER_A_USE_SSHPASS=0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(web, "_collectors", lambda local_hash: [])
+
+    class AuthFailCollector(web.RemoteFileCollector):
+        def collect(self, start, end):  # noqa: ANN001, ANN201
+            raise SshAuthenticationError("server_a", "Permission denied (publickey).")
+
+    def fake_build_remote_collectors(configs, username, salt, runtime_passwords=None):  # noqa: ANN001, ANN201
+        return [
+            AuthFailCollector(
+                "remote",
+                target=SshTarget(host="host-a", user="alice", port=22),
+                source_name="server_a",
+                source_host_hash="hash",
+                jobs=[],
+            )
+        ]
+
+    monkeypatch.setattr(web, "build_remote_collectors", fake_build_remote_collectors)
+    monkeypatch.setattr("getpass.getpass", lambda prompt: (_ for _ in ()).throw(EOFError))
+
+    service = web.WebService()
+    started = service.start_collect({})
+    job_id = started["id"]
+
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] in {"needs_input", "failed", "succeeded"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
+    assert current["input_request"]["kind"] == "ssh_password"
+    assert current["input_request"]["remote_alias"] == "SERVER_A"
