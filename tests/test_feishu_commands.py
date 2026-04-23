@@ -13,6 +13,10 @@ def _set_basic_runtime_env(monkeypatch) -> None:
     monkeypatch.setenv("HASH_SALT", "salt")
 
 
+def _stub_feishu_connectivity(monkeypatch) -> None:
+    monkeypatch.setattr(main, "_probe_feishu_connectivity", lambda targets: None)
+
+
 def _row(*, row_key: str = "rk") -> AggregateRecord:
     return AggregateRecord(
         date_local="2026-03-31",
@@ -85,6 +89,7 @@ def test_cmd_sync_from_bundle_passes_target_selection_to_upload(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
     monkeypatch.setenv("FEISHU_TABLE_ID", "tbl")
     monkeypatch.setenv("FEISHU_BOT_TOKEN", "bot")
+    _stub_feishu_connectivity(monkeypatch)
 
     def _track(rows, *, dry_run, feishu_target, all_feishu_targets):  # noqa: ANN001
         calls.append((dry_run, tuple(feishu_target or ()), all_feishu_targets))
@@ -119,6 +124,7 @@ def test_cmd_sync_all_feishu_targets_calls_upload_with_select_all(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
     monkeypatch.setenv("FEISHU_TABLE_ID", "tbl")
     monkeypatch.setenv("FEISHU_BOT_TOKEN", "bot")
+    _stub_feishu_connectivity(monkeypatch)
 
     captured = {}
 
@@ -269,6 +275,7 @@ def test_doctor_feishu_auth_failure_returns_nonzero(monkeypatch):
 
 def test_run_feishu_doctor_wraps_auth_errors_with_target_name(monkeypatch):
     _set_basic_runtime_env(monkeypatch)
+    _stub_feishu_connectivity(monkeypatch)
     monkeypatch.setattr(
         main,
         "_resolve_feishu_sync_selection",
@@ -284,6 +291,7 @@ def test_run_feishu_doctor_wraps_auth_errors_with_target_name(monkeypatch):
 
 def test_run_feishu_doctor_does_not_treat_link_share_mode_as_write_permission_failure(monkeypatch, capsys):
     _set_basic_runtime_env(monkeypatch)
+    _stub_feishu_connectivity(monkeypatch)
     monkeypatch.setattr(
         main,
         "_resolve_feishu_sync_selection",
@@ -314,6 +322,7 @@ def test_run_feishu_doctor_does_not_treat_link_share_mode_as_write_permission_fa
 
 def test_run_feishu_doctor_reports_write_probe_cleanup_failure(monkeypatch):
     _set_basic_runtime_env(monkeypatch)
+    _stub_feishu_connectivity(monkeypatch)
     monkeypatch.setattr(
         main,
         "_resolve_feishu_sync_selection",
@@ -338,6 +347,7 @@ def test_run_feishu_doctor_reports_write_probe_cleanup_failure(monkeypatch):
 
 def test_run_feishu_doctor_reports_write_probe_create_failure(monkeypatch):
     _set_basic_runtime_env(monkeypatch)
+    _stub_feishu_connectivity(monkeypatch)
     monkeypatch.setattr(
         main,
         "_resolve_feishu_sync_selection",
@@ -362,6 +372,7 @@ def test_run_feishu_doctor_reports_write_probe_create_failure(monkeypatch):
 
 def test_run_feishu_doctor_prints_warn_summary_when_schema_has_warnings(monkeypatch, capsys):
     _set_basic_runtime_env(monkeypatch)
+    _stub_feishu_connectivity(monkeypatch)
     monkeypatch.setattr(
         main,
         "_resolve_feishu_sync_selection",

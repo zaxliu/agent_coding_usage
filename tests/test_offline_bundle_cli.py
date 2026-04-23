@@ -182,6 +182,7 @@ def test_cmd_sync_from_bundle_upserts_original_rows(monkeypatch):
     monkeypatch.setattr(main, "_load_runtime_env", lambda: None)
     monkeypatch.setattr(main, "read_offline_bundle", lambda path: (rows, [], {"row_count": 2}))
     monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "_probe_feishu_connectivity", lambda targets: None)
     _set_basic_runtime_env(monkeypatch)
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
     monkeypatch.setenv("FEISHU_TABLE_ID", "tbl")

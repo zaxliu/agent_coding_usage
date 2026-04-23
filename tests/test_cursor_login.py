@@ -574,6 +574,7 @@ def test_cmd_sync_triggers_maybe_capture(monkeypatch):
     monkeypatch.setattr(main, "print_terminal_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "write_csv_report", lambda rows, path: path / "usage_report.csv")
     monkeypatch.setattr(main, "_repo_root", lambda: main.Path("/tmp"))
+    monkeypatch.setattr(main, "_probe_feishu_connectivity", lambda targets: None)
     monkeypatch.setenv("FEISHU_APP_TOKEN", "app")
     monkeypatch.setenv("FEISHU_TABLE_ID", "tbl")
     monkeypatch.setenv("FEISHU_BOT_TOKEN", "bot")
