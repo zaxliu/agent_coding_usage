@@ -267,12 +267,8 @@ export function loadConfigPayload() {
       app_id: target.appId,
       app_secret: target.appSecret,
       bot_token: target.botToken,
-      use_sshpass: envFlag(values[`REMOTE_${target.name.toUpperCase()}_USE_SSHPASS`]),
     })),
-    remotes: parseRemoteConfigsFromEnv(values).map((remote) => ({
-      ...remote,
-      use_sshpass: envFlag(values[`REMOTE_${remote.alias}_USE_SSHPASS`]),
-    })),
+    remotes: parseRemoteConfigsFromEnv(values),
     raw_env: rawEnvEntries(values),
     reports_dir: getReportsDir(),
     env_path: getEnvPath(),
@@ -359,7 +355,6 @@ export function writeConfigPayload(payload) {
     out.set(`${prefix}COPILOT_CLI_LOG_PATHS`, (remote.copilot_cli_log_paths || []).join(","));
     out.set(`${prefix}COPILOT_VSCODE_SESSION_PATHS`, (remote.copilot_vscode_session_paths || []).join(","));
     out.set(`${prefix}CLINE_VSCODE_SESSION_PATHS`, (remote.cline_vscode_session_paths || []).join(","));
-    out.set(`${prefix}USE_SSHPASS`, remote.use_sshpass ? "1" : "0");
   }
   out.set("REMOTE_HOSTS", aliases.join(","));
   const lines = [...out.entries()].map(([key, value]) => `${key}=${renderEnvValue(value)}`);
@@ -429,10 +424,7 @@ async function buildAggregates(payload = {}, { maybeCaptureCursorTokenFn = maybe
 
 function selectedRemoteConfigs(payload = {}) {
   const values = envMap();
-  const configured = parseRemoteConfigsFromEnv(values).map((remote) => ({
-    ...remote,
-    use_sshpass: envFlag(values[`REMOTE_${remote.alias}_USE_SSHPASS`]),
-  }));
+  const configured = parseRemoteConfigsFromEnv(values);
   const selectedAliases = new Set((payload.selected_remotes || []).map((item) => String(item).trim().toUpperCase()).filter(Boolean));
   if (!selectedAliases.size) {
     return configured;

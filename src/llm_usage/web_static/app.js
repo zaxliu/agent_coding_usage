@@ -518,7 +518,7 @@ function renderRemotes(remotes = []) {
                 <strong>${escapeHtml(remote.alias)}</strong>
                 <span class="pill">${escapeHtml(remote.source_label || `${remote.ssh_user}@${remote.ssh_host}`)}</span>
               </div>
-              <div class="remote-meta">${escapeHtml(remote.ssh_user)}@${escapeHtml(remote.ssh_host)}:${remote.ssh_port}${remote.use_sshpass ? " (sshpass)" : ""}</div>
+              <div class="remote-meta">${escapeHtml(remote.ssh_user)}@${escapeHtml(remote.ssh_host)}:${remote.ssh_port}</div>
               <div class="item-actions">
                 <button class="button-subtle button-small" data-action="edit-remote" data-index="${index}">编辑</button>
                 <button class="button-subtle button-small button-danger" data-action="delete-remote" data-index="${index}">删除</button>
@@ -719,8 +719,6 @@ function openRemoteEditModal(remote = null, index = -1) {
   document.querySelector("#remote-edit-ssh-jump-host").value = remote?.ssh_jump_host || "";
   document.querySelector("#remote-edit-ssh-jump-port").value = remote?.ssh_jump_port || 2222;
   document.querySelector("#remote-edit-source-label").value = remote?.source_label || "";
-  document.querySelector("#remote-edit-use-sshpass").checked = remote?.use_sshpass || false;
-  document.querySelector("#remote-edit-ssh-password").value = "";
   document.querySelector("#remote-edit-claude-paths").value = (remote?.claude_log_paths || []).join(",");
   document.querySelector("#remote-edit-codex-paths").value = (remote?.codex_log_paths || []).join(",");
   document.querySelector("#remote-edit-copilot-cli-paths").value = (remote?.copilot_cli_log_paths || []).join(",");
@@ -739,8 +737,6 @@ function collectRemoteFromModal() {
     ssh_jump_host: document.querySelector("#remote-edit-ssh-jump-host").value.trim(),
     ssh_jump_port: parseInt(document.querySelector("#remote-edit-ssh-jump-port").value, 10) || 2222,
     source_label: document.querySelector("#remote-edit-source-label").value.trim(),
-    use_sshpass: document.querySelector("#remote-edit-use-sshpass").checked,
-    ssh_password: document.querySelector("#remote-edit-ssh-password").value,
     claude_log_paths: splitPaths(document.querySelector("#remote-edit-claude-paths").value),
     codex_log_paths: splitPaths(document.querySelector("#remote-edit-codex-paths").value),
     copilot_cli_log_paths: splitPaths(document.querySelector("#remote-edit-copilot-cli-paths").value),

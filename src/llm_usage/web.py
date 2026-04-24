@@ -110,7 +110,6 @@ def _serialize_remote(remote: Any) -> dict[str, Any]:
         "copilot_cli_log_paths": list(remote.copilot_cli_log_paths),
         "copilot_vscode_session_paths": list(remote.copilot_vscode_session_paths),
         "cline_vscode_session_paths": list(getattr(remote, "cline_vscode_session_paths", [])),
-        "use_sshpass": bool(getattr(remote, "use_sshpass", False)),
         "ssh_jump_host": getattr(remote, "ssh_jump_host", ""),
         "ssh_jump_port": getattr(remote, "ssh_jump_port", 2222),
     }
@@ -395,24 +394,22 @@ def _remote_config_from_web_payload(remote: dict[str, Any]) -> RemoteHostConfig:
         copilot_cli_log_paths=list(remote.get("copilot_cli_log_paths", []) or []),
         copilot_vscode_session_paths=list(remote.get("copilot_vscode_session_paths", []) or []),
         cline_vscode_session_paths=list(remote.get("cline_vscode_session_paths", []) or []),
-        use_sshpass=bool(remote.get("use_sshpass", False)),
         ssh_jump_host=str(remote.get("ssh_jump_host", "")).strip(),
         ssh_jump_port=_safe_jump_port(remote.get("ssh_jump_port", 2222)),
     )
 
 
-def _remote_connection_signature(remote: RemoteHostConfig) -> tuple[str, str, int, bool, str, int]:
+def _remote_connection_signature(remote: RemoteHostConfig) -> tuple[str, str, int, str, int]:
     return (
         remote.ssh_host,
         remote.ssh_user,
         remote.ssh_port,
-        remote.use_sshpass,
         remote.ssh_jump_host,
         remote.ssh_jump_port,
     )
 
 
-def _existing_remote_signatures_for_web() -> dict[str, tuple[str, str, int, bool, str, int]]:
+def _existing_remote_signatures_for_web() -> dict[str, tuple[str, str, int, str, int]]:
     document = load_env_document(_env_path())
     return {
         remote.alias: _remote_connection_signature(_remote_config_from_draft(remote))
@@ -432,7 +429,7 @@ def _ssh_password_input_request_for_config(alias: str) -> dict[str, str]:
 def _validate_remote_ssh_for_web(
     payload: dict[str, Any],
     *,
-    existing_signatures: dict[str, tuple[str, str, int, bool, str, int]],
+    existing_signatures: dict[str, tuple[str, str, int, str, int]],
 ) -> tuple[list[str], Optional[dict[str, str]]]:
     errors: list[str] = []
     passwords = payload.get("ssh_passwords", {}) or {}
@@ -441,8 +438,6 @@ def _validate_remote_ssh_for_web(
         if existing_signatures.get(config.alias) == _remote_connection_signature(config):
             continue
         ssh_password = str(passwords.get(config.alias, "") or remote.get("ssh_password", "") or "")
-        if config.use_sshpass and not ssh_password.strip():
-            return errors, _ssh_password_input_request_for_config(config.alias)
         ok, message = probe_remote_ssh(config, ssh_password=ssh_password or None)
         if not ok:
             if not ssh_password.strip() and is_ssh_auth_failure_message(message):
@@ -525,7 +520,6 @@ def save_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
             copilot_cli_log_paths=list(remote.get("copilot_cli_log_paths", []) or []),
             copilot_vscode_session_paths=list(remote.get("copilot_vscode_session_paths", []) or []),
             cline_vscode_session_paths=list(remote.get("cline_vscode_session_paths", []) or []),
-            use_sshpass=bool(remote.get("use_sshpass", False)),
             ssh_jump_host=str(remote.get("ssh_jump_host", "")).strip(),
             ssh_jump_port=_safe_jump_port(remote.get("ssh_jump_port", 2222)),
         )
@@ -775,18 +769,6 @@ class WebService:
             self._runtime_credentials[alias] = value
 
     def _missing_runtime_password_request(self, selected_configs: list[Any]) -> Optional[dict[str, Any]]:
-        with self._runtime_lock:
-            for config in selected_configs:
-                if not bool(getattr(config, "use_sshpass", False)):
-                    continue
-                if self._runtime_credentials.get(config.alias, "").strip():
-                    continue
-                return {
-                    "kind": "ssh_password",
-                    "remote_alias": config.alias,
-                    "message": f"Provide the SSH password for {config.alias}. It will be cached in memory for this session only.",
-                    "cache_scope": "session",
-                }
         return None
 
     def _selected_remote_configs(self, payload: dict[str, Any]) -> list[Any]:
@@ -806,7 +788,7 @@ class WebService:
     ) -> Callable[[], dict[str, Any]]:
         """Wrap a handler to catch SSH auth failures and prompt for password via the frontend."""
 
-        def handler() -> dict[str, Any]:
+        def _run_or_prompt() -> dict[str, Any]:
             try:
                 return operation()
             except SshAuthenticationError as exc:
@@ -827,11 +809,11 @@ class WebService:
 
                 def resume_handler(value: str) -> dict[str, Any]:
                     self._remember_runtime_password(alias, value)
-                    return operation()
+                    return _run_or_prompt()
 
                 raise _JobNeedsInput(input_request, resume_handler)
 
-        return handler
+        return _run_or_prompt
 
     def _run_collect_operation(self, payload: dict[str, Any]) -> dict[str, Any]:
         runtime_passwords = self._runtime_passwords_for([config.alias for config in self._selected_remote_configs(payload)])

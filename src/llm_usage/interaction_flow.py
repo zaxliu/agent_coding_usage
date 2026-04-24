@@ -22,7 +22,6 @@ class RemoteFlowState:
     ssh_host: str = ""
     ssh_user: str = ""
     ssh_port: int = 22
-    use_sshpass: bool = False
     ssh_jump_host: str = ""
     ssh_jump_port: int = 2222
 
@@ -44,8 +43,6 @@ class RemotePromptRunner:
             return InputRequest(kind="ssh_jump_host", message="跳板机地址（留空跳过）：")
         if self._stage == "ssh_jump_port":
             return InputRequest(kind="ssh_jump_port", message="跳板机端口 [2222]：")
-        if self._stage == "use_sshpass":
-            return InputRequest(kind="use_sshpass", message="是否使用 sshpass？[y/N]：")
         return None
 
     def apply_input(self, value: str) -> bool:
@@ -80,7 +77,7 @@ class RemotePromptRunner:
         if self._stage == "ssh_jump_host":
             if not value:
                 self.state.ssh_jump_host = ""
-                self._stage = "use_sshpass"
+                self._stage = "done"
                 return True
             if "@" in value or any(c in value for c in " \t\n\r"):
                 return False
@@ -90,7 +87,7 @@ class RemotePromptRunner:
         if self._stage == "ssh_jump_port":
             if not value:
                 self.state.ssh_jump_port = 2222
-                self._stage = "use_sshpass"
+                self._stage = "done"
                 return True
             try:
                 port = int(value)
@@ -99,13 +96,6 @@ class RemotePromptRunner:
             if port <= 0:
                 return False
             self.state.ssh_jump_port = port
-            self._stage = "use_sshpass"
-            return True
-        if self._stage == "use_sshpass":
-            parsed = self._parse_sshpass(value)
-            if parsed is None:
-                return False
-            self.state.use_sshpass = parsed
             self._stage = "done"
             return True
         return False
@@ -114,18 +104,6 @@ class RemotePromptRunner:
         source_label = default_source_label(self.state.ssh_user, self.state.ssh_host)
         alias_seed = normalize_alias(source_label)
         self.state.alias = unique_alias(alias_seed, self.existing_aliases)
-
-    @staticmethod
-    def _parse_sshpass(value: str) -> Optional[bool]:
-        if value == "":
-            return False
-        normalized = value.lower()
-        if normalized in {"y", "yes", "1", "true", "是", "确认"}:
-            return True
-        if normalized in {"n", "no", "0", "false", "否", "不", "off"}:
-            return False
-        return None
-
 
 def request_ssh_host_step() -> InputRequest:
     return InputRequest(kind="ssh_host", message="SSH 主机：")

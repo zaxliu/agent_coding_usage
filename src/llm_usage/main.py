@@ -17,7 +17,7 @@ from llm_usage.env import load_dotenv, load_env_document, upsert_env_var
 from llm_usage.identity import hash_source_host, hash_user
 from llm_usage.offline_bundle import OfflineBundleError, read_offline_bundle, write_offline_bundle
 from llm_usage.paths import read_bootstrap_env_text, resolve_active_runtime_paths, resolve_runtime_paths
-from llm_usage.remotes import RemoteHostConfig, append_remote_to_env, build_remote_collectors, parse_remote_configs_from_env
+from llm_usage.remotes import RemoteHostConfig, append_remote_to_env, build_remote_collectors, is_ssh_auth_failure_message, parse_remote_configs_from_env, probe_remote_ssh
 from llm_usage.reporting import print_terminal_report, write_csv_report
 from llm_usage.runtime_preflight import validate_runtime_config
 from llm_usage.runtime_state import load_selected_remote_aliases, save_selected_remote_aliases
@@ -179,7 +179,6 @@ def _collect_all(
                 warnings.append(f"remote[{alias}]: 跳过（未提供密码）")
                 continue
             collector.ssh_password = password
-            collector.use_sshpass = True
             try:
                 out = collector.collect(start=start, end=end)
             except Exception as retry_exc:
@@ -691,7 +690,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ok, msg = collector.probe()
         print(f"collector {collector.name}[{collector.source_name}]: {'OK' if ok else 'WARN'} - {msg}")
 
-    for collector in build_remote_collectors(parse_remote_configs_from_env(), username=username, salt=salt):
+    remote_configs = parse_remote_configs_from_env()
+    runtime_passwords: dict[str, str] = {}
+    for config in remote_configs:
+        if config.ssh_jump_host:
+            ok, message = probe_remote_ssh(config)
+            if not ok and is_ssh_auth_failure_message(message):
+                import getpass
+                password = getpass.getpass(f"SSH password for {config.alias}: ")
+                if password.strip():
+                    runtime_passwords[config.alias] = password
+
+    for collector in build_remote_collectors(remote_configs, username=username, salt=salt,
+                                             runtime_passwords=runtime_passwords):
         try:
             ok, msg = collector.probe()
         except Exception as exc:
@@ -970,8 +981,8 @@ def _resolve_remote_selection(
     resolved_passwords = dict(result.runtime_passwords or {})
     if "__current__" in runtime_password and not resolved_passwords:
         for config in result.temporary_remotes:
-            if config.use_sshpass:
-                resolved_passwords[config.alias] = runtime_password["__current__"]
+            resolved_passwords[config.alias] = runtime_password["__current__"]
+            break
     return result.selected_aliases, result.temporary_remotes, resolved_passwords
 
 

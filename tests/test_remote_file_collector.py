@@ -30,6 +30,15 @@ def _remote_command(cmd: list[str]) -> str:
     return cmd[-1] if _is_ssh_command(cmd) else ""
 
 
+def _paramiko_python_discovery_result(cmd: list[str]) -> _Completed:
+    remote_command = " ".join(cmd)
+    if "command -v python3" in remote_command:
+        return _Completed(returncode=0, stdout="python3")
+    if "sys.version_info" in remote_command:
+        return _Completed(returncode=0, stdout="3.9.0\n")
+    return _Completed(returncode=0, stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
+
+
 def test_remote_file_collector_supports_python_fallback(tmp_path):
     calls = []
 
@@ -64,17 +73,20 @@ def test_remote_file_collector_supports_python_fallback(tmp_path):
     assert "BatchMode=yes" in calls[1]
 
 
-def test_remote_file_collector_uses_sshpass_env_for_collect(tmp_path):
+def test_remote_file_collector_uses_paramiko_for_collect(tmp_path, monkeypatch):
     captured = []
+    call_count = {"n": 0}
 
-    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
-        captured.append((cmd, env))
-        if cmd[:3] == ["sshpass", "-e", "ssh"] and "command -v python3" in _remote_command(cmd):
-            return _Completed(stdout="python3")
-        if cmd[:3] == ["sshpass", "-e", "ssh"] and input is not None:
-            assert env is not None
-            return _Completed(stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
-        return _Completed()
+    def _fake_paramiko(**kwargs):  # noqa: ANN001, ANN201
+        call_count["n"] += 1
+        captured.append(kwargs["remote_args"])
+        if call_count["n"] == 1:
+            return _Completed(returncode=0, stdout="python3")
+        if call_count["n"] == 2:
+            return _Completed(returncode=0, stdout="3.9.0\n")
+        return _Completed(returncode=0, stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
+
+    monkeypatch.setattr(remote_file, "_run_remote_command_with_paramiko", _fake_paramiko)
 
     collector = RemoteFileCollector(
         "codex",
@@ -82,8 +94,6 @@ def test_remote_file_collector_uses_sshpass_env_for_collect(tmp_path):
         source_name="server_a",
         source_host_hash="hash",
         patterns=["~/.codex/**/*.jsonl"],
-        runner=_runner,
-        use_sshpass=True,
         ssh_password="  secret  ",
     )
 
@@ -92,27 +102,20 @@ def test_remote_file_collector_uses_sshpass_env_for_collect(tmp_path):
         end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
     )
 
-    probe_call = next((item for item in captured if "command -v python3" in _remote_command(item[0])), None)
-    collect_call = next(
-        (item for item in captured if item[1] is not None and "command -v python3" not in _remote_command(item[0])),
-        None,
-    )
-
-    assert probe_call is not None
-    assert collect_call is not None
-    assert probe_call[0][:2] == ["sshpass", "-e"]
-    assert probe_call[1]["SSHPASS"] == "  secret  "
-    assert collect_call[0][:2] == ["sshpass", "-e"]
-    assert collect_call[1]["SSHPASS"] == "  secret  "
+    assert any("command -v python3" in " ".join(cmd) for cmd in captured)
+    assert any("sys.version_info" in " ".join(cmd) for cmd in captured)
 
 
-def test_remote_file_collector_requires_password_for_sshpass(tmp_path, monkeypatch):
+def test_remote_file_collector_without_password_uses_system_ssh(tmp_path, monkeypatch):
     captured = []
-    monkeypatch.delenv("SSHPASS", raising=False)
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
         captured.append((cmd, env))
-        return _Completed()
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            return _Completed(stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
+        return _Completed(stdout="3.9.0\n")
 
     collector = RemoteFileCollector(
         "codex",
@@ -121,7 +124,6 @@ def test_remote_file_collector_requires_password_for_sshpass(tmp_path, monkeypat
         source_host_hash="hash",
         patterns=["~/.codex/**/*.jsonl"],
         runner=_runner,
-        use_sshpass=True,
     )
 
     out = collector.collect(
@@ -130,13 +132,17 @@ def test_remote_file_collector_requires_password_for_sshpass(tmp_path, monkeypat
     )
 
     assert out.events == []
-    assert out.warnings == ["server_a/codex: SSH 密码模式需要提供密码"]
-    assert captured == []
+    assert out.warnings == ["server_a/codex: no usage events in selected time range"]
+    assert captured[0][0][0] == "ssh"
+    assert "BatchMode=yes" in captured[0][0]
 
 
-def test_remote_file_collector_reports_missing_sshpass_binary(tmp_path):
-    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
-        raise FileNotFoundError("sshpass")
+def test_remote_file_collector_reports_paramiko_runtime_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        remote_file,
+        "_run_remote_command_with_paramiko",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("paramiko failed")),
+    )
 
     collector = RemoteFileCollector(
         "codex",
@@ -144,8 +150,6 @@ def test_remote_file_collector_reports_missing_sshpass_binary(tmp_path):
         source_name="server_a",
         source_host_hash="hash",
         patterns=["~/.codex/**/*.jsonl"],
-        runner=_runner,
-        use_sshpass=True,
         ssh_password="secret",
     )
 
@@ -155,10 +159,10 @@ def test_remote_file_collector_reports_missing_sshpass_binary(tmp_path):
     )
 
     assert out.events == []
-    assert out.warnings == ["server_a/codex: sshpass 未找到"]
+    assert out.warnings == ["server_a/codex: paramiko failed"]
 
 
-def test_remote_file_collector_reports_missing_ssh_binary_in_sshpass_mode(tmp_path):
+def test_remote_file_collector_reports_missing_ssh_binary_in_key_mode(tmp_path):
     def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
         raise FileNotFoundError("ssh")
 
@@ -169,8 +173,6 @@ def test_remote_file_collector_reports_missing_ssh_binary_in_sshpass_mode(tmp_pa
         source_host_hash="hash",
         patterns=["~/.codex/**/*.jsonl"],
         runner=_runner,
-        use_sshpass=True,
-        ssh_password="secret",
     )
 
     out = collector.collect(
@@ -1872,34 +1874,6 @@ def test_remote_file_collector_reports_chunked_stdout_corruption(monkeypatch):
     assert any("remote stdout preview:" in line for line in printed)
 
 
-def test_sshpass_mode_does_not_include_batch_mode():
-    """use_sshpass=True should NOT include BatchMode=yes."""
-    calls = []
-
-    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
-        calls.append(cmd)
-        if "command -v python3" in _remote_command(cmd):
-            return _Completed(stdout="python3")
-        if input is not None:
-            return _Completed(stdout=json.dumps({"matches": 1}))
-        return _Completed()
-
-    collector = RemoteFileCollector(
-        "codex",
-        target=SshTarget(host="host", user="alice", port=22),
-        patterns=["~/.codex/**/*.jsonl"],
-        source_name="server_a",
-        source_host_hash="hash",
-        runner=_runner,
-        use_sshpass=True,
-        ssh_password="secret",
-    )
-    ok, _msg = collector.probe()
-    assert ok
-    assert "BatchMode=yes" not in calls[0]
-    assert calls[0][:2] == ["sshpass", "-e"]
-
-
 def test_ssh_auth_failure_raises_ssh_authentication_error():
     """Permission denied from SSH should raise SshAuthenticationError."""
     import pytest
@@ -1920,17 +1894,20 @@ def test_ssh_auth_failure_raises_ssh_authentication_error():
     assert exc_info.value.source_name == "server_a"
 
 
-def test_key_auth_fallback_uses_sshpass_without_batch_mode():
-    """use_sshpass=False + ssh_password provided should use sshpass and skip BatchMode."""
+def test_password_auth_uses_paramiko_instead_of_system_ssh(monkeypatch):
     calls = []
+    call_count = {"n": 0}
 
-    def _runner(cmd, check, capture_output, text, input=None, timeout=None, env=None):  # noqa: ANN001, ANN201
-        calls.append((cmd, env))
-        if "command -v python3" in _remote_command(cmd):
-            return _Completed(stdout="python3")
-        if input is not None:
-            return _Completed(stdout=json.dumps({"matches": 1}))
-        return _Completed()
+    def _fake_paramiko(**kwargs):  # noqa: ANN001, ANN201
+        call_count["n"] += 1
+        calls.append(kwargs["remote_args"])
+        if call_count["n"] == 1:
+            return _Completed(returncode=0, stdout="python3")
+        if call_count["n"] == 2:
+            return _Completed(returncode=0, stdout="3.9.0\n")
+        return _Completed(returncode=0, stdout=json.dumps({"matches": 1}))
+
+    monkeypatch.setattr(remote_file, "_run_remote_command_with_paramiko", _fake_paramiko)
 
     collector = RemoteFileCollector(
         "codex",
@@ -1938,17 +1915,11 @@ def test_key_auth_fallback_uses_sshpass_without_batch_mode():
         patterns=["~/.codex/**/*.jsonl"],
         source_name="server_a",
         source_host_hash="hash",
-        runner=_runner,
-        use_sshpass=False,
         ssh_password="fallback_password",
     )
     ok, _msg = collector.probe()
     assert ok
-    probe_cmd, probe_env = calls[0]
-    assert probe_cmd[:2] == ["sshpass", "-e"]
-    assert probe_env is not None
-    assert probe_env["SSHPASS"] == "fallback_password"
-    assert "BatchMode=yes" not in probe_cmd
+    assert calls
 
 
 def test_is_ssh_auth_failure_helper():

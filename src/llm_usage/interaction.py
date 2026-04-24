@@ -723,7 +723,7 @@ def _remote_config_from_draft(remote: RemoteDraft) -> RemoteHostConfig:
         codex_log_paths=list(remote.codex_log_paths),
         copilot_cli_log_paths=list(remote.copilot_cli_log_paths),
         copilot_vscode_session_paths=list(remote.copilot_vscode_session_paths),
-        use_sshpass=remote.use_sshpass,
+        cline_vscode_session_paths=list(remote.cline_vscode_session_paths),
         ssh_jump_host=remote.ssh_jump_host,
         ssh_jump_port=remote.ssh_jump_port,
     )
@@ -738,24 +738,11 @@ def _validate_config_remote(
     interactive_password_reader: Optional[Callable[[str], str]],
 ) -> bool:
     config = _remote_config_from_draft(remote)
-    ssh_password: Optional[str] = None
-    if config.use_sshpass:
-        ssh_password = _read_password(
-            f"SSH password for {config.alias}: ",
-            stdin=stdin,
-            stdout=stdout,
-            use_prompt_toolkit=False,
-            interactive_password_reader=interactive_password_reader,
-        )
-        if not ssh_password.strip():
-            stdout.write(f"remote {config.alias}: SSH password is required for validation\n")
-            return False
-    ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
+    ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=None)
     if ok:
         return True
     if (
-        not config.use_sshpass
-        and is_ssh_auth_failure_message(message)
+        is_ssh_auth_failure_message(message)
         and _remote_validator_accepts_password(remote_validator)
     ):
         ssh_password = _read_password(
@@ -768,8 +755,7 @@ def _validate_config_remote(
         if not ssh_password.strip():
             stdout.write(f"remote {config.alias}: SSH password is required after key auth failed\n")
             return False
-        retry_config = replace(config, use_sshpass=True)
-        ok, message = _invoke_remote_validator(remote_validator, retry_config, ssh_password=ssh_password)
+        ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
         if ok:
             return True
     stdout.write(f"remote {config.alias}: SSH check failed: {message}\n")
@@ -1323,7 +1309,6 @@ def _prompt_remote(existing_aliases: list[str], stdin: TextIO, stdout: TextIO) -
         stdout=stdout,
         use_prompt_toolkit=False,
     ).strip() or default_label
-    use_sshpass = _prompt_yes_no("Use sshpass? [y/N]: ", stdin=stdin, stdout=stdout)
     alias_seed = alias_raw or label or default_label
     alias = unique_alias(normalize_alias(alias_seed), existing_aliases)
     return RemoteDraft(
@@ -1337,7 +1322,6 @@ def _prompt_remote(existing_aliases: list[str], stdin: TextIO, stdout: TextIO) -
         copilot_cli_log_paths=[],
         copilot_vscode_session_paths=[],
         cline_vscode_session_paths=[],
-        use_sshpass=use_sshpass,
         ssh_jump_host=jump_host,
         ssh_jump_port=jump_port,
     )
@@ -1358,10 +1342,9 @@ def _edit_remote_detail(
         stdout.write(f"  3. SSH user = {remote.ssh_user}\n")
         stdout.write(f"  4. SSH port = {remote.ssh_port}\n")
         stdout.write(f"  5. Label = {remote.source_label}\n")
-        stdout.write(f"  6. Use sshpass = {'yes' if remote.use_sshpass else 'no'}\n")
-        stdout.write(f"  7. Jump host = {jump_display}\n")
+        stdout.write(f"  6. Jump host = {jump_display}\n")
         if remote.ssh_jump_host:
-            stdout.write(f"  8. Jump port = {remote.ssh_jump_port}\n")
+            stdout.write(f"  7. Jump port = {remote.ssh_jump_port}\n")
         stdout.write("  p. Edit paths\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
@@ -1395,11 +1378,6 @@ def _edit_remote_detail(
                 remote.source_label = next_label
                 changed = True
         elif answer == "6":
-            next_use_sshpass = _prompt_yes_no("Use sshpass? [y/N]: ", stdin=stdin, stdout=stdout)
-            if next_use_sshpass != remote.use_sshpass:
-                remote.use_sshpass = next_use_sshpass
-                changed = True
-        elif answer == "7":
             next_jump = _read_line("Jump host (leave empty to clear): ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
             if next_jump and ("@" in next_jump or any(c in next_jump for c in " \t\n\r")):
                 stdout.write("跳板机地址不能包含 @ 或空白字符。\n")
@@ -1408,7 +1386,7 @@ def _edit_remote_detail(
                 if next_jump and remote.ssh_jump_port == 2222:
                     pass  # keep default
                 changed = True
-        elif answer == "8" and remote.ssh_jump_host:
+        elif answer == "7" and remote.ssh_jump_host:
             next_jump_port = _read_port(stdin=stdin, stdout=stdout, prompt_text="Jump port: ", default=remote.ssh_jump_port)
             if next_jump_port != remote.ssh_jump_port:
                 remote.ssh_jump_port = next_jump_port
@@ -1696,18 +1674,6 @@ def _prompt_temporary_remote(
                         break
                     stdout.write("端口格式不正确，请重新输入。\n")
                 continue
-            if request.kind == "use_sshpass":
-                while True:
-                    answer = _read_line(
-                        request.message,
-                        stdin=stdin,
-                        stdout=stdout,
-                        use_prompt_toolkit=use_prompt_toolkit,
-                    )
-                    if runner.apply_input(answer):
-                        break
-                    stdout.write("请输入 y 或 n。\n")
-                continue
             if request.kind == "ssh_jump_host":
                 while True:
                     jump = _read_line(request.message, stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit)
@@ -1735,15 +1701,23 @@ def _prompt_temporary_remote(
         if not user:
             return None
         port = runner.state.ssh_port
-        use_sshpass = runner.state.use_sshpass
         jump_host = runner.state.ssh_jump_host
         jump_port = runner.state.ssh_jump_port
         ssh_password = None
-        if use_sshpass:
+        config = replace(
+            build_temporary_remote(host, user, port, ssh_jump_host=jump_host, ssh_jump_port=jump_port),
+            alias=runner.state.alias,
+        )
+        stdout.write("正在检查 SSH 连通性...\n")
+        ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
+        if (
+            not ok
+            and is_ssh_auth_failure_message(message)
+            and _remote_validator_accepts_password(remote_validator)
+        ):
+            stdout.write(f"SSH key 认证失败：{message}\n")
             ssh_password = password_getter() if password_getter is not None else None
-            if ssh_password is not None and not ssh_password.strip():
-                ssh_password = None
-            if ssh_password is None:
+            if ssh_password is None or not ssh_password.strip():
                 ssh_password = _read_password(
                     "SSH 密码：",
                     stdin=stdin,
@@ -1751,40 +1725,10 @@ def _prompt_temporary_remote(
                     use_prompt_toolkit=use_prompt_toolkit,
                     interactive_password_reader=interactive_password_reader,
                 )
-            if not ssh_password.strip():
-                stdout.write("密码不能为空。\n")
-                retry = _read_line(
-                    "输入 r 重新填写，其他任意输入取消：",
-                    stdin=stdin,
-                    stdout=stdout,
-                    use_prompt_toolkit=use_prompt_toolkit,
-                ).strip().lower()
-                if retry != "r":
-                    return None
-                continue
-            if password_setter is not None:
-                password_setter(ssh_password)
-        config = replace(build_temporary_remote(host, user, port, use_sshpass=use_sshpass,
-                                                ssh_jump_host=jump_host, ssh_jump_port=jump_port), alias=runner.state.alias)
-        stdout.write("正在检查 SSH 连通性...\n")
-        ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
-        if (
-            not ok
-            and ssh_password is None
-            and is_ssh_auth_failure_message(message)
-            and _remote_validator_accepts_password(remote_validator)
-        ):
-            stdout.write(f"SSH key 认证失败：{message}\n")
-            ssh_password = _read_password(
-                "SSH 密码：",
-                stdin=stdin,
-                stdout=stdout,
-                use_prompt_toolkit=use_prompt_toolkit,
-                interactive_password_reader=interactive_password_reader,
-            )
             if ssh_password.strip():
-                retry_config = replace(config, use_sshpass=True)
-                ok, message = _invoke_remote_validator(remote_validator, retry_config, ssh_password=ssh_password)
+                if password_setter is not None:
+                    password_setter(ssh_password)
+                ok, message = _invoke_remote_validator(remote_validator, config, ssh_password=ssh_password)
             else:
                 ssh_password = None
         if ok:
@@ -1803,16 +1747,6 @@ def _prompt_temporary_remote(
         ).strip().lower()
         if retry != "r":
             return None
-
-
-def _prompt_use_sshpass(stdin: TextIO, stdout: TextIO, use_prompt_toolkit: bool) -> bool:
-    answer = _read_line(
-        "是否使用 sshpass？[y/N]：",
-        stdin=stdin,
-        stdout=stdout,
-        use_prompt_toolkit=use_prompt_toolkit,
-    ).strip().lower()
-    return answer in {"y", "yes", "是", "确认"}
 def _read_password(
     prompt_text: str,
     stdin: TextIO,

@@ -86,7 +86,7 @@ It contains persistent configuration only:
 - Cursor
   - current cursor-related persistent fields
 - Remotes
-  - remote hosts, labels, paths, sshpass usage flags
+  - remote hosts, labels, paths, and session-only SSH password retry prompts after key auth failure
 
 Settings behavior:
 

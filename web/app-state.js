@@ -226,9 +226,6 @@ function titleForInputKind(kind) {
   if (kind === "ssh_port") {
     return "需要 SSH 端口";
   }
-  if (kind === "use_sshpass") {
-    return "是否使用 sshpass";
-  }
   return "需要输入";
 }
 
