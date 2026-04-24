@@ -659,6 +659,36 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _probe_ssh_passwords(
+    remote_configs: list[RemoteHostConfig],
+    *,
+    existing_passwords: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """Probe SSH connectivity for all remotes upfront and collect passwords for those that need them.
+
+    Returns a dict mapping remote alias -> password for remotes where key auth failed
+    and the user provided a password interactively.
+    """
+    import getpass
+
+    runtime_passwords: dict[str, str] = dict(existing_passwords or {})
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    for config in remote_configs:
+        if config.alias in runtime_passwords:
+            continue
+        ok, message = probe_remote_ssh(config)
+        if ok:
+            continue
+        if is_ssh_auth_failure_message(message) and is_tty:
+            try:
+                password = getpass.getpass(f"SSH password for {config.alias}: ")
+            except (EOFError, KeyboardInterrupt):
+                password = ""
+            if password.strip():
+                runtime_passwords[config.alias] = password
+    return runtime_passwords
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     has_target_flags = bool(getattr(args, "feishu_target", None)) or getattr(args, "all_feishu_targets", False)
     if has_target_flags and not getattr(args, "feishu", False):
@@ -691,15 +721,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"collector {collector.name}[{collector.source_name}]: {'OK' if ok else 'WARN'} - {msg}")
 
     remote_configs = parse_remote_configs_from_env()
-    runtime_passwords: dict[str, str] = {}
-    for config in remote_configs:
-        if config.ssh_jump_host:
-            ok, message = probe_remote_ssh(config)
-            if not ok and is_ssh_auth_failure_message(message):
-                import getpass
-                password = getpass.getpass(f"SSH password for {config.alias}: ")
-                if password.strip():
-                    runtime_passwords[config.alias] = password
+    runtime_passwords = _probe_ssh_passwords(remote_configs)
 
     for collector in build_remote_collectors(remote_configs, username=username, salt=salt,
                                              runtime_passwords=runtime_passwords):
@@ -1008,6 +1030,8 @@ def _build_aggregates(args: argparse.Namespace) -> tuple[list, list[str], dict[s
     selected_aliases, temporary_remotes, runtime_passwords = _resolve_remote_selection(args, configured_remotes)
     selected_configs = [config for config in configured_remotes if config.alias in selected_aliases]
     selected_configs.extend(temporary_remotes)
+
+    runtime_passwords = _probe_ssh_passwords(selected_configs, existing_passwords=runtime_passwords)
 
     skip_tools = set(getattr(args, "skip", None) or [])
     collectors = _collectors(local_source_host_hash, skip_tools=skip_tools)

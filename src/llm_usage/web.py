@@ -769,6 +769,19 @@ class WebService:
             self._runtime_credentials[alias] = value
 
     def _missing_runtime_password_request(self, selected_configs: list[Any]) -> Optional[dict[str, Any]]:
+        for config in selected_configs:
+            if config.alias in self._runtime_credentials:
+                continue
+            ok, message = probe_remote_ssh(config)
+            if ok:
+                continue
+            if is_ssh_auth_failure_message(message):
+                return {
+                    "kind": "ssh_password",
+                    "remote_alias": config.alias,
+                    "message": f"SSH key 认证失败（{config.alias}）。请提供 SSH 密码重试，密码仅缓存在本次会话中。",
+                    "cache_scope": "session",
+                }
         return None
 
     def _selected_remote_configs(self, payload: dict[str, Any]) -> list[Any]:
