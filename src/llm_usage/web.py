@@ -866,6 +866,46 @@ class WebService:
         )
         return {"row_count": len(rows), "warnings": warnings, "csv_path": str(csv_path), "exit_code": exit_code}
 
+    def _collect_all_passwords_then_run(
+        self,
+        job_type: str,
+        payload: dict[str, Any],
+        selected_configs: list[Any],
+        operation: Callable[[], dict[str, Any]],
+        *,
+        write_operation: bool = False,
+    ) -> dict[str, Any]:
+        """Upfront-collect all missing SSH passwords, then run the operation.
+
+        If a remote needs a password, pause the job with a ``_JobNeedsInput``
+        request.  When the frontend submits the password, re-check for the
+        *next* remote that still needs one.  Only after every remote is
+        satisfied does the actual ``operation`` execute.
+        """
+
+        def _resume_or_run(value: str, alias: str) -> dict[str, Any]:
+            self._remember_runtime_password(alias, value)
+            next_request = self._missing_runtime_password_request(selected_configs)
+            if next_request:
+                next_alias = str(next_request["remote_alias"])
+                raise _JobNeedsInput(
+                    next_request,
+                    lambda v, a=next_alias: _resume_or_run(v, a),
+                )
+            return operation()
+
+        input_request = self._missing_runtime_password_request(selected_configs)
+        if input_request:
+            alias = str(input_request["remote_alias"])
+            return self.jobs.create_needs_input(
+                job_type,
+                input_request,
+                lambda v, a=alias: _resume_or_run(v, a),
+                write_operation=write_operation,
+            )
+        handler = self._wrap_with_ssh_auth_fallback(operation, selected_configs)
+        return self.jobs.start(job_type, handler, write_operation=write_operation)
+
     def _collect_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
         _load_runtime_env()
         _overlay_runtime_env()
@@ -888,19 +928,11 @@ class WebService:
                 write_operation=True,
             )
         selected_configs = self._selected_remote_configs(payload)
-        input_request = self._missing_runtime_password_request(selected_configs)
-        if input_request:
-            alias = str(input_request["remote_alias"])
-
-            def resume_handler(value: str) -> dict[str, Any]:
-                self._remember_runtime_password(alias, value)
-                return self._run_collect_operation(payload)
-
-            return self.jobs.create_needs_input("collect", input_request, resume_handler, write_operation=True)
-        handler = self._wrap_with_ssh_auth_fallback(
-            lambda: self._run_collect_operation(payload), selected_configs,
+        return self._collect_all_passwords_then_run(
+            "collect", payload, selected_configs,
+            lambda: self._run_collect_operation(payload),
+            write_operation=True,
         )
-        return self.jobs.start("collect", handler, write_operation=True)
 
     def _sync_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
         preflight_code = _sync_execution_preflight(
@@ -921,35 +953,18 @@ class WebService:
             )
 
         selected_configs = self._selected_remote_configs(payload)
-        input_request = self._missing_runtime_password_request(selected_configs)
-        if input_request:
-            alias = str(input_request["remote_alias"])
-
-            def resume_handler(value: str) -> dict[str, Any]:
-                self._remember_runtime_password(alias, value)
-                return self._run_sync_operation(payload)
-
-            return self.jobs.create_needs_input("sync", input_request, resume_handler, write_operation=True)
-        handler = self._wrap_with_ssh_auth_fallback(
-            lambda: self._run_sync_operation(payload), selected_configs,
+        return self._collect_all_passwords_then_run(
+            "sync", payload, selected_configs,
+            lambda: self._run_sync_operation(payload),
+            write_operation=True,
         )
-        return self.jobs.start("sync", handler, write_operation=True)
 
     def _sync_preview_or_pause(self, payload: dict[str, Any]) -> dict[str, Any]:
         selected_configs = self._selected_remote_configs(payload)
-        input_request = self._missing_runtime_password_request(selected_configs)
-        if input_request:
-            alias = str(input_request["remote_alias"])
-
-            def resume_handler(value: str) -> dict[str, Any]:
-                self._remember_runtime_password(alias, value)
-                return self._run_sync_preview_operation(payload)
-
-            return self.jobs.create_needs_input("sync_preview", input_request, resume_handler)
-        handler = self._wrap_with_ssh_auth_fallback(
-            lambda: self._run_sync_preview_operation(payload), selected_configs,
+        return self._collect_all_passwords_then_run(
+            "sync_preview", payload, selected_configs,
+            lambda: self._run_sync_preview_operation(payload),
         )
-        return self.jobs.start("sync_preview", handler)
 
     def _start_remote_setup_flow(self) -> dict[str, Any]:
         _load_runtime_env()

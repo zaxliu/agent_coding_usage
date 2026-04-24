@@ -973,6 +973,89 @@ def test_web_collect_fallback_on_ssh_auth_failure(tmp_path: Path, monkeypatch):
     assert captured["runtime_passwords"] == {"SERVER_A": "my-password"}
 
 
+def test_web_collect_upfront_probes_multiple_remotes(tmp_path: Path, monkeypatch):
+    """When two remotes both need passwords, the job should pause for each one sequentially."""
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "ORG_USERNAME=san.zhang",
+                "HASH_SALT=test-salt",
+                "TIMEZONE=Asia/Shanghai",
+                "REMOTE_HOSTS=server_a,server_b",
+                "REMOTE_SERVER_A_SSH_HOST=host-a",
+                "REMOTE_SERVER_A_SSH_USER=alice",
+                "REMOTE_SERVER_B_SSH_HOST=host-b",
+                "REMOTE_SERVER_B_SSH_USER=bob",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_USAGE_ENV_FILE", str(env_path))
+    monkeypatch.setenv("LLM_USAGE_DATA_DIR", str(tmp_path))
+
+    # Make probe_remote_ssh fail for both remotes with auth errors
+    def fake_probe(config, timeout_sec=10, *, ssh_password=None):
+        return (False, "Permission denied (publickey).")
+
+    monkeypatch.setattr(web, "probe_remote_ssh", fake_probe)
+
+    captured: dict[str, object] = {}
+
+    def fake_build(payload, runtime_passwords=None):
+        captured["runtime_passwords"] = dict(runtime_passwords or {})
+        return [], [], {}
+
+    monkeypatch.setattr(web, "_build_aggregates_for_web", fake_build)
+
+    service = web.WebService()
+    started = service.start_collect({})
+    job_id = started["id"]
+
+    # First pause: should ask for SERVER_A password
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] in {"needs_input", "failed"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
+    assert current["input_request"]["remote_alias"] == "SERVER_A"
+
+    # Submit password for SERVER_A
+    result = service.jobs.submit_input(job_id, "pass-a")
+
+    # Second pause: should ask for SERVER_B password
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] in {"needs_input", "failed", "succeeded"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "needs_input"
+    assert current["input_request"]["remote_alias"] == "SERVER_B"
+
+    # Submit password for SERVER_B
+    result = service.jobs.submit_input(job_id, "pass-b")
+
+    # Now it should complete
+    for _ in range(100):
+        current = service.jobs.get_job(job_id)
+        if current and current["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.01)
+
+    current = service.jobs.get_job(job_id)
+    assert current is not None
+    assert current["status"] == "succeeded"
+    assert captured["runtime_passwords"] == {"SERVER_A": "pass-a", "SERVER_B": "pass-b"}
+
+
 def test_web_collect_propagates_remote_auth_failure_to_frontend_prompt(tmp_path: Path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text(
