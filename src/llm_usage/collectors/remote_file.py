@@ -7,6 +7,7 @@ import json
 import os
 import re
 import selectors
+import socket
 import subprocess
 import tempfile
 import time
@@ -967,7 +968,6 @@ class RemoteFileCollector(BaseCollector):
         runner=None,
         popen_factory=None,
         jobs: Optional[list[RemoteCollectJob]] = None,
-        use_sshpass: bool = False,
         ssh_password: Optional[str] = None,
     ) -> None:
         self.name = name
@@ -983,7 +983,6 @@ class RemoteFileCollector(BaseCollector):
         self.timeout_sec = max(10, timeout_sec)
         self._runner = runner or subprocess.run
         self._popen_factory = popen_factory or (subprocess.Popen if runner is None else None)
-        self.use_sshpass = use_sshpass
         self.ssh_password = ssh_password
         self._use_connection_sharing = True
         self._logged_connection_sharing_fallback = False
@@ -1335,6 +1334,21 @@ class RemoteFileCollector(BaseCollector):
         input_text: str,
         allow_retry: bool,
     ) -> tuple[Optional[subprocess.CompletedProcess[str]], Optional[str]]:
+        if self.ssh_password and self.ssh_password.strip():
+            try:
+                completed = self._run_ssh_with_optional_fallback(args, input_text=input_text, timeout=self.timeout_sec)
+            except ValueError as exc:
+                return None, str(exc)
+            if completed is None:
+                return None, "remote command timed out"
+            if completed.returncode != 0:
+                if self._should_fallback_to_uploaded_script(completed.stdout, completed.stderr):
+                    return completed, None
+                return None, completed.stderr.strip() or completed.stdout.strip() or "remote command failed"
+            if completed.stderr.strip():
+                for line in completed.stderr.strip().splitlines():
+                    self._log_progress(f"remote stderr: {line}")
+            return completed, None
         try:
             command, env = self._ssh_command_and_env(args)
         except ValueError as exc:
@@ -1511,8 +1525,6 @@ class RemoteFileCollector(BaseCollector):
             self.target.port,
             remote_args,
             use_connection_sharing=self._use_connection_sharing,
-            use_sshpass=self.use_sshpass,
-            ssh_password=self.ssh_password,
             jump_host=self.target.jump_host,
             jump_port=self.target.jump_port,
         )
@@ -1540,6 +1552,24 @@ class RemoteFileCollector(BaseCollector):
         input_text: Optional[str] = None,
         timeout: int,
     ):
+        if self.ssh_password and self.ssh_password.strip():
+            try:
+                result = _run_remote_command_with_paramiko(
+                    target=self.target,
+                    remote_args=remote_args,
+                    ssh_password=self.ssh_password,
+                    timeout_sec=timeout,
+                    input_text=input_text,
+                )
+            except TimeoutError:
+                return None
+            except Exception as exc:
+                if _is_paramiko_auth_failure(exc):
+                    raise SshAuthenticationError(self.source_name, str(exc).strip())
+                raise ValueError(str(exc))
+            if result.returncode != 0 and _is_ssh_auth_failure(result.stderr or ""):
+                raise SshAuthenticationError(self.source_name, (result.stderr or "").strip())
+            return result
         command, env = self._ssh_command_and_env(remote_args)
         try:
             run_kwargs = dict(
@@ -1559,7 +1589,7 @@ class RemoteFileCollector(BaseCollector):
                 raise SshAuthenticationError(self.source_name, (result.stderr or "").strip())
             return result
         except FileNotFoundError as exc:
-            raise ValueError(_missing_ssh_binary_message(exc, self.use_sshpass))
+            raise ValueError(_missing_ssh_binary_message(exc))
         except subprocess.TimeoutExpired:
             if self._disable_connection_sharing("ssh timed out while using connection sharing"):
                 try:
@@ -1581,7 +1611,7 @@ class RemoteFileCollector(BaseCollector):
                         raise SshAuthenticationError(self.source_name, (retry_result.stderr or "").strip())
                     return retry_result
                 except FileNotFoundError as exc:
-                    raise ValueError(_missing_ssh_binary_message(exc, self.use_sshpass))
+                    raise ValueError(_missing_ssh_binary_message(exc))
                 except subprocess.TimeoutExpired:
                     return None
             return None
@@ -1679,36 +1709,14 @@ def _ssh_command_and_env(
     remote_args: list[str],
     *,
     use_connection_sharing: bool = True,
-    use_sshpass: bool = False,
-    ssh_password: Optional[str] = None,
     jump_host: str = "",
     jump_port: int = 2222,
 ) -> tuple[list[str], Optional[dict[str, str]]]:
     remote_command = " ".join(_shell_quote(arg) for arg in remote_args)
-
-    # Determine effective password: explicit ssh_password, or SSHPASS env for sshpass mode
-    if use_sshpass:
-        effective_password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
-    else:
-        effective_password = ssh_password or ""
-
-    has_password = bool(effective_password and effective_password.strip())
-
-    if use_sshpass and not has_password:
-        raise ValueError("SSH 密码模式需要提供密码")
-
-    # BatchMode=yes when no password available — prevents SSH from prompting on /dev/tty
-    batch_mode = not has_password
     command = _ssh_base_command(
-        destination, port, use_connection_sharing=use_connection_sharing, batch_mode=batch_mode,
+        destination, port, use_connection_sharing=use_connection_sharing, batch_mode=True,
         jump_host=jump_host, jump_port=jump_port,
     ) + [remote_command]
-
-    if has_password:
-        env = os.environ.copy()
-        env["SSHPASS"] = effective_password
-        return ["sshpass", "-e"] + command, env
-
     return command, None
 
 
@@ -1732,21 +1740,116 @@ def _is_ssh_auth_failure(stderr_text: str) -> bool:
     return "permission denied" in stderr_text.lower()
 
 
-def _missing_ssh_binary_message(exc: FileNotFoundError, use_sshpass: bool) -> str:
+def _missing_ssh_binary_message(exc: FileNotFoundError) -> str:
     missing = (getattr(exc, "filename", None) or "").strip()
     if not missing:
         text = str(exc)
-        if "sshpass" in text:
-            missing = "sshpass"
-        elif "'ssh'" in text or text.strip() == "ssh":
+        if "'ssh'" in text or text.strip() == "ssh":
             missing = "ssh"
-    if missing == "sshpass":
-        return "sshpass 未找到"
     if missing == "ssh":
         return "SSH 命令未找到"
-    if use_sshpass:
-        return "SSH 或 sshpass 命令未找到"
     return "SSH 命令未找到"
+
+
+def _is_paramiko_auth_failure(exc: BaseException) -> bool:
+    return type(exc).__name__ in {"AuthenticationException", "BadAuthenticationType", "PasswordRequiredException"}
+
+
+def _paramiko_client():
+    import paramiko
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    return client
+
+
+def _connect_paramiko_client(
+    target: SshTarget,
+    ssh_password: str,
+    timeout_sec: int,
+):
+    timeout = max(3, timeout_sec)
+    try:
+        client = _paramiko_client()
+        if target.jump_host:
+            # Go SSH 堡垒机模式: 直连堡垒机，用复合用户名路由到目标机。
+            # 堡垒机禁止 direct-tcpip 端口转发，所以不能用两步连接。
+            compound_user = f"{target.user}@{target.user}@{target.host}"
+            client.connect(
+                hostname=target.jump_host,
+                port=target.jump_port,
+                username=compound_user,
+                password=ssh_password,
+                allow_agent=False,
+                look_for_keys=False,
+                timeout=timeout,
+                auth_timeout=timeout,
+                banner_timeout=timeout,
+            )
+        else:
+            client.connect(
+                hostname=target.host,
+                port=target.port,
+                username=target.user,
+                password=ssh_password,
+                allow_agent=False,
+                look_for_keys=False,
+                timeout=timeout,
+                auth_timeout=timeout,
+                banner_timeout=timeout,
+            )
+        return client, None
+    except Exception:
+        client.close()
+        raise
+
+
+def _run_remote_command_with_paramiko(
+    *,
+    target: SshTarget,
+    remote_args: list[str],
+    ssh_password: str,
+    timeout_sec: int,
+    input_text: Optional[str] = None,
+) -> subprocess.CompletedProcess[str]:
+    if not ssh_password.strip():
+        raise ValueError("SSH 密码不能为空")
+
+    import paramiko
+
+    command = " ".join(_shell_quote(arg) for arg in remote_args)
+    client = None
+    jump_client = None
+    try:
+        client, jump_client = _connect_paramiko_client(target, ssh_password, timeout_sec)
+        stdin, stdout, stderr = client.exec_command(command, timeout=max(3, timeout_sec))
+        channel = stdout.channel
+        channel.settimeout(max(3, timeout_sec))
+        if input_text is not None:
+            stdin.write(input_text)
+            stdin.flush()
+        try:
+            channel.shutdown_write()
+        except Exception:
+            stdin.close()
+        stdout_text = stdout.read().decode("utf-8", errors="replace")
+        stderr_text = stderr.read().decode("utf-8", errors="replace")
+        return subprocess.CompletedProcess(remote_args, channel.recv_exit_status(), stdout_text, stderr_text)
+    except socket.timeout as exc:
+        raise TimeoutError("remote command timed out") from exc
+    except paramiko.AuthenticationException as exc:
+        raise SshAuthenticationError("", str(exc)) from exc
+    except paramiko.SSHException as exc:
+        raise RuntimeError(str(exc) or "SSH 连接失败") from exc
+    except OSError as exc:
+        raise RuntimeError(str(exc) or "SSH 连接失败") from exc
+    finally:
+        for conn in (client, jump_client):
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 def _normalize_iso_datetime_text(text: str) -> str:

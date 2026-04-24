@@ -84,7 +84,7 @@ def test_select_remotes_cli_supports_temporary_remote():
         configs,
         ["SERVER_A"],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
@@ -114,7 +114,7 @@ def test_select_remotes_cli_supports_temporary_remote_without_configured_hosts()
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config: (True, "ok"),
     )
@@ -134,13 +134,11 @@ def test_select_remotes_cli_drives_remote_prompt_runner_in_terminal_order(monkey
                 type("Req", (), {"kind": "ssh_host", "message": "SSH 主机："})(),
                 type("Req", (), {"kind": "ssh_user", "message": "SSH 用户："})(),
                 type("Req", (), {"kind": "ssh_port", "message": "SSH 端口 [22]："})(),
-                type("Req", (), {"kind": "use_sshpass", "message": "是否使用 sshpass？[y/N]："})(),
             ]
             self.state = type(
                 "State",
                 (),
-                {"alias": "", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "use_sshpass": False,
-                 "ssh_jump_host": "", "ssh_jump_port": 2222},
+                {"alias": "", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "ssh_jump_host": "", "ssh_jump_port": 2222},
             )()
             self._index = 0
 
@@ -160,8 +158,6 @@ def test_select_remotes_cli_drives_remote_prompt_runner_in_terminal_order(monkey
                 self.state.ssh_user = "bob"
             if len(applied_values) == 3:
                 self.state.ssh_port = 22
-            if len(applied_values) == 4:
-                self.state.use_sshpass = False
             return True
 
     def _fake_read_line(prompt_text, **_kwargs):  # noqa: ANN001
@@ -171,7 +167,6 @@ def test_select_remotes_cli_drives_remote_prompt_runner_in_terminal_order(monkey
             "SSH 主机：": "host-b",
             "SSH 用户：": "bob",
             "SSH 端口 [22]：": "22",
-            "是否使用 sshpass？[y/N]：": "n",
         }
         return answers[prompt_text]
 
@@ -185,9 +180,8 @@ def test_select_remotes_cli_drives_remote_prompt_runner_in_terminal_order(monkey
         "SSH 主机：",
         "SSH 用户：",
         "SSH 端口 [22]：",
-        "是否使用 sshpass？[y/N]：",
     ]
-    assert applied_values == ["host-b", "bob", "22", "n"]
+    assert applied_values == ["host-b", "bob", "22"]
     assert result.mode_used == "cli"
     assert len(result.temporary_remotes) == 1
     temp = result.temporary_remotes[0]
@@ -195,7 +189,6 @@ def test_select_remotes_cli_drives_remote_prompt_runner_in_terminal_order(monkey
     assert temp.ssh_host == "host-b"
     assert temp.ssh_user == "bob"
     assert temp.ssh_port == 22
-    assert temp.use_sshpass is False
     assert result.runtime_passwords == {}
 
 
@@ -214,23 +207,6 @@ def test_select_remotes_cli_preserves_runner_alias_when_temporary_alias_collides
     assert result.temporary_remotes[0].alias == "BOB_HOST_B_2"
 
 
-def test_select_remotes_cli_reprompts_invalid_use_sshpass_input():
-    stdout = _TTYStringIO()
-    result = select_remotes(
-        [],
-        [],
-        ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n22\n\nmaybe\nn\n"),
-        stdout=stdout,
-        remote_validator=lambda config: (True, "ok"),
-    )
-
-    assert len(result.temporary_remotes) == 1
-    assert result.temporary_remotes[0].use_sshpass is False
-    assert stdout.getvalue().count("是否使用 sshpass？[y/N]：") == 2
-    assert "请输入 y 或 n。\n" in stdout.getvalue()
-
-
 def test_select_remotes_cli_supports_validator_with_positional_password_parameter():
     validator_calls = []
 
@@ -242,20 +218,20 @@ def test_select_remotes_cli_supports_validator_with_positional_password_paramete
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         interactive_password_reader=lambda prompt_text: "hunter2",
     )
 
     assert len(result.temporary_remotes) == 1
-    assert validator_calls == [(result.temporary_remotes[0].alias, "hunter2")]
+    assert validator_calls == [(result.temporary_remotes[0].alias, None)]
 
 
-def test_select_remotes_cli_supports_sshpass_password_capture():
+def test_select_remotes_cli_reuses_cached_password_after_key_auth_failure():
     password_store = {"value": None}
     password_prompts: list[str] = []
-    validator_calls: list[tuple[str, Optional[str], bool]] = []
+    validator_calls: list[tuple[str, Optional[str]]] = []
 
     def _password_getter():
         return password_store["value"]
@@ -268,14 +244,16 @@ def test_select_remotes_cli_supports_sshpass_password_capture():
         return "hunter2"
 
     def _validator(config, ssh_password=None):  # noqa: ANN001
-        validator_calls.append((config.alias, ssh_password, config.use_sshpass))
+        validator_calls.append((config.alias, ssh_password))
+        if ssh_password is None:
+            return False, "Permission denied (publickey)."
         return True, "ok"
 
     first = select_remotes(
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         password_getter=_password_getter,
@@ -284,11 +262,10 @@ def test_select_remotes_cli_supports_sshpass_password_capture():
     )
 
     assert len(first.temporary_remotes) == 1
-    assert first.temporary_remotes[0].use_sshpass is True
     assert first.runtime_passwords == {first.temporary_remotes[0].alias: "hunter2"}
     assert password_store["value"] == "hunter2"
     assert password_prompts == ["SSH 密码："]
-    assert validator_calls == [(first.temporary_remotes[0].alias, "hunter2", True)]
+    assert validator_calls == [(first.temporary_remotes[0].alias, None), (first.temporary_remotes[0].alias, "hunter2")]
 
     password_prompts.clear()
     validator_calls.clear()
@@ -297,7 +274,7 @@ def test_select_remotes_cli_supports_sshpass_password_capture():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-c\ncarol\n2222\n\ny\n"),
+        stdin=_TTYStringIO("+\nhost-c\ncarol\n2222\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         password_getter=_password_getter,
@@ -306,9 +283,8 @@ def test_select_remotes_cli_supports_sshpass_password_capture():
     )
 
     assert len(second.temporary_remotes) == 1
-    assert second.temporary_remotes[0].use_sshpass is True
     assert password_prompts == []
-    assert validator_calls == [(second.temporary_remotes[0].alias, "hunter2", True)]
+    assert validator_calls == [(second.temporary_remotes[0].alias, None), (second.temporary_remotes[0].alias, "hunter2")]
 
 
 def test_select_remotes_cli_uses_getpass_when_prompt_toolkit_is_unavailable(monkeypatch):
@@ -327,22 +303,23 @@ def test_select_remotes_cli_uses_getpass_when_prompt_toolkit_is_unavailable(monk
     validator_calls = []
 
     def _validator(config, ssh_password=None):  # noqa: ANN001
-        validator_calls.append((config.use_sshpass, ssh_password))
+        validator_calls.append(ssh_password)
+        if ssh_password is None:
+            return False, "Permission denied (publickey)."
         return True, "ok"
 
     result = interaction.select_remotes(
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
     )
 
     assert len(result.temporary_remotes) == 1
-    assert result.temporary_remotes[0].use_sshpass is True
     assert getpass_calls == ["SSH 密码："]
-    assert validator_calls == [(True, "hidden-secret")]
+    assert validator_calls == [None, "hidden-secret"]
 
 
 def test_confirm_save_temporary_remote_cli_yes():
@@ -361,14 +338,14 @@ def test_select_remotes_cli_retries_when_ssh_probe_fails():
     def _validator(config):  # noqa: ANN001, ANN201
         calls["count"] += 1
         if calls["count"] == 1:
-            return False, "Permission denied"
+            return False, "Connection timed out"
         return True, "ok"
 
     result = select_remotes(
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\nr\nhost-c\nroot\n22\n\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nr\nhost-c\nroot\n22\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
     )
@@ -376,7 +353,7 @@ def test_select_remotes_cli_retries_when_ssh_probe_fails():
     assert result.temporary_remotes[0].ssh_host == "host-c"
 
 
-def test_select_remotes_cli_reprompts_for_new_password_after_failed_sshpass_probe():
+def test_select_remotes_cli_reprompts_for_new_password_after_failed_password_retry():
     password_store = {"value": None}
     password_prompts: list[str] = []
     validator_calls: list[tuple[str, Optional[str]]] = []
@@ -393,7 +370,9 @@ def test_select_remotes_cli_reprompts_for_new_password_after_failed_sshpass_prob
 
     def _validator(config, ssh_password=None):  # noqa: ANN001
         validator_calls.append((config.ssh_host, ssh_password))
-        if len(validator_calls) == 1:
+        if ssh_password is None:
+            return False, "Permission denied"
+        if config.ssh_host == "host-b":
             return False, "Permission denied"
         return True, "ok"
 
@@ -401,7 +380,7 @@ def test_select_remotes_cli_reprompts_for_new_password_after_failed_sshpass_prob
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\nr\nhost-c\nroot\n22\n\ny\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nr\nhost-c\nroot\n22\n\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
         password_getter=_password_getter,
@@ -412,7 +391,7 @@ def test_select_remotes_cli_reprompts_for_new_password_after_failed_sshpass_prob
     assert len(result.temporary_remotes) == 1
     assert result.temporary_remotes[0].ssh_host == "host-c"
     assert password_prompts == ["SSH 密码：", "SSH 密码："]
-    assert validator_calls == [("host-b", "hunter2"), ("host-c", "new-secret")]
+    assert validator_calls == [("host-b", None), ("host-b", "hunter2"), ("host-c", None), ("host-c", "new-secret")]
     assert password_store["value"] == "new-secret"
     assert result.runtime_passwords == {result.temporary_remotes[0].alias: "new-secret"}
 
@@ -471,7 +450,7 @@ def test_select_remotes_cli_clears_cached_password_after_failed_probe():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
         stdout=_TTYStringIO(),
         remote_validator=lambda config, ssh_password=None: (False, "Permission denied"),
         password_setter=_password_setter,
@@ -493,9 +472,11 @@ def test_select_remotes_cli_cleans_up_password_after_blank_password_cancel():
         [],
         [],
         ui_mode="cli",
-        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\ny\nn\n"),
+        stdin=_TTYStringIO("+\nhost-b\nbob\n2200\n\nn\n"),
         stdout=_TTYStringIO(),
-        remote_validator=lambda config, ssh_password=None: (True, "ok"),
+        remote_validator=lambda config, ssh_password=None: (False, "Permission denied (publickey).")
+        if ssh_password is None
+        else (True, "ok"),
         password_setter=_password_setter,
         interactive_password_reader=lambda prompt_text: "",
     )
@@ -506,10 +487,10 @@ def test_select_remotes_cli_cleans_up_password_after_blank_password_cancel():
 
 
 def test_select_remotes_cli_prompts_for_password_when_key_probe_auth_fails():
-    validator_calls: list[tuple[bool, Optional[str]]] = []
+    validator_calls: list[Optional[str]] = []
 
     def _validator(config, ssh_password=None):  # noqa: ANN001
-        validator_calls.append((config.use_sshpass, ssh_password))
+        validator_calls.append(ssh_password)
         if ssh_password is None:
             return False, "Permission denied (publickey)."
         return True, "ok"
@@ -526,9 +507,8 @@ def test_select_remotes_cli_prompts_for_password_when_key_probe_auth_fails():
 
     assert len(result.temporary_remotes) == 1
     remote = result.temporary_remotes[0]
-    assert remote.use_sshpass is False
     assert result.runtime_passwords == {remote.alias: "hunter2"}
-    assert validator_calls == [(False, None), (True, "hunter2")]
+    assert validator_calls == [None, "hunter2"]
 
 
 def test_run_config_editor_discards_unsaved_changes(tmp_path: Path):
@@ -581,32 +561,31 @@ def test_run_config_editor_add_validates_only_new_remote_and_saves_immediately(t
         "REMOTE_HOSTS=SERVER_A\n"
         "REMOTE_SERVER_A_SSH_HOST=host-a\n"
         "REMOTE_SERVER_A_SSH_USER=alice\n"
-        "REMOTE_SERVER_A_SSH_PORT=22\n"
-        "REMOTE_SERVER_A_USE_SSHPASS=0\n",
+        "REMOTE_SERVER_A_SSH_PORT=22\n",
         encoding="utf-8",
     )
-    validator_calls: list[tuple[str, bool, Optional[str]]] = []
+    validator_calls: list[tuple[str, Optional[str]]] = []
 
     def _validator(config, ssh_password=None):  # noqa: ANN001
-        validator_calls.append((config.alias, config.use_sshpass, ssh_password))
+        validator_calls.append((config.alias, ssh_password))
         if config.alias != "PROD_A":
             return False, f"unexpected validation for {config.alias}"
         return True, "ok"
 
     exit_code = run_config_editor(
         env_path=env_path,
-        stdin=_TTYStringIO("4\na\nprod-a\nhost-b\nbob\n2200\n\n\nn\nb\nq\n"),
+        stdin=_TTYStringIO("4\na\nprod-a\nhost-b\nbob\n2200\n\n\nb\nq\n"),
         stdout=_TTYStringIO(),
         remote_validator=_validator,
     )
 
     assert exit_code == 0
-    assert validator_calls == [("PROD_A", False, None)]
+    assert validator_calls == [("PROD_A", None)]
     text = env_path.read_text(encoding="utf-8")
     assert "REMOTE_HOSTS=SERVER_A,PROD_A" in text
     assert "REMOTE_PROD_A_SSH_HOST=host-b" in text
     assert "REMOTE_PROD_A_SSH_PORT=2200" in text
-    assert "REMOTE_SERVER_A_USE_SSHPASS=0" in text
+    assert "USE_SSHPASS" not in text
 
 
 def test_run_config_editor_saves_draft_changes(tmp_path: Path):
@@ -894,12 +873,11 @@ def _request_kinds(runner: RemotePromptRunner, values: list[str]) -> list[str]:
 
 def test_cli_and_web_share_same_remote_input_sequence():
     runner = RemotePromptRunner(existing_aliases=[])
-    kinds = _request_kinds(runner, ["host-a", "alice", "22", "", "n"])
+    kinds = _request_kinds(runner, ["host-a", "alice", "22", ""])
 
-    assert kinds == ["ssh_host", "ssh_user", "ssh_port", "ssh_jump_host", "use_sshpass"]
+    assert kinds == ["ssh_host", "ssh_user", "ssh_port", "ssh_jump_host"]
     assert runner.next_request() is None
     assert runner.state.ssh_host == "host-a"
     assert runner.state.ssh_user == "alice"
     assert runner.state.ssh_port == 22
     assert runner.state.ssh_jump_host == ""
-    assert runner.state.use_sshpass is False

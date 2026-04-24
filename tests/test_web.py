@@ -207,7 +207,6 @@ def test_save_config_payload_rejects_remote_when_ssh_validation_fails(tmp_path: 
                     "ssh_user": "alice",
                     "ssh_port": 22,
                     "source_label": "alice@host-a",
-                    "use_sshpass": False,
                 }
             ],
             "raw_env": [],
@@ -228,7 +227,6 @@ def test_save_config_payload_uses_web_ssh_password_for_remote_validation(tmp_pat
     captured: dict[str, object] = {}
 
     def fake_probe(config, ssh_password=None):  # noqa: ANN001
-        captured["use_sshpass"] = config.use_sshpass
         captured["ssh_password"] = ssh_password
         return True, "ok"
 
@@ -247,7 +245,6 @@ def test_save_config_payload_uses_web_ssh_password_for_remote_validation(tmp_pat
                     "ssh_user": "alice",
                     "ssh_port": 22,
                     "source_label": "alice@host-a",
-                    "use_sshpass": True,
                     "ssh_password": "top-secret",
                 }
             ],
@@ -257,9 +254,9 @@ def test_save_config_payload_uses_web_ssh_password_for_remote_validation(tmp_pat
 
     assert payload["ok"] is True
     assert payload["saved"] is True
-    assert captured == {"use_sshpass": True, "ssh_password": "top-secret"}
+    assert captured == {"ssh_password": "top-secret"}
     text = env_path.read_text(encoding="utf-8")
-    assert "REMOTE_SERVER_A_USE_SSHPASS=1" in text
+    assert "USE_SSHPASS" not in text
     assert "top-secret" not in text
 
 
@@ -304,7 +301,6 @@ def test_save_config_payload_persists_web_remote_jump_host(tmp_path: Path, monke
                     "ssh_user": "alice",
                     "ssh_port": 22,
                     "source_label": "alice@host-a",
-                    "use_sshpass": False,
                     "ssh_jump_host": "jump-a",
                     "ssh_jump_port": 2201,
                 }
@@ -345,7 +341,6 @@ def test_save_config_payload_requests_password_when_new_web_remote_key_auth_fail
                     "ssh_user": "alice",
                     "ssh_port": 22,
                     "source_label": "alice@host-a",
-                    "use_sshpass": False,
                 }
             ],
             "raw_env": [],
@@ -372,7 +367,6 @@ def test_save_config_payload_retries_web_remote_validation_with_prompted_passwor
     captured: dict[str, object] = {}
 
     def fake_probe(config, ssh_password=None):  # noqa: ANN001
-        captured["use_sshpass"] = config.use_sshpass
         captured["ssh_password"] = ssh_password
         return True, "ok"
 
@@ -391,7 +385,6 @@ def test_save_config_payload_retries_web_remote_validation_with_prompted_passwor
                     "ssh_user": "alice",
                     "ssh_port": 22,
                     "source_label": "alice@host-a",
-                    "use_sshpass": False,
                     "ssh_password": "top-secret",
                 }
             ],
@@ -401,10 +394,10 @@ def test_save_config_payload_retries_web_remote_validation_with_prompted_passwor
 
     assert payload["ok"] is True
     assert payload["saved"] is True
-    assert captured == {"use_sshpass": False, "ssh_password": "top-secret"}
+    assert captured == {"ssh_password": "top-secret"}
     text = env_path.read_text(encoding="utf-8")
     assert "REMOTE_HOSTS=SERVER_A" in text
-    assert "REMOTE_SERVER_A_USE_SSHPASS=0" in text
+    assert "USE_SSHPASS" not in text
     assert "top-secret" not in text
 
 
@@ -463,7 +456,6 @@ def test_save_config_payload_does_not_validate_existing_web_remote(tmp_path: Pat
                     "ssh_user": "alice",
                     "ssh_port": 22,
                     "source_label": "alice@host-a",
-                    "use_sshpass": False,
                 }
             ],
             "raw_env": [],
@@ -513,7 +505,6 @@ def test_save_config_payload_validates_existing_web_remote_when_connection_chang
                     "ssh_user": "alice",
                     "ssh_port": 22,
                     "source_label": "alice@host-a",
-                    "use_sshpass": False,
                     "ssh_jump_host": "jump-a",
                     "ssh_jump_port": 2201,
                 }
@@ -678,7 +669,6 @@ def test_web_collect_pauses_for_ssh_password_and_resumes_from_memory_only(tmp_pa
                 "REMOTE_HOSTS=server_a",
                 "REMOTE_SERVER_A_SSH_HOST=host-a",
                 "REMOTE_SERVER_A_SSH_USER=alice",
-                "REMOTE_SERVER_A_USE_SSHPASS=1",
                 "",
             ]
         ),
@@ -697,35 +687,8 @@ def test_web_collect_pauses_for_ssh_password_and_resumes_from_memory_only(tmp_pa
 
     service = web.WebService()
     queued = service.start_collect({})
-    assert queued["status"] == "needs_input"
-    assert queued["input_request"] == {
-        "kind": "ssh_password",
-        "remote_alias": "SERVER_A",
-        "message": "Provide the SSH password for SERVER_A. It will be cached in memory for this session only.",
-        "cache_scope": "session",
-    }
-
     job_id = queued["id"]
-    captured_response: dict[str, object] = {}
-    fake_handler = object.__new__(web._Handler)
-    fake_handler.path = f"/api/jobs/{job_id}/input"
-    fake_handler.server = SimpleNamespace(service=service)
-    fake_handler.headers = {"Content-Length": str(len(json.dumps({"value": "top-secret"}).encode("utf-8")))}
-    fake_handler.rfile = SimpleNamespace(read=lambda _n: json.dumps({"value": "top-secret"}).encode("utf-8"))
-
-    def fake_read_json(self):
-        return {"value": "top-secret"}
-
-    def fake_write_json(self, status, payload):
-        captured_response["status"] = status
-        captured_response["payload"] = payload
-
-    fake_handler._read_json = fake_read_json.__get__(fake_handler, type(fake_handler))
-    fake_handler._write_json = fake_write_json.__get__(fake_handler, type(fake_handler))
-    web._Handler.do_POST(fake_handler)
-    assert captured_response["status"].name == "ACCEPTED"
-    resumed = captured_response["payload"]
-    assert resumed["status"] in {"running", "queued"}
+    assert queued["status"] in {"queued", "running"}
 
     for _ in range(100):
         current = service.jobs.get_job(job_id)
@@ -739,8 +702,7 @@ def test_web_collect_pauses_for_ssh_password_and_resumes_from_memory_only(tmp_pa
     assert current["result"]["warnings"] == []
     assert current["result"]["host_labels"] == {}
     assert current["result"]["csv_path"].endswith("usage_report.csv")
-    assert captured["runtime_passwords"] == {"SERVER_A": "top-secret"}
-    assert "SSHPASS=top-secret" not in env_path.read_text(encoding="utf-8")
+    assert captured["runtime_passwords"] == {}
 
     second = service.start_collect({})
     assert second["status"] == "running"
@@ -752,7 +714,7 @@ def test_web_collect_pauses_for_ssh_password_and_resumes_from_memory_only(tmp_pa
     current = service.jobs.get_job(second["id"])
     assert current is not None
     assert current["status"] == "succeeded"
-    assert captured["runtime_passwords"] == {"SERVER_A": "top-secret"}
+    assert captured["runtime_passwords"] == {}
 
 
 def test_web_sync_preview_pauses_for_ssh_password_and_resumes_from_memory_only(tmp_path: Path, monkeypatch):
@@ -766,7 +728,6 @@ def test_web_sync_preview_pauses_for_ssh_password_and_resumes_from_memory_only(t
                 "REMOTE_HOSTS=server_a",
                 "REMOTE_SERVER_A_SSH_HOST=host-a",
                 "REMOTE_SERVER_A_SSH_USER=alice",
-                "REMOTE_SERVER_A_USE_SSHPASS=1",
                 "",
             ]
         ),
@@ -785,16 +746,7 @@ def test_web_sync_preview_pauses_for_ssh_password_and_resumes_from_memory_only(t
 
     service = web.WebService()
     queued = service.start_sync_preview({})
-    assert queued["status"] == "needs_input"
-    assert queued["input_request"] == {
-        "kind": "ssh_password",
-        "remote_alias": "SERVER_A",
-        "message": "Provide the SSH password for SERVER_A. It will be cached in memory for this session only.",
-        "cache_scope": "session",
-    }
-
-    resumed = service.jobs.submit_input(queued["id"], "top-secret")
-    assert resumed["status"] in {"running", "queued", "succeeded"}
+    assert queued["status"] in {"queued", "running"}
 
     for _ in range(100):
         current = service.jobs.get_job(queued["id"])
@@ -808,7 +760,7 @@ def test_web_sync_preview_pauses_for_ssh_password_and_resumes_from_memory_only(t
     assert current["result"]["row_count"] == 0
     assert current["result"]["warnings"] == []
     assert isinstance(current["result"]["targets"], list)
-    assert captured["runtime_passwords"] == {"SERVER_A": "top-secret"}
+    assert captured["runtime_passwords"] == {}
 
 
 def test_web_sync_fails_preflight_before_collect(tmp_path: Path, monkeypatch):
@@ -932,21 +884,7 @@ def test_web_remote_setup_returns_structured_input_request_sequence():
     assert current["input_request"]["kind"] == "ssh_jump_host"
 
     resumed = service.jobs.submit_input(job_id, "")
-    assert resumed["status"] in {"queued", "running", "needs_input"}
-
-    for _ in range(100):
-        current = service.jobs.get_job(job_id)
-        if current and current["status"] == "needs_input":
-            break
-        time.sleep(0.01)
-
-    current = service.jobs.get_job(job_id)
-    assert current is not None
-    assert current["status"] == "needs_input"
-    assert current["input_request"]["kind"] == "use_sshpass"
-
-    finished = service.jobs.submit_input(job_id, "n")
-    assert finished["status"] in {"queued", "running", "succeeded"}
+    assert resumed["status"] in {"queued", "running", "succeeded"}
 
     for _ in range(100):
         current = service.jobs.get_job(job_id)
@@ -963,7 +901,6 @@ def test_web_remote_setup_returns_structured_input_request_sequence():
             "ssh_host": "host-a",
             "ssh_user": "bob",
             "ssh_port": 2200,
-            "use_sshpass": False,
             "ssh_jump_host": "",
             "ssh_jump_port": 2222,
         }
@@ -971,9 +908,7 @@ def test_web_remote_setup_returns_structured_input_request_sequence():
 
 
 def test_web_collect_fallback_on_ssh_auth_failure(tmp_path: Path, monkeypatch):
-    """When SSH key auth fails (use_sshpass=False), the job should pause for password input."""
-    # Ensure no leftover USE_SSHPASS from prior tests (dotenv pollution)
-    monkeypatch.delenv("REMOTE_SERVER_A_USE_SSHPASS", raising=False)
+    """When SSH key auth fails, the job should pause for password input."""
     env_path = tmp_path / ".env"
     env_path.write_text(
         "\n".join(
@@ -984,7 +919,6 @@ def test_web_collect_fallback_on_ssh_auth_failure(tmp_path: Path, monkeypatch):
                 "REMOTE_HOSTS=server_a",
                 "REMOTE_SERVER_A_SSH_HOST=host-a",
                 "REMOTE_SERVER_A_SSH_USER=alice",
-                "REMOTE_SERVER_A_USE_SSHPASS=0",
                 "",
             ]
         ),
@@ -1040,7 +974,6 @@ def test_web_collect_fallback_on_ssh_auth_failure(tmp_path: Path, monkeypatch):
 
 
 def test_web_collect_propagates_remote_auth_failure_to_frontend_prompt(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("REMOTE_SERVER_A_USE_SSHPASS", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text(
         "\n".join(
@@ -1051,7 +984,6 @@ def test_web_collect_propagates_remote_auth_failure_to_frontend_prompt(tmp_path:
                 "REMOTE_HOSTS=server_a",
                 "REMOTE_SERVER_A_SSH_HOST=host-a",
                 "REMOTE_SERVER_A_SSH_USER=alice",
-                "REMOTE_SERVER_A_USE_SSHPASS=0",
                 "",
             ]
         ),

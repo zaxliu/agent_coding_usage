@@ -11,12 +11,14 @@ from llm_usage.collectors.base import BaseCollector
 from llm_usage.collectors.remote_file import (
     RemoteCollectJob,
     RemoteFileCollector,
+    SshAuthenticationError,
     SshTarget,
     _is_ssh_auth_failure,
+    _run_remote_command_with_paramiko,
     _ssh_command_and_env,
 )
 from llm_usage.collectors.cline import ClineRemoteCollector, default_remote_cline_vscode_paths
-from llm_usage.env import EnvDocument, upsert_env_var
+from llm_usage.env import EnvDocument
 from llm_usage.identity import hash_source_host
 
 DEFAULT_REMOTE_CLAUDE_LOG_PATHS = [
@@ -51,7 +53,6 @@ class RemoteHostConfig:
     copilot_vscode_session_paths: list[str]
     cline_vscode_session_paths: list[str] = field(default_factory=list)
     is_ephemeral: bool = False
-    use_sshpass: bool = False
     ssh_jump_host: str = ""
     ssh_jump_port: int = 2222
 
@@ -68,7 +69,6 @@ class RemoteDraft:
     copilot_cli_log_paths: list[str]
     copilot_vscode_session_paths: list[str]
     cline_vscode_session_paths: list[str] = field(default_factory=list)
-    use_sshpass: bool = False
     ssh_jump_host: str = ""
     ssh_jump_port: int = 2222
 
@@ -126,7 +126,6 @@ def parse_remote_configs_from_env(env: Optional[dict[str, str]] = None) -> list[
                 copilot_cli_log_paths=copilot_cli_log_paths,
                 copilot_vscode_session_paths=copilot_vscode_session_paths,
                 cline_vscode_session_paths=cline_vscode_session_paths,
-                use_sshpass=_env_flag(data.get(prefix + "USE_SSHPASS", "")),
                 ssh_jump_host=ssh_jump_host,
                 ssh_jump_port=ssh_jump_port,
             )
@@ -153,7 +152,6 @@ def drafts_from_env_document(document: EnvDocument) -> list[RemoteDraft]:
             copilot_cli_log_paths=list(config.copilot_cli_log_paths),
             copilot_vscode_session_paths=list(config.copilot_vscode_session_paths),
             cline_vscode_session_paths=list(config.cline_vscode_session_paths),
-            use_sshpass=config.use_sshpass,
             ssh_jump_host=config.ssh_jump_host,
             ssh_jump_port=config.ssh_jump_port,
         )
@@ -191,7 +189,6 @@ def apply_remote_drafts_to_document(document: EnvDocument, drafts: list[RemoteDr
         document.set(prefix + "COPILOT_CLI_LOG_PATHS", ",".join(draft.copilot_cli_log_paths))
         document.set(prefix + "COPILOT_VSCODE_SESSION_PATHS", ",".join(draft.copilot_vscode_session_paths))
         document.set(prefix + "CLINE_VSCODE_SESSION_PATHS", ",".join(draft.cline_vscode_session_paths))
-        document.set(prefix + "USE_SSHPASS", "1" if draft.use_sshpass else "0")
         if draft.ssh_jump_host:
             document.set(prefix + "SSH_JUMP_HOST", draft.ssh_jump_host)
             document.set(prefix + "SSH_JUMP_PORT", str(draft.ssh_jump_port))
@@ -230,7 +227,6 @@ def build_remote_collectors(
                     source_name=config.alias.lower(),
                     source_host_hash=source_host_hash,
                     jobs=jobs,
-                    use_sshpass=config.use_sshpass,
                     ssh_password=runtime_passwords.get(config.alias),
                 )
             )
@@ -243,7 +239,6 @@ def build_temporary_remote(
     ssh_port: int = 22,
     claude_log_paths: Optional[list[str]] = None,
     codex_log_paths: Optional[list[str]] = None,
-    use_sshpass: bool = False,
     ssh_jump_host: str = "",
     ssh_jump_port: int = 2222,
 ) -> RemoteHostConfig:
@@ -264,7 +259,6 @@ def build_temporary_remote(
         copilot_vscode_session_paths=list(DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS),
         cline_vscode_session_paths=list(DEFAULT_REMOTE_CLINE_VSCODE_SESSION_PATHS),
         is_ephemeral=True,
-        use_sshpass=use_sshpass,
         ssh_jump_host=ssh_jump_host,
         ssh_jump_port=ssh_jump_port,
     )
@@ -272,30 +266,60 @@ def build_temporary_remote(
 
 def append_remote_to_env(path: Path, config: RemoteHostConfig, existing_aliases: list[str]) -> str:
     alias = unique_alias(config.alias, existing_aliases)
-    upsert_env_var(path, "REMOTE_HOSTS", ",".join(existing_aliases + [alias]))
+    from llm_usage.env import load_env_document, save_env_document
+
+    document = load_env_document(path)
+    document.set("REMOTE_HOSTS", ",".join(existing_aliases + [alias]))
     prefix = f"REMOTE_{alias}_"
-    upsert_env_var(path, prefix + "SSH_HOST", config.ssh_host)
-    upsert_env_var(path, prefix + "SSH_USER", config.ssh_user)
-    upsert_env_var(path, prefix + "SSH_PORT", str(config.ssh_port))
-    upsert_env_var(path, prefix + "LABEL", config.source_label)
-    upsert_env_var(path, prefix + "CLAUDE_LOG_PATHS", ",".join(config.claude_log_paths))
-    upsert_env_var(path, prefix + "CODEX_LOG_PATHS", ",".join(config.codex_log_paths))
-    upsert_env_var(path, prefix + "COPILOT_CLI_LOG_PATHS", ",".join(config.copilot_cli_log_paths))
-    upsert_env_var(
-        path,
-        prefix + "COPILOT_VSCODE_SESSION_PATHS",
-        ",".join(config.copilot_vscode_session_paths),
-    )
-    upsert_env_var(
-        path,
-        prefix + "CLINE_VSCODE_SESSION_PATHS",
-        ",".join(config.cline_vscode_session_paths),
-    )
-    upsert_env_var(path, prefix + "USE_SSHPASS", "1" if config.use_sshpass else "0")
+    document.set(prefix + "SSH_HOST", config.ssh_host)
+    document.set(prefix + "SSH_USER", config.ssh_user)
+    document.set(prefix + "SSH_PORT", str(config.ssh_port))
+    document.set(prefix + "LABEL", config.source_label)
+    document.set(prefix + "CLAUDE_LOG_PATHS", ",".join(config.claude_log_paths))
+    document.set(prefix + "CODEX_LOG_PATHS", ",".join(config.codex_log_paths))
+    document.set(prefix + "COPILOT_CLI_LOG_PATHS", ",".join(config.copilot_cli_log_paths))
+    document.set(prefix + "COPILOT_VSCODE_SESSION_PATHS", ",".join(config.copilot_vscode_session_paths))
+    document.set(prefix + "CLINE_VSCODE_SESSION_PATHS", ",".join(config.cline_vscode_session_paths))
+    document.delete(prefix + "USE_SSHPASS")
     if config.ssh_jump_host:
-        upsert_env_var(path, prefix + "SSH_JUMP_HOST", config.ssh_jump_host)
-        upsert_env_var(path, prefix + "SSH_JUMP_PORT", str(config.ssh_jump_port))
+        document.set(prefix + "SSH_JUMP_HOST", config.ssh_jump_host)
+        document.set(prefix + "SSH_JUMP_PORT", str(config.ssh_jump_port))
+    else:
+        document.delete(prefix + "SSH_JUMP_HOST")
+        document.delete(prefix + "SSH_JUMP_PORT")
+    save_env_document(path, document)
     return alias
+
+
+def _probe_remote_ssh_with_paramiko(
+    config: RemoteHostConfig,
+    timeout_sec: int,
+    ssh_password: str,
+) -> tuple[bool, str]:
+    target = SshTarget(
+        host=config.ssh_host,
+        user=config.ssh_user,
+        port=config.ssh_port,
+        jump_host=config.ssh_jump_host,
+        jump_port=config.ssh_jump_port,
+    )
+    try:
+        completed = _run_remote_command_with_paramiko(
+            target=target,
+            remote_args=["true"],
+            ssh_password=ssh_password,
+            timeout_sec=max(3, timeout_sec),
+        )
+    except SshAuthenticationError:
+        return False, "Permission denied (password)."
+    except TimeoutError:
+        return False, "SSH 连接超时"
+    except RuntimeError as exc:
+        return False, str(exc)
+    if completed.returncode == 0:
+        return True, "SSH 连接正常"
+    message = completed.stderr.strip() or completed.stdout.strip() or "SSH 连接失败"
+    return False, message
 
 
 def probe_remote_ssh(
@@ -304,16 +328,14 @@ def probe_remote_ssh(
     *,
     ssh_password: Optional[str] = None,
 ) -> tuple[bool, str]:
-    password = ssh_password if ssh_password is not None else os.environ.get("SSHPASS", "")
-    if config.use_sshpass and not password.strip():
-        return False, "SSH 密码模式需要提供密码"
+    password = ssh_password or ""
+    if password.strip():
+        return _probe_remote_ssh_with_paramiko(config, timeout_sec, password)
 
     command, env = _ssh_command_and_env(
         f"{config.ssh_user}@{config.ssh_host}",
         config.ssh_port,
         ["true"],
-        use_sshpass=config.use_sshpass,
-        ssh_password=password,
         jump_host=config.ssh_jump_host,
         jump_port=config.ssh_jump_port,
     )
@@ -329,8 +351,6 @@ def probe_remote_ssh(
             run_kwargs["env"] = env
         completed = subprocess.run(command, **run_kwargs)
     except FileNotFoundError:
-        if command and command[0] == "sshpass":
-            return False, "sshpass 未找到"
         return False, "SSH 命令未找到"
     except subprocess.TimeoutExpired:
         return False, "SSH 连接超时"

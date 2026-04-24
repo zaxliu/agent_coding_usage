@@ -36,7 +36,6 @@ def test_remote_flow_state_defaults_are_ssh_specific():
     assert state.ssh_host == ""
     assert state.ssh_user == ""
     assert state.ssh_port == 22
-    assert state.use_sshpass is False
     assert state.ssh_jump_host == ""
     assert state.ssh_jump_port == 2222
 
@@ -61,10 +60,6 @@ def test_remote_prompt_runner_advances_through_temp_remote_steps():
     # skip jump host
     assert runner.apply_input("") is True
     assert runner.state.ssh_jump_host == ""
-    assert runner.next_request().kind == "use_sshpass"
-
-    assert runner.apply_input("yes") is True
-    assert runner.state.use_sshpass is True
     assert runner.next_request() is None
 
 
@@ -108,19 +103,7 @@ def test_remote_prompt_runner_uses_default_port_for_blank_input():
 
     # skip jump host
     assert runner.apply_input("") is True
-    assert runner.next_request().kind == "use_sshpass"
-
-
-def test_remote_prompt_runner_rejects_invalid_use_sshpass_input():
-    runner = RemotePromptRunner(existing_aliases=[])
-    assert runner.apply_input("host-b") is True
-    assert runner.apply_input("alice") is True
-    assert runner.apply_input("22") is True
-    assert runner.apply_input("") is True  # skip jump host
-
-    assert runner.apply_input("maybe") is False
-    assert runner.next_request().kind == "use_sshpass"
-    assert runner.state.use_sshpass is False
+    assert runner.next_request() is None
 
 
 def test_remote_prompt_runner_populates_unique_alias_from_remote_rules():
@@ -148,9 +131,6 @@ def test_remote_prompt_runner_with_jump_host():
 
     assert runner.apply_input("") is True
     assert runner.state.ssh_jump_port == 2222
-    assert runner.next_request().kind == "use_sshpass"
-
-    assert runner.apply_input("n") is True
     assert runner.next_request() is None
 
 
@@ -166,7 +146,7 @@ def test_remote_prompt_runner_jump_host_custom_port():
 
     assert runner.apply_input("3333") is True
     assert runner.state.ssh_jump_port == 3333
-    assert runner.next_request().kind == "use_sshpass"
+    assert runner.next_request() is None
 
 
 def test_remote_prompt_runner_rejects_invalid_jump_port():
