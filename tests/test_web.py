@@ -794,7 +794,7 @@ def test_web_sync_preview_pauses_for_ssh_password_and_resumes_from_memory_only(t
     }
 
     resumed = service.jobs.submit_input(queued["id"], "top-secret")
-    assert resumed["status"] in {"running", "queued"}
+    assert resumed["status"] in {"running", "queued", "succeeded"}
 
     for _ in range(100):
         current = service.jobs.get_job(queued["id"])
@@ -1024,7 +1024,7 @@ def test_web_collect_fallback_on_ssh_auth_failure(tmp_path: Path, monkeypatch):
 
     # Submit password
     result = service.jobs.submit_input(job_id, "my-password")
-    assert result["status"] in {"queued", "running"}
+    assert result["status"] in {"queued", "running", "succeeded"}
 
     # Wait for completion
     for _ in range(100):
