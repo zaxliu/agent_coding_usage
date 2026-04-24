@@ -66,3 +66,18 @@ def test_python_sources_parse_with_python39_syntax():
             source = path.read_text(encoding="utf-8")
             ast.parse(source, filename=str(path), feature_version=(3, 9))
             assert not union_pattern.search(source), f"{path} uses Python 3.10 union syntax"
+
+
+def test_remote_config_json_matches_pyproject_tool_section():
+    import json
+
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    tool_cfg = pyproject["tool"]["llm-usage"]
+
+    config_path = REPO_ROOT / "src" / "llm_usage" / "resources" / "remote_config.json"
+    bundled = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert bundled["remote_python_requires"] == tool_cfg["remote-python-requires"], (
+        "remote_config.json and pyproject.toml [tool.llm-usage] are out of sync — "
+        "update both when changing remote-python-requires"
+    )

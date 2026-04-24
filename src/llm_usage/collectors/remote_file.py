@@ -1964,20 +1964,19 @@ def _is_explicit_python3_command(value: str) -> bool:
 
 
 def _remote_python_minimum_version() -> tuple[int, int]:
-    from importlib.metadata import metadata as _pkg_metadata
+    from importlib import resources
 
-    meta = _pkg_metadata(_PACKAGE_NAME)
-    requires_python = (meta.get("Requires-Python") or "").strip()
-    if not requires_python:
-        raise RuntimeError(
-            f"Unable to determine remote Python minimum version: "
-            f"package {_PACKAGE_NAME!r} has no Requires-Python metadata"
-        )
-    lower_bound = re.fullmatch(r">=\s*(\d+)\.(\d+)", requires_python)
+    raw = (
+        resources.files("llm_usage.resources")
+        .joinpath("remote_config.json")
+        .read_text(encoding="utf-8")
+    )
+    config = json.loads(raw)
+    spec = config.get("remote_python_requires", "")
+    lower_bound = re.fullmatch(r">=\s*(\d+)\.(\d+)", spec)
     if not lower_bound:
         raise RuntimeError(
-            "Unsupported requires-python specifier for remote discovery: "
-            f"{requires_python!r}"
+            f"Invalid remote_python_requires in remote_config.json: {spec!r}"
         )
     return int(lower_bound.group(1)), int(lower_bound.group(2))
 

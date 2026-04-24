@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-usage-horizon"
-version = "0.2.0rc9"
+version = "0.2.0rc10"
 description = "Local LLM coding usage collector and Feishu Bitable sync"
 readme = "README.md"
 license = { text = "MIT" }
@@ -50,10 +50,13 @@ package-dir = {"" = "src"}
 license-files = ["LICENSE"]
 
 [tool.setuptools.package-data]
-llm_usage = ["resources/*.env", "web_static/*"]
+llm_usage = ["resources/*.env", "resources/*.json", "web_static/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.llm-usage]
+remote-python-requires = ">=3.6"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

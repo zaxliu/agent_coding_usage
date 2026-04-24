@@ -1808,7 +1808,7 @@ def test_remote_file_collector_errors_when_all_remote_python_candidates_are_too_
             return _Completed()
         rc = _remote_command(cmd)
         if "version_info" in rc or "sys.version_info" in rc:
-            return _Completed(stdout="3.8.10\n")
+            return _Completed(stdout="2.7.18\n")
         if "command -v python3" in rc and "for candidate in" not in rc:
             return _Completed(stdout="/usr/bin/python3\n")
         if "for candidate in /usr/bin/python3" in rc:
@@ -1827,11 +1827,11 @@ def test_remote_file_collector_errors_when_all_remote_python_candidates_are_too_
     )
     ok, msg = collector.probe()
     assert ok is False
-    assert ">=3.9" in msg
+    assert ">=3.6" in msg
 
 
-def test_remote_python_minimum_version_matches_pyproject_requirement():
-    assert remote_file._remote_python_minimum_version() == (3, 9)
+def test_remote_python_minimum_version_reads_bundled_config():
+    assert remote_file._remote_python_minimum_version() == (3, 6)
 
 
 def test_remote_file_collector_reports_chunked_stdout_corruption(monkeypatch):
