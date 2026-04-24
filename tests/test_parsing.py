@@ -375,3 +375,64 @@ def test_read_copilot_vscode_estimates_tokens_from_text_when_usage_missing(tmp_p
     assert events[0].model == "gpt-4.1"
     assert events[0].input_tokens > 0
     assert events[0].output_tokens > 0
+
+
+def test_read_cline_vscode_history_json_extracts_assistant_metrics(tmp_path):
+    task_dir = tmp_path / "tasks" / "1777005150050"
+    task_dir.mkdir(parents=True)
+    path = task_dir / "api_conversation_history.json"
+    payload = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "hello"}],
+            "ts": 1777005160000,
+        },
+        {
+            "role": "assistant",
+            "ts": 1777005161617,
+            "modelInfo": {"modelId": "kwaipilot/kat-coder-pro", "providerId": "cline"},
+            "metrics": {
+                "tokens": {
+                    "prompt": 13408,
+                    "completion": 42,
+                    "cached": 336,
+                },
+                "cost": 0.00409296,
+            },
+        },
+    ]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    events, warning = read_events_from_file(path, tool="cline_vscode")
+
+    assert warning is None
+    assert len(events) == 1
+    assert events[0].tool == "cline_vscode"
+    assert events[0].model == "kwaipilot/kat-coder-pro"
+    assert events[0].input_tokens == 13072
+    assert events[0].cache_tokens == 336
+    assert events[0].output_tokens == 42
+    assert events[0].session_fingerprint == "cline_vscode:1777005150050:1:1777005161617"
+
+
+def test_read_cline_vscode_history_json_skips_entries_without_metrics(tmp_path):
+    task_dir = tmp_path / "tasks" / "1777005150050"
+    task_dir.mkdir(parents=True)
+    path = task_dir / "api_conversation_history.json"
+    payload = [
+        {"role": "assistant", "ts": 1777005161617, "modelInfo": {"modelId": "model-a"}},
+        {
+            "role": "assistant",
+            "ts": 1777005162617,
+            "modelInfo": {"modelId": "model-b"},
+            "metrics": {"tokens": {"prompt": 200, "completion": 10, "cached": 20}},
+        },
+    ]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    events, warning = read_events_from_file(path, tool="cline_vscode")
+
+    assert warning is None
+    assert len(events) == 1
+    assert events[0].model == "model-b"
+    assert events[0].input_tokens == 180

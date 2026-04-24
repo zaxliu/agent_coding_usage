@@ -73,6 +73,41 @@ function defaultCopilotVscodePaths() {
   ]);
 }
 
+function defaultClineVscodePaths() {
+  let roots;
+  if (process.platform === "win32") {
+    const appdata = String(process.env.APPDATA || "").trim();
+    roots = appdata
+      ? ["Code", "Code - Insiders", "Code - Exploration", "Cursor", "VSCodium"].map((variant) => `${appdata}/${variant}/User`)
+      : ["Code", "Code - Insiders", "Code - Exploration", "Cursor", "VSCodium"].map(
+          (variant) => `~/AppData/Roaming/${variant}/User`,
+        );
+  } else if (process.platform === "darwin") {
+    roots = [
+      "~/Library/Application Support/Code/User",
+      "~/Library/Application Support/Code - Insiders/User",
+      "~/Library/Application Support/Code - Exploration/User",
+      "~/Library/Application Support/Cursor/User",
+      "~/Library/Application Support/VSCodium/User",
+    ];
+  } else {
+    roots = [
+      "~/.config/Code/User",
+      "~/.config/Code - Insiders/User",
+      "~/.config/Code - Exploration/User",
+      "~/.config/Cursor/User",
+      "~/.config/VSCodium/User",
+      "~/.vscode-server/data/User",
+      "~/.vscode-server-insiders/data/User",
+      "~/.cursor-server/data/User",
+      "~/.vscode-remote/data/User",
+      "/tmp/.vscode-server/data/User",
+      "/workspace/.vscode-server/data/User",
+    ];
+  }
+  return roots.map((root) => `${root}/globalStorage/saoudrizwan.claude-dev/tasks/*/api_conversation_history.json`);
+}
+
 function buildCollectors() {
   const username = getEnv("ORG_USERNAME");
   const salt = getEnv("HASH_SALT");
@@ -88,6 +123,9 @@ function buildCollectors() {
       sourceHostHash,
     }),
     new FileCollector("copilot_vscode", splitCsvEnv("COPILOT_VSCODE_SESSION_PATHS", defaultCopilotVscodePaths()), {
+      sourceHostHash,
+    }),
+    new FileCollector("cline_vscode", splitCsvEnv("CLINE_VSCODE_SESSION_PATHS", defaultClineVscodePaths()), {
       sourceHostHash,
     }),
   ];

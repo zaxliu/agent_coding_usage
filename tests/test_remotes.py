@@ -1,7 +1,9 @@
 import subprocess
+from types import MethodType
 
 from llm_usage.env import EnvDocument, EnvLine
 from llm_usage.remotes import (
+    ClineRemoteCollector,
     append_remote_to_env,
     apply_remote_drafts_to_document,
     build_remote_collectors,
@@ -23,6 +25,7 @@ def test_parse_remote_configs_from_env():
         "REMOTE_SERVER_A_SSH_USER": "alice",
         "REMOTE_SERVER_A_LABEL": "prod-a",
         "REMOTE_SERVER_A_COPILOT_CLI_LOG_PATHS": "/tmp/copilot-cli.jsonl",
+        "REMOTE_SERVER_A_CLINE_VSCODE_SESSION_PATHS": "/tmp/cline-history.json",
         "REMOTE_SERVER_B_SSH_HOST": "host-b",
         "REMOTE_SERVER_B_SSH_USER": "bob",
     }
@@ -31,6 +34,7 @@ def test_parse_remote_configs_from_env():
     assert configs[0].ssh_port == 22
     assert configs[0].source_label == "prod-a"
     assert configs[0].copilot_cli_log_paths == ["/tmp/copilot-cli.jsonl"]
+    assert configs[0].cline_vscode_session_paths == ["/tmp/cline-history.json"]
 
 
 def test_parse_remote_configs_from_env_defaults_source_label_to_user_and_host():
@@ -94,6 +98,7 @@ def test_drafts_from_env_document_reads_structured_remote_fields():
         codex_log_paths=list(drafts[0].codex_log_paths),
         copilot_cli_log_paths=list(drafts[0].copilot_cli_log_paths),
         copilot_vscode_session_paths=list(drafts[0].copilot_vscode_session_paths),
+        cline_vscode_session_paths=list(drafts[0].cline_vscode_session_paths),
         use_sshpass=True,
     )
 
@@ -117,6 +122,7 @@ def test_apply_remote_drafts_to_document_normalizes_and_dedupes_aliases():
             codex_log_paths=[],
             copilot_cli_log_paths=[],
             copilot_vscode_session_paths=[],
+            cline_vscode_session_paths=[],
             use_sshpass=False,
         ),
         RemoteDraft(
@@ -129,6 +135,7 @@ def test_apply_remote_drafts_to_document_normalizes_and_dedupes_aliases():
             codex_log_paths=[],
             copilot_cli_log_paths=[],
             copilot_vscode_session_paths=[],
+            cline_vscode_session_paths=[],
             use_sshpass=True,
         ),
     ]
@@ -162,6 +169,7 @@ def test_apply_remote_drafts_to_document_rewrites_remote_section():
             codex_log_paths=["/b"],
             copilot_cli_log_paths=["/c"],
             copilot_vscode_session_paths=["/d"],
+            cline_vscode_session_paths=["/e"],
             use_sshpass=False,
         )
     ]
@@ -178,6 +186,7 @@ def test_apply_remote_drafts_to_document_rewrites_remote_section():
     assert document.get("REMOTE_SERVER_A_CODEX_LOG_PATHS") == "/b"
     assert document.get("REMOTE_SERVER_A_COPILOT_CLI_LOG_PATHS") == "/c"
     assert document.get("REMOTE_SERVER_A_COPILOT_VSCODE_SESSION_PATHS") == "/d"
+    assert document.get("REMOTE_SERVER_A_CLINE_VSCODE_SESSION_PATHS") == "/e"
     assert document.get("REMOTE_SERVER_A_USE_SSHPASS") == "0"
     assert document.get("REMOTE_OLD_SSH_HOST") is None
     assert document.get("REMOTE_OLD_SSH_USER") is None
@@ -205,6 +214,27 @@ def test_build_remote_collectors_uses_runtime_password_for_sshpass_remote():
     assert collectors[0].ssh_password == "run-secret"
 
 
+def test_cline_remote_probe_counts_non_cline_jobs_without_false_no_data():
+    collector = ClineRemoteCollector(
+        "remote",
+        target=None,  # type: ignore[arg-type]
+        source_name="server_a",
+        source_host_hash="hash",
+        jobs=[],
+    )
+
+    collector._discover_python = MethodType(lambda self: ("python3", None), collector)  # type: ignore[method-assign]
+    collector._run_python_script = MethodType(  # type: ignore[method-assign]
+        lambda self, python_cmd, script, cursor=None, use_page_payload=False: ({"matches": 2, "versions": []}, None),
+        collector,
+    )
+
+    ok, msg = collector.probe()
+
+    assert ok is True
+    assert msg == "2 remote files detected"
+
+
 def test_build_temporary_remote_preserves_explicit_empty_path_lists():
     config = build_temporary_remote("host-a", "alice", claude_log_paths=[], codex_log_paths=[])
 
@@ -225,6 +255,7 @@ def test_append_remote_to_env_writes_remote_fields(tmp_path):
     assert "REMOTE_BOB_HOST_B_LABEL=bob@host-b" in text
     assert "REMOTE_BOB_HOST_B_COPILOT_CLI_LOG_PATHS=" in text
     assert "REMOTE_BOB_HOST_B_COPILOT_VSCODE_SESSION_PATHS=" in text
+    assert "REMOTE_BOB_HOST_B_CLINE_VSCODE_SESSION_PATHS=" in text
 
 
 def test_append_remote_to_env_writes_use_sshpass_flag(tmp_path):

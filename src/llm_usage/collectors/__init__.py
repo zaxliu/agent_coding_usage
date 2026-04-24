@@ -5,6 +5,7 @@ __all__ = [
     "BaseCollector",
     "CollectOutput",
     "build_claude_collector",
+    "build_cline_vscode_collector",
     "build_copilot_cli_collector",
     "build_copilot_vscode_collector",
     "build_codex_collector",
@@ -19,6 +20,10 @@ def __getattr__(name: str):
         from .claude import build_claude_collector
 
         return build_claude_collector
+    if name == "build_cline_vscode_collector":
+        from .cline import build_cline_vscode_collector
+
+        return build_cline_vscode_collector
     if name == "build_copilot_cli_collector":
         from .copilot import build_copilot_cli_collector
 

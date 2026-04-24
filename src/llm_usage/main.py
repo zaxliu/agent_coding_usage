@@ -75,12 +75,13 @@ def _should_require_manual_cursor_token_prompt(browser: str) -> bool:
     return os.name == "nt" and normalized in {"default", "chrome", "chromium", "edge", "msedge"}
 
 
-ALL_TOOL_NAMES = ("claude_code", "codex", "copilot_cli", "copilot_vscode", "cursor", "opencode")
+ALL_TOOL_NAMES = ("claude_code", "codex", "copilot_cli", "copilot_vscode", "cline_vscode", "cursor", "opencode")
 
 
 def _collectors(local_source_host_hash: str, skip_tools: Optional[set] = None) -> list[BaseCollector]:
     from llm_usage.collectors import (
         build_claude_collector,
+        build_cline_vscode_collector,
         build_codex_collector,
         build_copilot_cli_collector,
         build_copilot_vscode_collector,
@@ -93,6 +94,7 @@ def _collectors(local_source_host_hash: str, skip_tools: Optional[set] = None) -
         build_codex_collector(source_host_hash=local_source_host_hash),
         build_copilot_cli_collector(source_host_hash=local_source_host_hash),
         build_copilot_vscode_collector(source_host_hash=local_source_host_hash),
+        build_cline_vscode_collector(source_host_hash=local_source_host_hash),
         build_cursor_collector(source_host_hash=local_source_host_hash),
         build_opencode_collector(source_host_hash=local_source_host_hash),
     ]
@@ -600,6 +602,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                     "CODEX_LOG_PATHS=",
                     "COPILOT_CLI_LOG_PATHS=",
                     "COPILOT_VSCODE_SESSION_PATHS=",
+                    "CLINE_VSCODE_SESSION_PATHS=",
                     "CURSOR_LOG_PATHS=",
                     "",
                     "# Optional: Cursor Pro+ web dashboard collector.",
@@ -624,6 +627,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                     "REMOTE_SAMPLE_CODEX_LOG_PATHS=",
                     "REMOTE_SAMPLE_COPILOT_CLI_LOG_PATHS=",
                     "REMOTE_SAMPLE_COPILOT_VSCODE_SESSION_PATHS=",
+                    "REMOTE_SAMPLE_CLINE_VSCODE_SESSION_PATHS=",
                 ]
             )
             + "\n",

@@ -88,6 +88,7 @@ test("web helpers load config validate payload and results", async () => {
       "REMOTE_HOSTS=server_a",
       "REMOTE_SERVER_A_SSH_HOST=host-a",
       "REMOTE_SERVER_A_SSH_USER=alice",
+      "REMOTE_SERVER_A_CLINE_VSCODE_SESSION_PATHS=/remote/cline/api_conversation_history.json",
       "",
     ].join("\n"),
     "utf8",
@@ -119,6 +120,7 @@ test("web helpers load config validate payload and results", async () => {
   assert.equal(configPayload.basic.ORG_USERNAME, "san.zhang");
   assert.equal(configPayload.feishu_targets[0].name, "team_b");
   assert.equal(configPayload.remotes[0].alias, "SERVER_A");
+  assert.deepEqual(configPayload.remotes[0].cline_vscode_session_paths, ["/remote/cline/api_conversation_history.json"]);
 
   const resultsPayload = loadLatestResults();
   assert.deepEqual(resultsPayload.summary, {
@@ -158,11 +160,21 @@ test("web helpers load config validate payload and results", async () => {
     cursor: {},
     feishu_default: { FEISHU_APP_TOKEN: "app-token" },
     feishu_targets: [{ name: "team_b", app_token: "team-token" }],
-    remotes: [],
+    remotes: [
+      {
+        alias: "SERVER_A",
+        ssh_host: "host-a",
+        ssh_user: "alice",
+        ssh_port: 22,
+        source_label: "alice@host-a",
+        cline_vscode_session_paths: ["/remote/cline/api_conversation_history.json"],
+      },
+    ],
     raw_env: [],
   });
   assert.equal(savePayload.ok, true);
   assert.match(fs.readFileSync(envFile, "utf8"), /LOOKBACK_DAYS=14/u);
+  assert.match(fs.readFileSync(envFile, "utf8"), /REMOTE_SERVER_A_CLINE_VSCODE_SESSION_PATHS=\/remote\/cline\/api_conversation_history\.json/u);
 });
 
 test("node web routes do not request ssh passwords for ignored remotes", async () => {

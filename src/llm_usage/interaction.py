@@ -114,6 +114,7 @@ ADVANCED_KEYS = [
     "CODEX_LOG_PATHS",
     "COPILOT_CLI_LOG_PATHS",
     "COPILOT_VSCODE_SESSION_PATHS",
+    "CLINE_VSCODE_SESSION_PATHS",
 ]
 
 KNOWN_CONFIG_KEYS = BASIC_KEYS + FEISHU_KEYS + CURSOR_KEYS + ADVANCED_KEYS
@@ -1335,6 +1336,7 @@ def _prompt_remote(existing_aliases: list[str], stdin: TextIO, stdout: TextIO) -
         codex_log_paths=[],
         copilot_cli_log_paths=[],
         copilot_vscode_session_paths=[],
+        cline_vscode_session_paths=[],
         use_sshpass=use_sshpass,
         ssh_jump_host=jump_host,
         ssh_jump_port=jump_port,
@@ -1424,6 +1426,7 @@ def _edit_remote_paths(remote: RemoteDraft, stdin: TextIO, stdout: TextIO) -> bo
         stdout.write(f"  2. Codex ({len(remote.codex_log_paths)})\n")
         stdout.write(f"  3. Copilot CLI ({len(remote.copilot_cli_log_paths)})\n")
         stdout.write(f"  4. Copilot VSCode ({len(remote.copilot_vscode_session_paths)})\n")
+        stdout.write(f"  5. Cline VSCode ({len(remote.cline_vscode_session_paths)})\n")
         stdout.write("  b. Back\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
@@ -1439,6 +1442,9 @@ def _edit_remote_paths(remote: RemoteDraft, stdin: TextIO, stdout: TextIO) -> bo
                 changed = True
         elif answer == "4":
             if _edit_path_list(remote.copilot_vscode_session_paths, stdin=stdin, stdout=stdout):
+                changed = True
+        elif answer == "5":
+            if _edit_path_list(remote.cline_vscode_session_paths, stdin=stdin, stdout=stdout):
                 changed = True
 
 

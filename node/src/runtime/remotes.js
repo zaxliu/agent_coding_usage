@@ -14,6 +14,11 @@ export const DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS = [
   "~/.vscode-server/data/User/globalStorage/emptyWindowChatSessions/*.jsonl",
   "~/.vscode-server/data/User/workspaceStorage/**/chatEditingSessions/*/state.json",
 ];
+export const DEFAULT_REMOTE_CLINE_VSCODE_SESSION_PATHS = [
+  "~/.vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks/*/api_conversation_history.json",
+  "~/.vscode-server-insiders/data/User/globalStorage/saoudrizwan.claude-dev/tasks/*/api_conversation_history.json",
+  "~/.cursor-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks/*/api_conversation_history.json",
+];
 
 export function defaultSourceLabel(sshUser, sshHost) {
   return `${String(sshUser).trim()}@${String(sshHost).trim()}`;
@@ -87,6 +92,10 @@ export function parseRemoteConfigsFromEnv(env = process.env) {
         env[`${prefix}COPILOT_VSCODE_SESSION_PATHS`],
         DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS,
       ),
+      cline_vscode_session_paths: splitPaths(
+        env[`${prefix}CLINE_VSCODE_SESSION_PATHS`],
+        DEFAULT_REMOTE_CLINE_VSCODE_SESSION_PATHS,
+      ),
       is_ephemeral: false,
     });
   }
@@ -105,6 +114,7 @@ export function buildTemporaryRemote(sshHost, sshUser, sshPort = 22) {
     codex_log_paths: [...DEFAULT_REMOTE_CODEX_LOG_PATHS],
     copilot_cli_log_paths: [...DEFAULT_REMOTE_COPILOT_CLI_LOG_PATHS],
     copilot_vscode_session_paths: [...DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS],
+    cline_vscode_session_paths: [...DEFAULT_REMOTE_CLINE_VSCODE_SESSION_PATHS],
     is_ephemeral: true,
   };
 }
@@ -121,6 +131,7 @@ export function appendRemoteToEnv(config, existingAliases, filePath = getEnvPath
   upsertEnvVar(`${prefix}CODEX_LOG_PATHS`, config.codex_log_paths.join(","), filePath);
   upsertEnvVar(`${prefix}COPILOT_CLI_LOG_PATHS`, config.copilot_cli_log_paths.join(","), filePath);
   upsertEnvVar(`${prefix}COPILOT_VSCODE_SESSION_PATHS`, config.copilot_vscode_session_paths.join(","), filePath);
+  upsertEnvVar(`${prefix}CLINE_VSCODE_SESSION_PATHS`, config.cline_vscode_session_paths.join(","), filePath);
   return alias;
 }
 
@@ -145,6 +156,7 @@ export function buildEnvWithTemporaryRemotes(baseEnv, temporaryRemotes) {
     nextEnv[`${prefix}CODEX_LOG_PATHS`] = config.codex_log_paths.join(",");
     nextEnv[`${prefix}COPILOT_CLI_LOG_PATHS`] = config.copilot_cli_log_paths.join(",");
     nextEnv[`${prefix}COPILOT_VSCODE_SESSION_PATHS`] = config.copilot_vscode_session_paths.join(",");
+    nextEnv[`${prefix}CLINE_VSCODE_SESSION_PATHS`] = config.cline_vscode_session_paths.join(",");
   }
   nextEnv.REMOTE_HOSTS = aliases.join(",");
   return { env: nextEnv, aliases: assignedAliases };

@@ -725,6 +725,7 @@ function openRemoteEditModal(remote = null, index = -1) {
   document.querySelector("#remote-edit-codex-paths").value = (remote?.codex_log_paths || []).join(",");
   document.querySelector("#remote-edit-copilot-cli-paths").value = (remote?.copilot_cli_log_paths || []).join(",");
   document.querySelector("#remote-edit-copilot-vscode-paths").value = (remote?.copilot_vscode_session_paths || []).join(",");
+  document.querySelector("#remote-edit-cline-vscode-paths").value = (remote?.cline_vscode_session_paths || []).join(",");
   refs.remoteEditModal.showModal();
 }
 
@@ -744,6 +745,7 @@ function collectRemoteFromModal() {
     codex_log_paths: splitPaths(document.querySelector("#remote-edit-codex-paths").value),
     copilot_cli_log_paths: splitPaths(document.querySelector("#remote-edit-copilot-cli-paths").value),
     copilot_vscode_session_paths: splitPaths(document.querySelector("#remote-edit-copilot-vscode-paths").value),
+    cline_vscode_session_paths: splitPaths(document.querySelector("#remote-edit-cline-vscode-paths").value),
   };
 }
 

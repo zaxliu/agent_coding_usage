@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -15,6 +15,7 @@ from llm_usage.collectors.remote_file import (
     _is_ssh_auth_failure,
     _ssh_command_and_env,
 )
+from llm_usage.collectors.cline import ClineRemoteCollector, default_remote_cline_vscode_paths
 from llm_usage.env import EnvDocument, upsert_env_var
 from llm_usage.identity import hash_source_host
 
@@ -34,6 +35,7 @@ DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS = [
     "~/.vscode-server/data/User/globalStorage/emptyWindowChatSessions/*.jsonl",
     "~/.vscode-server/data/User/workspaceStorage/**/chatEditingSessions/*/state.json",
 ]
+DEFAULT_REMOTE_CLINE_VSCODE_SESSION_PATHS = default_remote_cline_vscode_paths()
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class RemoteHostConfig:
     codex_log_paths: list[str]
     copilot_cli_log_paths: list[str]
     copilot_vscode_session_paths: list[str]
+    cline_vscode_session_paths: list[str] = field(default_factory=list)
     is_ephemeral: bool = False
     use_sshpass: bool = False
     ssh_jump_host: str = ""
@@ -64,6 +67,7 @@ class RemoteDraft:
     codex_log_paths: list[str]
     copilot_cli_log_paths: list[str]
     copilot_vscode_session_paths: list[str]
+    cline_vscode_session_paths: list[str] = field(default_factory=list)
     use_sshpass: bool = False
     ssh_jump_host: str = ""
     ssh_jump_port: int = 2222
@@ -104,6 +108,10 @@ def parse_remote_configs_from_env(env: Optional[dict[str, str]] = None) -> list[
             data.get(prefix + "COPILOT_VSCODE_SESSION_PATHS", ""),
             DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS,
         )
+        cline_vscode_session_paths = _split_paths(
+            data.get(prefix + "CLINE_VSCODE_SESSION_PATHS", ""),
+            DEFAULT_REMOTE_CLINE_VSCODE_SESSION_PATHS,
+        )
         ssh_jump_host = data.get(prefix + "SSH_JUMP_HOST", "").strip()
         ssh_jump_port = _safe_port(data.get(prefix + "SSH_JUMP_PORT", "2222"), default=2222)
         out.append(
@@ -117,6 +125,7 @@ def parse_remote_configs_from_env(env: Optional[dict[str, str]] = None) -> list[
                 codex_log_paths=codex_log_paths,
                 copilot_cli_log_paths=copilot_cli_log_paths,
                 copilot_vscode_session_paths=copilot_vscode_session_paths,
+                cline_vscode_session_paths=cline_vscode_session_paths,
                 use_sshpass=_env_flag(data.get(prefix + "USE_SSHPASS", "")),
                 ssh_jump_host=ssh_jump_host,
                 ssh_jump_port=ssh_jump_port,
@@ -143,6 +152,7 @@ def drafts_from_env_document(document: EnvDocument) -> list[RemoteDraft]:
             codex_log_paths=list(config.codex_log_paths),
             copilot_cli_log_paths=list(config.copilot_cli_log_paths),
             copilot_vscode_session_paths=list(config.copilot_vscode_session_paths),
+            cline_vscode_session_paths=list(config.cline_vscode_session_paths),
             use_sshpass=config.use_sshpass,
             ssh_jump_host=config.ssh_jump_host,
             ssh_jump_port=config.ssh_jump_port,
@@ -180,6 +190,7 @@ def apply_remote_drafts_to_document(document: EnvDocument, drafts: list[RemoteDr
         document.set(prefix + "CODEX_LOG_PATHS", ",".join(draft.codex_log_paths))
         document.set(prefix + "COPILOT_CLI_LOG_PATHS", ",".join(draft.copilot_cli_log_paths))
         document.set(prefix + "COPILOT_VSCODE_SESSION_PATHS", ",".join(draft.copilot_vscode_session_paths))
+        document.set(prefix + "CLINE_VSCODE_SESSION_PATHS", ",".join(draft.cline_vscode_session_paths))
         document.set(prefix + "USE_SSHPASS", "1" if draft.use_sshpass else "0")
         if draft.ssh_jump_host:
             document.set(prefix + "SSH_JUMP_HOST", draft.ssh_jump_host)
@@ -208,9 +219,12 @@ def build_remote_collectors(
             jobs.append(RemoteCollectJob(tool="copilot_cli", patterns=config.copilot_cli_log_paths))
         if config.copilot_vscode_session_paths and "copilot_vscode" not in skip:
             jobs.append(RemoteCollectJob(tool="copilot_vscode", patterns=config.copilot_vscode_session_paths))
+        if config.cline_vscode_session_paths and "cline_vscode" not in skip:
+            jobs.append(RemoteCollectJob(tool="cline_vscode", patterns=config.cline_vscode_session_paths))
         if jobs:
+            collector_cls = ClineRemoteCollector if config.cline_vscode_session_paths else RemoteFileCollector
             collectors.append(
-                RemoteFileCollector(
+                collector_cls(
                     "remote",
                     target=target,
                     source_name=config.alias.lower(),
@@ -248,6 +262,7 @@ def build_temporary_remote(
         codex_log_paths=list(DEFAULT_REMOTE_CODEX_LOG_PATHS) if codex_log_paths is None else list(codex_log_paths),
         copilot_cli_log_paths=list(DEFAULT_REMOTE_COPILOT_CLI_LOG_PATHS),
         copilot_vscode_session_paths=list(DEFAULT_REMOTE_COPILOT_VSCODE_SESSION_PATHS),
+        cline_vscode_session_paths=list(DEFAULT_REMOTE_CLINE_VSCODE_SESSION_PATHS),
         is_ephemeral=True,
         use_sshpass=use_sshpass,
         ssh_jump_host=ssh_jump_host,
@@ -270,6 +285,11 @@ def append_remote_to_env(path: Path, config: RemoteHostConfig, existing_aliases:
         path,
         prefix + "COPILOT_VSCODE_SESSION_PATHS",
         ",".join(config.copilot_vscode_session_paths),
+    )
+    upsert_env_var(
+        path,
+        prefix + "CLINE_VSCODE_SESSION_PATHS",
+        ",".join(config.cline_vscode_session_paths),
     )
     upsert_env_var(path, prefix + "USE_SSHPASS", "1" if config.use_sshpass else "0")
     if config.ssh_jump_host:

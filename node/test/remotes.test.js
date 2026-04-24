@@ -17,12 +17,14 @@ test("parseRemoteConfigsFromEnv reads configured remotes", () => {
     REMOTE_SERVER_A_SSH_USER: "alice",
     REMOTE_SERVER_A_LABEL: "prod-a",
     REMOTE_SERVER_A_COPILOT_CLI_LOG_PATHS: "/tmp/copilot-cli.jsonl",
+    REMOTE_SERVER_A_CLINE_VSCODE_SESSION_PATHS: "/tmp/cline-history.json",
     REMOTE_SERVER_B_SSH_HOST: "host-b",
     REMOTE_SERVER_B_SSH_USER: "bob",
   });
   assert.equal(configs[0].alias, "SERVER_A");
   assert.equal(configs[0].source_label, "prod-a");
   assert.deepEqual(configs[0].copilot_cli_log_paths, ["/tmp/copilot-cli.jsonl"]);
+  assert.deepEqual(configs[0].cline_vscode_session_paths, ["/tmp/cline-history.json"]);
   assert.equal(configs[1].alias, "SERVER_B");
 });
 

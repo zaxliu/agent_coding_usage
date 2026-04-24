@@ -52,6 +52,7 @@ def test_web_server_serves_runtime_config_and_results(tmp_path: Path, monkeypatc
                 "REMOTE_HOSTS=server_a",
                 "REMOTE_SERVER_A_SSH_HOST=host-a",
                 "REMOTE_SERVER_A_SSH_USER=alice",
+                "REMOTE_SERVER_A_CLINE_VSCODE_SESSION_PATHS=/remote/cline/api_conversation_history.json",
                 "",
             ]
         ),
@@ -80,6 +81,7 @@ def test_web_server_serves_runtime_config_and_results(tmp_path: Path, monkeypatc
     assert config_payload["basic"]["ORG_USERNAME"] == "san.zhang"
     assert config_payload["feishu_targets"][0]["name"] == "team_b"
     assert config_payload["remotes"][0]["alias"] == "SERVER_A"
+    assert config_payload["remotes"][0]["cline_vscode_session_paths"] == ["/remote/cline/api_conversation_history.json"]
     assert config_payload["bootstrap_applied"] is False
     assert config_payload["auto_fixes"] == []
 
@@ -267,9 +269,12 @@ def test_web_remote_modal_exposes_jump_host_fields():
 
     assert 'id="remote-edit-ssh-jump-host"' in html
     assert 'id="remote-edit-ssh-jump-port"' in html
+    assert 'id="remote-edit-cline-vscode-paths"' in html
     assert "remote-edit-ssh-jump-host" in js
     assert "ssh_jump_host:" in js
     assert "ssh_jump_port:" in js
+    assert "remote-edit-cline-vscode-paths" in js
+    assert "cline_vscode_session_paths:" in js
 
 
 def test_save_config_payload_persists_web_remote_jump_host(tmp_path: Path, monkeypatch):

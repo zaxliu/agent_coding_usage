@@ -528,6 +528,73 @@ def _extract_copilot_vscode_events_from_jsonl_text(
     return events
 
 
+def _extract_cline_vscode_usage(node: dict[str, Any]) -> tuple[int, int, int]:
+    metrics = node.get("metrics")
+    if not isinstance(metrics, dict):
+        return 0, 0, 0
+    tokens = metrics.get("tokens")
+    if not isinstance(tokens, dict):
+        return 0, 0, 0
+
+    cache_tokens = _coerce_int(tokens.get("cached") or tokens.get("cacheRead") or tokens.get("cache_read"))
+    prompt_tokens = _coerce_int(tokens.get("prompt") or tokens.get("input") or tokens.get("inputTokens"))
+    output_tokens = _coerce_int(tokens.get("completion") or tokens.get("output") or tokens.get("outputTokens"))
+    input_tokens = prompt_tokens
+    if prompt_tokens > 0 and cache_tokens > 0:
+        input_tokens = max(0, prompt_tokens - cache_tokens)
+    return input_tokens, cache_tokens, output_tokens
+
+
+def _extract_cline_vscode_model(node: dict[str, Any]) -> str:
+    model_info = node.get("modelInfo")
+    if isinstance(model_info, dict):
+        model_id = model_info.get("modelId")
+        if isinstance(model_id, str) and model_id.strip():
+            return model_id.strip()
+    return "unknown"
+
+
+def _extract_cline_task_id(source_ref: str) -> str:
+    path = Path(source_ref)
+    if path.name == "api_conversation_history.json" and path.parent.name.strip():
+        return path.parent.name.strip()
+    return path.stem or "unknown"
+
+
+def _extract_cline_vscode_events(
+    node: Any,
+    fallback_time: datetime,
+    source_ref: str,
+) -> list[UsageEvent]:
+    if not isinstance(node, list):
+        return []
+    task_id = _extract_cline_task_id(source_ref)
+    out: list[UsageEvent] = []
+    event_index = 0
+    for item in node:
+        if not isinstance(item, dict) or str(item.get("role") or "").strip() != "assistant":
+            continue
+        input_tokens, cache_tokens, output_tokens = _extract_cline_vscode_usage(item)
+        if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+            continue
+        event_index += 1
+        event_time = _parse_time(item.get("ts")) or fallback_time
+        event_ts_ms = int(event_time.timestamp() * 1000)
+        out.append(
+            UsageEvent(
+                tool="cline_vscode",
+                model=_extract_cline_vscode_model(item),
+                event_time=event_time,
+                input_tokens=input_tokens,
+                cache_tokens=cache_tokens,
+                output_tokens=output_tokens,
+                session_fingerprint=f"cline_vscode:{task_id}:{event_index}:{event_ts_ms}",
+                source_ref=f"{source_ref}:{event_index}",
+            )
+        )
+    return out
+
+
 def extract_usage_events_from_node(
     node: dict[str, Any],
     tool: str,
@@ -546,6 +613,13 @@ def extract_usage_events_from_node(
 
     if tool == "copilot_vscode":
         return _extract_copilot_vscode_events(
+            node,
+            fallback_time=fallback_time,
+            source_ref=source_ref,
+        )
+
+    if tool == "cline_vscode":
+        return _extract_cline_vscode_events(
             node,
             fallback_time=fallback_time,
             source_ref=source_ref,
@@ -618,6 +692,17 @@ def read_events_from_text(
         else None
     )
     try:
+        if tool == "cline_vscode" and file_suffix.lower() == ".json":
+            obj = json.loads(text)
+            return (
+                _extract_cline_vscode_events(
+                    obj,
+                    fallback_time=fallback_time,
+                    source_ref=source_ref,
+                ),
+                None,
+            )
+
         if tool == "copilot_vscode" and file_suffix.lower() == ".jsonl":
             return (
                 _extract_copilot_vscode_events_from_jsonl_text(

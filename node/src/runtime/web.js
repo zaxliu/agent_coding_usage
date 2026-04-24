@@ -46,7 +46,7 @@ const CURSOR_KEYS = [
   "CURSOR_DASHBOARD_PAGE_SIZE",
   "CURSOR_DASHBOARD_TIMEOUT_SEC",
 ];
-const ADVANCED_KEYS = ["CLAUDE_LOG_PATHS", "CODEX_LOG_PATHS", "COPILOT_CLI_LOG_PATHS", "COPILOT_VSCODE_SESSION_PATHS"];
+const ADVANCED_KEYS = ["CLAUDE_LOG_PATHS", "CODEX_LOG_PATHS", "COPILOT_CLI_LOG_PATHS", "COPILOT_VSCODE_SESSION_PATHS", "CLINE_VSCODE_SESSION_PATHS"];
 
 function packageVersion() {
   const packageJsonPath = path.resolve(thisDir, "../../package.json");
@@ -358,6 +358,7 @@ export function writeConfigPayload(payload) {
     out.set(`${prefix}CODEX_LOG_PATHS`, (remote.codex_log_paths || []).join(","));
     out.set(`${prefix}COPILOT_CLI_LOG_PATHS`, (remote.copilot_cli_log_paths || []).join(","));
     out.set(`${prefix}COPILOT_VSCODE_SESSION_PATHS`, (remote.copilot_vscode_session_paths || []).join(","));
+    out.set(`${prefix}CLINE_VSCODE_SESSION_PATHS`, (remote.cline_vscode_session_paths || []).join(","));
     out.set(`${prefix}USE_SSHPASS`, remote.use_sshpass ? "1" : "0");
   }
   out.set("REMOTE_HOSTS", aliases.join(","));

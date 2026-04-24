@@ -2,6 +2,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Optional
 
+import llm_usage.interaction as interaction
 from llm_usage.interaction import confirm_save_temporary_remote, run_config_editor, select_remotes
 from llm_usage.interaction_flow import RemotePromptRunner
 from llm_usage.remotes import RemoteHostConfig
@@ -26,7 +27,29 @@ def _config(alias: str) -> RemoteHostConfig:
         codex_log_paths=["~/.codex/**/*.jsonl"],
         copilot_cli_log_paths=["~/.copilot/session-state/**/*.jsonl"],
         copilot_vscode_session_paths=["~/.vscode-server/data/User/globalStorage/emptyWindowChatSessions/*.jsonl"],
+        cline_vscode_session_paths=["~/.vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks/*/api_conversation_history.json"],
     )
+
+
+def test_edit_remote_paths_menu_includes_cline_vscode():
+    remote = interaction.RemoteDraft(
+        alias="SERVER_A",
+        ssh_host="host-a",
+        ssh_user="alice",
+        ssh_port=22,
+        source_label="alice@host-a",
+        claude_log_paths=[],
+        codex_log_paths=[],
+        copilot_cli_log_paths=[],
+        copilot_vscode_session_paths=[],
+        cline_vscode_session_paths=[],
+    )
+    stdout = _TTYStringIO()
+
+    changed = interaction._edit_remote_paths(remote, stdin=_TTYStringIO("b\n"), stdout=stdout)
+
+    assert changed is False
+    assert "Cline VSCode" in stdout.getvalue()
 
 
 def test_select_remotes_cli_accepts_default():

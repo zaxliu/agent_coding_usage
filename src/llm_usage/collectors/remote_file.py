@@ -572,6 +572,64 @@ def extract_copilot_vscode_events_from_jsonl_text(text, fallback_time, source_re
         return extract_copilot_vscode_events(state, fallback_time, source_ref)
     return out
 
+def extract_cline_vscode_usage(node):
+    metrics = node.get("metrics")
+    if not isinstance(metrics, dict):
+        return 0, 0, 0
+    tokens = metrics.get("tokens")
+    if not isinstance(tokens, dict):
+        return 0, 0, 0
+    cache_tokens = coerce_int(tokens.get("cached") or tokens.get("cacheRead") or tokens.get("cache_read"))
+    prompt_tokens = coerce_int(tokens.get("prompt") or tokens.get("input") or tokens.get("inputTokens"))
+    output_tokens = coerce_int(tokens.get("completion") or tokens.get("output") or tokens.get("outputTokens"))
+    input_tokens = prompt_tokens
+    if prompt_tokens > 0 and cache_tokens > 0:
+        input_tokens = max(0, prompt_tokens - cache_tokens)
+    return input_tokens, cache_tokens, output_tokens
+
+def extract_cline_vscode_model(node):
+    model_info = node.get("modelInfo")
+    if isinstance(model_info, dict):
+        model_id = model_info.get("modelId")
+        if isinstance(model_id, str) and model_id.strip():
+            return model_id.strip()
+    return "unknown"
+
+def extract_cline_task_id(path):
+    parent = os.path.basename(os.path.dirname(path)).strip()
+    if parent:
+        return parent
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return stem or "unknown"
+
+def extract_cline_vscode_events(node, fallback_time, source_ref):
+    if not isinstance(node, list):
+        return []
+    task_id = extract_cline_task_id(source_ref)
+    out = []
+    event_index = 0
+    for item in node:
+        if not isinstance(item, dict) or str(item.get("role") or "").strip() != "assistant":
+            continue
+        input_tokens, cache_tokens, output_tokens = extract_cline_vscode_usage(item)
+        if input_tokens == 0 and cache_tokens == 0 and output_tokens == 0:
+            continue
+        event_index += 1
+        event_time = parse_time(item.get("ts")) or fallback_time
+        event_ts_ms = int(event_time.timestamp() * 1000)
+        out.append(
+            (
+                event_time,
+                extract_cline_vscode_model(item),
+                input_tokens,
+                cache_tokens,
+                output_tokens,
+                "cline_vscode:" + task_id + ":" + str(event_index) + ":" + str(event_ts_ms),
+                source_ref + ":" + str(event_index),
+            )
+        )
+    return out
+
 def build_resume_cursor(job_index, pattern_index, file_index, source_ref, path_is_jsonl):
     # line_index: for .jsonl path:line refs, 0-based physical line index of the resume point (next line to read).
     line_index = 0
@@ -800,6 +858,10 @@ for job_index, spec in enumerate(jobs):
                                 append_event(events, event_resume_cursors, *item, rc)
                         elif active_tool == "copilot_vscode":
                             for item in extract_copilot_vscode_events(obj, fallback_time, path):
+                                rc = build_resume_cursor(job_index, pattern_index, file_index, item[6], False)
+                                append_event(events, event_resume_cursors, *item, rc)
+                        elif active_tool == "cline_vscode":
+                            for item in extract_cline_vscode_events(obj, fallback_time, path):
                                 rc = build_resume_cursor(job_index, pattern_index, file_index, item[6], False)
                                 append_event(events, event_resume_cursors, *item, rc)
                         else:

@@ -404,6 +404,61 @@ function extractCopilotVscodeEventsFromJsonlText(text, fallbackTime, sourceRef) 
   return events;
 }
 
+function extractClineVscodeUsage(node) {
+  const tokens = node?.metrics?.tokens;
+  if (!tokens || typeof tokens !== "object") {
+    return { inputTokens: 0, cacheTokens: 0, outputTokens: 0 };
+  }
+  const cacheTokens = coerceInt(tokens.cached || tokens.cacheRead || tokens.cache_read);
+  const promptTokens = coerceInt(tokens.prompt || tokens.input || tokens.inputTokens);
+  const outputTokens = coerceInt(tokens.completion || tokens.output || tokens.outputTokens);
+  return {
+    inputTokens: promptTokens > 0 && cacheTokens > 0 ? Math.max(0, promptTokens - cacheTokens) : promptTokens,
+    cacheTokens,
+    outputTokens,
+  };
+}
+
+function extractClineVscodeTaskId(sourceRef) {
+  const parent = path.basename(path.dirname(sourceRef)).trim();
+  if (parent) {
+    return parent;
+  }
+  return path.parse(sourceRef).name || "unknown";
+}
+
+function extractClineVscodeEvents(node, fallbackTime, sourceRef) {
+  if (!Array.isArray(node)) {
+    return [];
+  }
+  const taskId = extractClineVscodeTaskId(sourceRef);
+  const out = [];
+  let eventIndex = 0;
+  for (const item of node) {
+    if (!item || typeof item !== "object" || String(item.role || "").trim() !== "assistant") {
+      continue;
+    }
+    const { inputTokens, cacheTokens, outputTokens } = extractClineVscodeUsage(item);
+    if (inputTokens === 0 && cacheTokens === 0 && outputTokens === 0) {
+      continue;
+    }
+    eventIndex += 1;
+    const eventTime = parseTime(item.ts) || fallbackTime;
+    const eventTsMs = eventTime.getTime();
+    out.push({
+      tool: "cline_vscode",
+      model: typeof item?.modelInfo?.modelId === "string" && item.modelInfo.modelId.trim() ? item.modelInfo.modelId.trim() : "unknown",
+      eventTime,
+      inputTokens,
+      cacheTokens,
+      outputTokens,
+      sessionFingerprint: `cline_vscode:${taskId}:${eventIndex}:${eventTsMs}`,
+      sourceRef: `${sourceRef}:${eventIndex}`,
+    });
+  }
+  return out;
+}
+
 function extractCopilotCliEvents(node, fallbackTime, sourceRef, sessionFingerprint) {
   if (node?.type !== "session.shutdown" || !node.data || typeof node.data !== "object") {
     return [];
@@ -446,6 +501,9 @@ function extractUsageEventsFromNode(node, tool, fallbackTime, sourceRef, options
   }
   if (tool === "copilot_vscode") {
     return extractCopilotVscodeEvents(node, fallbackTime, sourceRef);
+  }
+  if (tool === "cline_vscode") {
+    return extractClineVscodeEvents(node, fallbackTime, sourceRef);
   }
   if (tool === "codex") {
     const usage = extractCodexTokenCountUsage(node);
@@ -498,6 +556,10 @@ export function readEventsFromText(text, tool, sourceRef, fallbackTime, fileSuff
   let codexModelHint = null;
   const sessionFingerprint = sessionFingerprintSource ? buildSessionFingerprint(sessionFingerprintSource, tool) : null;
   try {
+    if (tool === "cline_vscode" && fileSuffix.toLowerCase() === ".json") {
+      return [extractClineVscodeEvents(JSON.parse(text), fallbackTime, sourceRef), null];
+    }
+
     if (tool === "copilot_vscode" && fileSuffix.toLowerCase() === ".jsonl") {
       return [extractCopilotVscodeEventsFromJsonlText(text, fallbackTime, sourceRef), null];
     }

@@ -91,6 +91,40 @@ test("readEventsFromText parses copilot vscode session files", () => {
   assert.equal(events[0].sessionFingerprint, "copilot_vscode:session-a:req-1");
 });
 
+test("readEventsFromText parses cline vscode history files", () => {
+  const text = JSON.stringify([
+    {
+      role: "assistant",
+      ts: 1777005161617,
+      modelInfo: { modelId: "kwaipilot/kat-coder-pro", providerId: "cline" },
+      metrics: {
+        tokens: {
+          prompt: 13408,
+          completion: 42,
+          cached: 336,
+        },
+      },
+    },
+  ]);
+
+  const [events, warning] = readEventsFromText(
+    text,
+    "cline_vscode",
+    "/tmp/tasks/1777005150050/api_conversation_history.json",
+    new Date("2026-04-24T04:32:41.617Z"),
+    ".json",
+    "/tmp/tasks/1777005150050/api_conversation_history.json",
+  );
+
+  assert.equal(warning, null);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].model, "kwaipilot/kat-coder-pro");
+  assert.equal(events[0].inputTokens, 13072);
+  assert.equal(events[0].cacheTokens, 336);
+  assert.equal(events[0].outputTokens, 42);
+  assert.equal(events[0].sessionFingerprint, "cline_vscode:1777005150050:1:1777005161617");
+});
+
 test("FileCollector probes and collects supported files", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-usage-node-collector-"));
   const validPath = path.join(root, "logs", "claude.jsonl");
