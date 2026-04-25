@@ -881,9 +881,9 @@ def test_web_remote_setup_returns_structured_input_request_sequence():
     current = service.jobs.get_job(job_id)
     assert current is not None
     assert current["status"] == "needs_input"
-    assert current["input_request"]["kind"] == "ssh_jump_host"
+    assert current["input_request"]["kind"] == "use_jump"
 
-    resumed = service.jobs.submit_input(job_id, "")
+    resumed = service.jobs.submit_input(job_id, "n")
     assert resumed["status"] in {"queued", "running", "succeeded"}
 
     for _ in range(100):

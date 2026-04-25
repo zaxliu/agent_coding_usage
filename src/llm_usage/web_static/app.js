@@ -716,6 +716,11 @@ function openRemoteEditModal(remote = null, index = -1) {
   document.querySelector("#remote-edit-ssh-host").value = remote?.ssh_host || "";
   document.querySelector("#remote-edit-ssh-user").value = remote?.ssh_user || "";
   document.querySelector("#remote-edit-ssh-port").value = remote?.ssh_port || 22;
+  const hasJump = !!(remote?.ssh_jump_host);
+  const useJumpCheckbox = document.querySelector("#remote-edit-use-jump");
+  useJumpCheckbox.checked = hasJump;
+  document.querySelector("#remote-edit-jump-host-label").hidden = !hasJump;
+  document.querySelector("#remote-edit-jump-port-label").hidden = !hasJump;
   document.querySelector("#remote-edit-ssh-jump-host").value = remote?.ssh_jump_host || "";
   document.querySelector("#remote-edit-ssh-jump-port").value = remote?.ssh_jump_port || 2222;
   document.querySelector("#remote-edit-source-label").value = remote?.source_label || "";
@@ -729,13 +734,14 @@ function openRemoteEditModal(remote = null, index = -1) {
 
 function collectRemoteFromModal() {
   const splitPaths = (val) => val.split(",").map((s) => s.trim()).filter(Boolean);
+  const useJump = document.querySelector("#remote-edit-use-jump").checked;
   return {
     alias: document.querySelector("#remote-edit-alias").value.trim(),
     ssh_host: document.querySelector("#remote-edit-ssh-host").value.trim(),
     ssh_user: document.querySelector("#remote-edit-ssh-user").value.trim(),
     ssh_port: parseInt(document.querySelector("#remote-edit-ssh-port").value, 10) || 22,
-    ssh_jump_host: document.querySelector("#remote-edit-ssh-jump-host").value.trim(),
-    ssh_jump_port: parseInt(document.querySelector("#remote-edit-ssh-jump-port").value, 10) || 2222,
+    ssh_jump_host: useJump ? (document.querySelector("#remote-edit-ssh-jump-host").value.trim() || "blj.horizon.cc") : "",
+    ssh_jump_port: useJump ? (parseInt(document.querySelector("#remote-edit-ssh-jump-port").value, 10) || 2222) : 2222,
     source_label: document.querySelector("#remote-edit-source-label").value.trim(),
     claude_log_paths: splitPaths(document.querySelector("#remote-edit-claude-paths").value),
     codex_log_paths: splitPaths(document.querySelector("#remote-edit-codex-paths").value),
@@ -1219,6 +1225,14 @@ refs.tableColumnSortDesc.addEventListener("click", () => {
   }
   state.tableSort = { column, direction: "desc" };
   applyTableView();
+});
+
+document.querySelector("#remote-edit-use-jump").addEventListener("change", (e) => {
+  document.querySelector("#remote-edit-jump-host-label").hidden = !e.target.checked;
+  document.querySelector("#remote-edit-jump-port-label").hidden = !e.target.checked;
+  if (e.target.checked && !document.querySelector("#remote-edit-ssh-jump-host").value.trim()) {
+    document.querySelector("#remote-edit-ssh-jump-host").value = "blj.horizon.cc";
+  }
 });
 
 refs.remoteEditForm.addEventListener("submit", async (event) => {

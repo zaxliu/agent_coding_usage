@@ -873,9 +873,9 @@ def _request_kinds(runner: RemotePromptRunner, values: list[str]) -> list[str]:
 
 def test_cli_and_web_share_same_remote_input_sequence():
     runner = RemotePromptRunner(existing_aliases=[])
-    kinds = _request_kinds(runner, ["host-a", "alice", "22", ""])
+    kinds = _request_kinds(runner, ["host-a", "alice", "22", "n"])
 
-    assert kinds == ["ssh_host", "ssh_user", "ssh_port", "ssh_jump_host"]
+    assert kinds == ["ssh_host", "ssh_user", "ssh_port", "use_jump"]
     assert runner.next_request() is None
     assert runner.state.ssh_host == "host-a"
     assert runner.state.ssh_user == "alice"

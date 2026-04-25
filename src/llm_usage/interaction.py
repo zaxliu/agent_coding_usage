@@ -1295,13 +1295,18 @@ def _prompt_remote(existing_aliases: list[str], stdin: TextIO, stdout: TextIO) -
         stdout.write("SSH host 和 SSH user 为必填项。\n")
         return None
     port = _read_port(stdin=stdin, stdout=stdout, prompt_text="SSH port [22]: ", default=22)
-    jump_host = _read_line("Jump host (leave empty to skip): ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
-    if jump_host and ("@" in jump_host or any(c in jump_host for c in " \t\n\r")):
-        stdout.write("跳板机地址不能包含 @ 或空白字符。\n")
-        jump_host = ""
+    use_jump = _read_line("是否要通过堡垒机或跳板机才能连接服务器？(y/N): ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
+    jump_host = ""
     jump_port = 2222
-    if jump_host:
-        jump_port = _read_port(stdin=stdin, stdout=stdout, prompt_text="Jump port [2222]: ", default=2222)
+    if use_jump == "y":
+        jump_host = _read_line("Jump host [blj.horizon.cc]: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
+        if not jump_host:
+            jump_host = "blj.horizon.cc"
+        if "@" in jump_host or any(c in jump_host for c in " \t\n\r"):
+            stdout.write("跳板机地址不能包含 @ 或空白字符。\n")
+            jump_host = ""
+        if jump_host:
+            jump_port = _read_port(stdin=stdin, stdout=stdout, prompt_text="Jump port [2222]: ", default=2222)
     default_label = default_source_label(user, host)
     label = _read_line(
         f"Label [{default_label}]: ",
@@ -1673,6 +1678,13 @@ def _prompt_temporary_remote(
                     if runner.apply_input(port_raw):
                         break
                     stdout.write("端口格式不正确，请重新输入。\n")
+                continue
+            if request.kind == "use_jump":
+                while True:
+                    answer = _read_line(request.message, stdin=stdin, stdout=stdout, use_prompt_toolkit=use_prompt_toolkit)
+                    if runner.apply_input(answer):
+                        break
+                    stdout.write("请输入 y 或 n。\n")
                 continue
             if request.kind == "ssh_jump_host":
                 while True:

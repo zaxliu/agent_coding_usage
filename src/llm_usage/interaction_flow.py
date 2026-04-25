@@ -39,8 +39,13 @@ class RemotePromptRunner:
             return InputRequest(kind="ssh_user", message="SSH 用户：")
         if self._stage == "ssh_port":
             return InputRequest(kind="ssh_port", message="SSH 端口 [22]：")
+        if self._stage == "use_jump":
+            return InputRequest(
+                kind="use_jump",
+                message="是否要通过堡垒机或跳板机才能连接服务器？(y/N)：",
+            )
         if self._stage == "ssh_jump_host":
-            return InputRequest(kind="ssh_jump_host", message="跳板机地址（留空跳过）：")
+            return InputRequest(kind="ssh_jump_host", message="跳板机地址 [blj.horizon.cc]：")
         if self._stage == "ssh_jump_port":
             return InputRequest(kind="ssh_jump_port", message="跳板机端口 [2222]：")
         return None
@@ -63,7 +68,7 @@ class RemotePromptRunner:
         if self._stage == "ssh_port":
             if not value:
                 self.state.ssh_port = 22
-                self._stage = "ssh_jump_host"
+                self._stage = "use_jump"
                 return True
             try:
                 port = int(value)
@@ -72,12 +77,22 @@ class RemotePromptRunner:
             if port <= 0:
                 return False
             self.state.ssh_port = port
-            self._stage = "ssh_jump_host"
+            self._stage = "use_jump"
             return True
-        if self._stage == "ssh_jump_host":
-            if not value:
+        if self._stage == "use_jump":
+            lower = value.lower()
+            if lower == "y":
+                self._stage = "ssh_jump_host"
+                return True
+            if lower in ("n", ""):
                 self.state.ssh_jump_host = ""
                 self._stage = "done"
+                return True
+            return False
+        if self._stage == "ssh_jump_host":
+            if not value:
+                self.state.ssh_jump_host = "blj.horizon.cc"
+                self._stage = "ssh_jump_port"
                 return True
             if "@" in value or any(c in value for c in " \t\n\r"):
                 return False

@@ -55,9 +55,23 @@ def test_remote_prompt_runner_advances_through_temp_remote_steps():
 
     assert runner.apply_input("2200") is True
     assert runner.state.ssh_port == 2200
-    assert runner.next_request().kind == "ssh_jump_host"
+    assert runner.next_request().kind == "use_jump"
 
-    # skip jump host
+    # decline jump host
+    assert runner.apply_input("n") is True
+    assert runner.state.ssh_jump_host == ""
+    assert runner.next_request() is None
+
+
+def test_remote_prompt_runner_skip_jump_with_empty_input():
+    runner = RemotePromptRunner(existing_aliases=[])
+
+    assert runner.apply_input("host-b") is True
+    assert runner.apply_input("alice") is True
+    assert runner.apply_input("") is True
+    assert runner.next_request().kind == "use_jump"
+
+    # empty input defaults to no
     assert runner.apply_input("") is True
     assert runner.state.ssh_jump_host == ""
     assert runner.next_request() is None
@@ -99,10 +113,10 @@ def test_remote_prompt_runner_uses_default_port_for_blank_input():
 
     assert runner.apply_input("") is True
     assert runner.state.ssh_port == 22
-    assert runner.next_request().kind == "ssh_jump_host"
+    assert runner.next_request().kind == "use_jump"
 
-    # skip jump host
-    assert runner.apply_input("") is True
+    # decline jump
+    assert runner.apply_input("n") is True
     assert runner.next_request() is None
 
 
@@ -123,6 +137,9 @@ def test_remote_prompt_runner_with_jump_host():
     assert runner.apply_input("host-c") is True
     assert runner.apply_input("bob") is True
     assert runner.apply_input("22") is True
+    assert runner.next_request().kind == "use_jump"
+
+    assert runner.apply_input("y") is True
     assert runner.next_request().kind == "ssh_jump_host"
 
     assert runner.apply_input("bastion.example.com") is True
@@ -141,6 +158,9 @@ def test_remote_prompt_runner_jump_host_custom_port():
     assert runner.apply_input("carol") is True
     assert runner.apply_input("") is True  # default port
 
+    assert runner.apply_input("y") is True  # use jump
+    assert runner.next_request().kind == "ssh_jump_host"
+
     assert runner.apply_input("jump.server") is True
     assert runner.next_request().kind == "ssh_jump_port"
 
@@ -155,6 +175,7 @@ def test_remote_prompt_runner_rejects_invalid_jump_port():
     assert runner.apply_input("host-e") is True
     assert runner.apply_input("dave") is True
     assert runner.apply_input("22") is True
+    assert runner.apply_input("y") is True  # use jump
     assert runner.apply_input("jump.host") is True
 
     assert runner.apply_input("abc") is False
@@ -170,6 +191,7 @@ def test_remote_prompt_runner_rejects_jump_host_with_at_sign():
     assert runner.apply_input("host-f") is True
     assert runner.apply_input("eve") is True
     assert runner.apply_input("22") is True
+    assert runner.apply_input("y") is True  # use jump
 
     assert runner.apply_input("bad@host") is False
     assert runner.next_request().kind == "ssh_jump_host"
@@ -181,6 +203,37 @@ def test_remote_prompt_runner_rejects_jump_host_with_whitespace():
     assert runner.apply_input("host-g") is True
     assert runner.apply_input("frank") is True
     assert runner.apply_input("22") is True
+    assert runner.apply_input("y") is True  # use jump
 
     assert runner.apply_input("bad host") is False
+    assert runner.next_request().kind == "ssh_jump_host"
+
+
+def test_remote_prompt_runner_jump_host_defaults_to_blj():
+    """When user selects jump but leaves host empty, default to blj.horizon.cc."""
+    runner = RemotePromptRunner(existing_aliases=[])
+
+    assert runner.apply_input("host-h") is True
+    assert runner.apply_input("grace") is True
+    assert runner.apply_input("22") is True
+    assert runner.apply_input("y") is True  # use jump
+    assert runner.next_request().kind == "ssh_jump_host"
+
+    assert runner.apply_input("") is True
+    assert runner.state.ssh_jump_host == "blj.horizon.cc"
+    assert runner.next_request().kind == "ssh_jump_port"
+
+
+def test_remote_prompt_runner_use_jump_rejects_invalid_input():
+    runner = RemotePromptRunner(existing_aliases=[])
+
+    assert runner.apply_input("host-i") is True
+    assert runner.apply_input("ivan") is True
+    assert runner.apply_input("22") is True
+    assert runner.next_request().kind == "use_jump"
+
+    assert runner.apply_input("maybe") is False
+    assert runner.next_request().kind == "use_jump"
+
+    assert runner.apply_input("Y") is True
     assert runner.next_request().kind == "ssh_jump_host"

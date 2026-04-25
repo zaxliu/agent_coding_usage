@@ -299,8 +299,11 @@
           <label>SSH Host<input id="remote-edit-ssh-host"></label>
           <label>SSH User<input id="remote-edit-ssh-user"></label>
           <label>SSH Port<input id="remote-edit-ssh-port" type="number" value="22"></label>
-          <label>Jump Host<input id="remote-edit-ssh-jump-host"></label>
-          <label>Jump Port<input id="remote-edit-ssh-jump-port" type="number" value="2222"></label>
+          <label class="form-checkbox" style="grid-column: 1 / -1">
+            <input type="checkbox" id="remote-edit-use-jump"> 需要通过跳板机连接
+          </label>
+          <label id="remote-edit-jump-host-label" hidden>Jump Host<input id="remote-edit-ssh-jump-host" placeholder="blj.horizon.cc"></label>
+          <label id="remote-edit-jump-port-label" hidden>Jump Port<input id="remote-edit-ssh-jump-port" type="number" value="2222"></label>
           <label>Source Label<input id="remote-edit-source-label"></label>
         </div>
         <details class="path-details">
