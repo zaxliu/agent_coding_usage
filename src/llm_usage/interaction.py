@@ -1037,11 +1037,11 @@ def _edit_feishu_target_detail(
     changed = False
     while True:
         stdout.write(f"Feishu target [{target.name}]\n")
-        stdout.write(f"  1. APP_TOKEN  = {target.app_token}  # 多维表格 App Token\n")
-        stdout.write(f"  2. TABLE_ID   = {target.table_id or '(empty: auto-select first table)'}  # 表 ID（空则自动选第一张表）\n")
-        stdout.write(f"  3. APP_ID     = {target.app_id or '(empty: inherit from default target)'}  # 飞书 App ID（空则继承默认目标）\n")
-        stdout.write(f"  4. APP_SECRET = {target.app_secret or '(empty: inherit from default target)'}  # 飞书 App Secret（空则继承默认目标）\n")
-        stdout.write(f"  5. BOT_TOKEN  = {target.bot_token or '(empty: derived from APP_ID/APP_SECRET)'}  # Bot Token（空则由 APP_ID/SECRET 推导）\n")
+        stdout.write(f"  1. APP_TOKEN  = {target.app_token}\n")
+        stdout.write(f"  2. TABLE_ID   = {target.table_id or '(空：自动选第一张表)'}\n")
+        stdout.write(f"  3. APP_ID     = {target.app_id or '(空：继承默认目标)'}\n")
+        stdout.write(f"  4. APP_SECRET = {target.app_secret or '(空：继承默认目标)'}\n")
+        stdout.write(f"  5. BOT_TOKEN  = {target.bot_token or '(空：由 APP_ID/SECRET 推导)'}\n")
         if env_path is not None and draft is not None:
             stdout.write("  s. Save  # 保存\n")
         stdout.write("  b. Back  # 返回上一级\n")
@@ -1295,18 +1295,24 @@ def _prompt_remote(existing_aliases: list[str], stdin: TextIO, stdout: TextIO) -
         stdout.write("SSH host 和 SSH user 为必填项。\n")
         return None
     port = _read_port(stdin=stdin, stdout=stdout, prompt_text="SSH port [22]: ", default=22)
-    use_jump = _read_line("是否要通过堡垒机或跳板机才能连接服务器？(y/N): ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
     jump_host = ""
     jump_port = 2222
+    while True:
+        use_jump = _read_line("是否要通过堡垒机或跳板机才能连接服务器？(y/N): ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
+        if use_jump in ("y", "n", ""):
+            break
+        stdout.write("请输入 y 或 n。\n")
     if use_jump == "y":
-        jump_host = _read_line("Jump host [blj.horizon.cc]: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
-        if not jump_host:
-            jump_host = "blj.horizon.cc"
-        if "@" in jump_host or any(c in jump_host for c in " \t\n\r"):
-            stdout.write("跳板机地址不能包含 @ 或空白字符。\n")
-            jump_host = ""
-        if jump_host:
-            jump_port = _read_port(stdin=stdin, stdout=stdout, prompt_text="Jump port [2222]: ", default=2222)
+        while True:
+            jump_host = _read_line("Jump host [blj.horizon.cc]: ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip()
+            if not jump_host:
+                jump_host = "blj.horizon.cc"
+                break
+            if "@" in jump_host or any(c in jump_host for c in " \t\n\r"):
+                stdout.write("跳板机地址不能包含 @ 或空白字符，请重新输入。\n")
+                continue
+            break
+        jump_port = _read_port(stdin=stdin, stdout=stdout, prompt_text="Jump port [2222]: ", default=2222)
     default_label = default_source_label(user, host)
     label = _read_line(
         f"Label [{default_label}]: ",
@@ -1342,16 +1348,20 @@ def _edit_remote_detail(
     while True:
         jump_display = remote.ssh_jump_host or "(none)"
         stdout.write("Remote Detail\n")
-        stdout.write(f"  1. Alias = {remote.alias}          # 本地别名\n")
-        stdout.write(f"  2. SSH host = {remote.ssh_host}    # SSH 主机\n")
-        stdout.write(f"  3. SSH user = {remote.ssh_user}    # SSH 用户\n")
-        stdout.write(f"  4. SSH port = {remote.ssh_port}    # SSH 端口\n")
-        stdout.write(f"  5. Label = {remote.source_label}   # 报表中显示的主机标签\n")
-        stdout.write(f"  6. Jump host = {jump_display}      # 跳板机地址\n")
+        _fields = [
+            ("1", f"Alias = {remote.alias}", "本地别名"),
+            ("2", f"SSH host = {remote.ssh_host}", "SSH 主机"),
+            ("3", f"SSH user = {remote.ssh_user}", "SSH 用户"),
+            ("4", f"SSH port = {remote.ssh_port}", "SSH 端口"),
+            ("5", f"Label = {remote.source_label}", "报表中显示的主机标签"),
+            ("6", f"Jump host = {jump_display}", "跳板机地址"),
+        ]
         if remote.ssh_jump_host:
-            stdout.write(f"  7. Jump port = {remote.ssh_jump_port}   # 跳板机端口\n")
-        stdout.write("  p. Edit paths  # 编辑日志路径\n")
-        stdout.write("  b. Back        # 返回上一级\n")
+            _fields.append(("7", f"Jump port = {remote.ssh_jump_port}", "跳板机端口"))
+        for num, field, desc in _fields:
+            stdout.write(f"  {num}. {field:<34s}# {desc}\n")
+        stdout.write(f"  {'p'}. {'Edit paths':<34s}# 编辑日志路径\n")
+        stdout.write(f"  {'b'}. {'Back':<34s}# 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return changed
@@ -1405,12 +1415,16 @@ def _edit_remote_paths(remote: RemoteDraft, stdin: TextIO, stdout: TextIO) -> bo
     changed = False
     while True:
         stdout.write("Remote Paths\n")
-        stdout.write(f"  1. Claude ({len(remote.claude_log_paths)})                 # Claude Code 日志路径\n")
-        stdout.write(f"  2. Codex ({len(remote.codex_log_paths)})                  # Codex CLI 日志路径\n")
-        stdout.write(f"  3. Copilot CLI ({len(remote.copilot_cli_log_paths)})             # Copilot CLI 日志路径\n")
-        stdout.write(f"  4. Copilot VSCode ({len(remote.copilot_vscode_session_paths)})         # Copilot VSCode 会话路径\n")
-        stdout.write(f"  5. Cline VSCode ({len(remote.cline_vscode_session_paths)})           # Cline VSCode 会话路径\n")
-        stdout.write("  b. Back  # 返回上一级\n")
+        _items = [
+            (f"Claude ({len(remote.claude_log_paths)})", "Claude Code 日志路径"),
+            (f"Codex ({len(remote.codex_log_paths)})", "Codex CLI 日志路径"),
+            (f"Copilot CLI ({len(remote.copilot_cli_log_paths)})", "Copilot CLI 日志路径"),
+            (f"Copilot VSCode ({len(remote.copilot_vscode_session_paths)})", "Copilot VSCode 会话路径"),
+            (f"Cline VSCode ({len(remote.cline_vscode_session_paths)})", "Cline VSCode 会话路径"),
+        ]
+        for idx, (item, desc) in enumerate(_items, start=1):
+            stdout.write(f"  {idx}. {item:<26s}# {desc}\n")
+        stdout.write("  b. Back                    # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return changed
