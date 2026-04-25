@@ -558,14 +558,14 @@ def run_config_editor(
     while True:
         dirty_mark = " *" if draft.dirty else ""
         stdout.write(f"Config{dirty_mark}\n")
-        stdout.write("  1. Basic\n")
-        stdout.write("  2. Feishu\n")
-        stdout.write("  3. Cursor\n")
-        stdout.write("  4. Remotes\n")
-        stdout.write("  5. Advanced / Raw Env\n")
-        stdout.write("  s. Save\n")
-        stdout.write("  d. Discard\n")
-        stdout.write("  q. Quit\n")
+        stdout.write("  1. Basic               # 基础：用户名 / 盐 / 时区 / lookback\n")
+        stdout.write("  2. Feishu              # 飞书目标配置\n")
+        stdout.write("  3. Cursor              # Cursor token / 登录方式\n")
+        stdout.write("  4. Remotes             # 远端主机列表\n")
+        stdout.write("  5. Advanced / Raw Env  # 高级：直接编辑 env 键值\n")
+        stdout.write("  s. Save                # 保存\n")
+        stdout.write("  d. Discard             # 丢弃更改\n")
+        stdout.write("  q. Quit                # 退出\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "":
             if not draft.dirty:
@@ -861,12 +861,12 @@ def _edit_feishu_menu(
     while True:
         dirty_mark = " *" if draft.dirty else ""
         stdout.write(f"Feishu{dirty_mark}\n")
-        stdout.write("  1. Default target (legacy FEISHU_* keys)\n")
-        stdout.write("  2. Named targets (FEISHU_TARGETS)\n")
-        stdout.write("  3. Doctor current Feishu targets (saved .env)\n")
-        stdout.write("  4. Initialize Feishu schema (saved .env)\n")
-        stdout.write("  s. Save\n")
-        stdout.write("  b. Back\n")
+        stdout.write("  1. Default target (legacy FEISHU_* keys)  # 默认目标（旧版 FEISHU_* 键）\n")
+        stdout.write("  2. Named targets (FEISHU_TARGETS)         # 命名目标列表\n")
+        stdout.write("  3. Doctor current Feishu targets (saved .env)   # 连通性检查（已保存的 .env）\n")
+        stdout.write("  4. Initialize Feishu schema (saved .env)        # 初始化飞书表格 schema\n")
+        stdout.write("  s. Save  # 保存\n")
+        stdout.write("  b. Back  # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
@@ -935,12 +935,12 @@ def _edit_feishu_named_targets_menu(
         for index, target in enumerate(draft.feishu_named_targets, start=1):
             preview = target.app_token[:24] + ("..." if len(target.app_token) > 24 else "")
             stdout.write(f"  {index}. {target.name} app_token={preview}\n")
-        stdout.write("  a. Add target\n")
-        stdout.write("  e. Edit target\n")
-        stdout.write("  d. Delete target\n")
+        stdout.write("  a. Add target     # 新增目标\n")
+        stdout.write("  e. Edit target    # 编辑目标\n")
+        stdout.write("  d. Delete target  # 删除目标\n")
         if env_path is not None:
-            stdout.write("  s. Save\n")
-        stdout.write("  b. Back\n")
+            stdout.write("  s. Save  # 保存\n")
+        stdout.write("  b. Back  # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
@@ -1037,14 +1037,14 @@ def _edit_feishu_target_detail(
     changed = False
     while True:
         stdout.write(f"Feishu target [{target.name}]\n")
-        stdout.write(f"  1. APP_TOKEN  = {target.app_token}\n")
-        stdout.write(f"  2. TABLE_ID   = {target.table_id or '(empty: auto-select first table)'}\n")
-        stdout.write(f"  3. APP_ID     = {target.app_id or '(empty: inherit from default target)'}\n")
-        stdout.write(f"  4. APP_SECRET = {target.app_secret or '(empty: inherit from default target)'}\n")
-        stdout.write(f"  5. BOT_TOKEN  = {target.bot_token or '(empty: derived from APP_ID/APP_SECRET)'}\n")
+        stdout.write(f"  1. APP_TOKEN  = {target.app_token}  # 多维表格 App Token\n")
+        stdout.write(f"  2. TABLE_ID   = {target.table_id or '(empty: auto-select first table)'}  # 表 ID（空则自动选第一张表）\n")
+        stdout.write(f"  3. APP_ID     = {target.app_id or '(empty: inherit from default target)'}  # 飞书 App ID（空则继承默认目标）\n")
+        stdout.write(f"  4. APP_SECRET = {target.app_secret or '(empty: inherit from default target)'}  # 飞书 App Secret（空则继承默认目标）\n")
+        stdout.write(f"  5. BOT_TOKEN  = {target.bot_token or '(empty: derived from APP_ID/APP_SECRET)'}  # Bot Token（空则由 APP_ID/SECRET 推导）\n")
         if env_path is not None and draft is not None:
-            stdout.write("  s. Save\n")
-        stdout.write("  b. Back\n")
+            stdout.write("  s. Save  # 保存\n")
+        stdout.write("  b. Back  # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return changed
@@ -1102,8 +1102,8 @@ def _edit_key_menu(
         for index, key in enumerate(keys, start=1):
             stdout.write(f"  {index}. {key} = {draft.values.get(key, '')}\n")
         if env_path is not None:
-            stdout.write("  s. Save\n")
-        stdout.write("  b. Back\n")
+            stdout.write("  s. Save  # 保存\n")
+        stdout.write("  b. Back  # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
@@ -1150,11 +1150,11 @@ def _edit_raw_env_menu(
         stdout.write(f"Advanced / Raw Env{dirty_mark}\n")
         for index, key in enumerate(keys, start=1):
             stdout.write(f"  {index}. {key} = {draft.values[key]}\n")
-        stdout.write("  a. Add key\n")
-        stdout.write("  d. Delete key\n")
+        stdout.write("  a. Add key      # 新增键\n")
+        stdout.write("  d. Delete key   # 删除键\n")
         if env_path is not None:
-            stdout.write("  s. Save\n")
-        stdout.write("  b. Back\n")
+            stdout.write("  s. Save  # 保存\n")
+        stdout.write("  b. Back  # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
@@ -1214,12 +1214,12 @@ def _edit_remotes_menu(
         stdout.write(f"Remotes{dirty_mark}\n")
         for index, remote in enumerate(draft.remotes, start=1):
             stdout.write(f"  {index}. {remote.alias} {remote.ssh_user}@{remote.ssh_host}:{remote.ssh_port}\n")
-        stdout.write("  a. Add remote\n")
-        stdout.write("  e. Edit remote\n")
-        stdout.write("  d. Delete remote\n")
+        stdout.write("  a. Add remote     # 新增远端\n")
+        stdout.write("  e. Edit remote    # 编辑远端\n")
+        stdout.write("  d. Delete remote  # 删除远端\n")
         if env_path is not None:
-            stdout.write("  s. Save\n")
-        stdout.write("  b. Back\n")
+            stdout.write("  s. Save  # 保存\n")
+        stdout.write("  b. Back  # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return
@@ -1342,16 +1342,16 @@ def _edit_remote_detail(
     while True:
         jump_display = remote.ssh_jump_host or "(none)"
         stdout.write("Remote Detail\n")
-        stdout.write(f"  1. Alias = {remote.alias}\n")
-        stdout.write(f"  2. SSH host = {remote.ssh_host}\n")
-        stdout.write(f"  3. SSH user = {remote.ssh_user}\n")
-        stdout.write(f"  4. SSH port = {remote.ssh_port}\n")
-        stdout.write(f"  5. Label = {remote.source_label}\n")
-        stdout.write(f"  6. Jump host = {jump_display}\n")
+        stdout.write(f"  1. Alias = {remote.alias}          # 本地别名\n")
+        stdout.write(f"  2. SSH host = {remote.ssh_host}    # SSH 主机\n")
+        stdout.write(f"  3. SSH user = {remote.ssh_user}    # SSH 用户\n")
+        stdout.write(f"  4. SSH port = {remote.ssh_port}    # SSH 端口\n")
+        stdout.write(f"  5. Label = {remote.source_label}   # 报表中显示的主机标签\n")
+        stdout.write(f"  6. Jump host = {jump_display}      # 跳板机地址\n")
         if remote.ssh_jump_host:
-            stdout.write(f"  7. Jump port = {remote.ssh_jump_port}\n")
-        stdout.write("  p. Edit paths\n")
-        stdout.write("  b. Back\n")
+            stdout.write(f"  7. Jump port = {remote.ssh_jump_port}   # 跳板机端口\n")
+        stdout.write("  p. Edit paths  # 编辑日志路径\n")
+        stdout.write("  b. Back        # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return changed
@@ -1405,12 +1405,12 @@ def _edit_remote_paths(remote: RemoteDraft, stdin: TextIO, stdout: TextIO) -> bo
     changed = False
     while True:
         stdout.write("Remote Paths\n")
-        stdout.write(f"  1. Claude ({len(remote.claude_log_paths)})\n")
-        stdout.write(f"  2. Codex ({len(remote.codex_log_paths)})\n")
-        stdout.write(f"  3. Copilot CLI ({len(remote.copilot_cli_log_paths)})\n")
-        stdout.write(f"  4. Copilot VSCode ({len(remote.copilot_vscode_session_paths)})\n")
-        stdout.write(f"  5. Cline VSCode ({len(remote.cline_vscode_session_paths)})\n")
-        stdout.write("  b. Back\n")
+        stdout.write(f"  1. Claude ({len(remote.claude_log_paths)})                 # Claude Code 日志路径\n")
+        stdout.write(f"  2. Codex ({len(remote.codex_log_paths)})                  # Codex CLI 日志路径\n")
+        stdout.write(f"  3. Copilot CLI ({len(remote.copilot_cli_log_paths)})             # Copilot CLI 日志路径\n")
+        stdout.write(f"  4. Copilot VSCode ({len(remote.copilot_vscode_session_paths)})         # Copilot VSCode 会话路径\n")
+        stdout.write(f"  5. Cline VSCode ({len(remote.cline_vscode_session_paths)})           # Cline VSCode 会话路径\n")
+        stdout.write("  b. Back  # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return changed
@@ -1437,9 +1437,9 @@ def _edit_path_list(values: list[str], stdin: TextIO, stdout: TextIO) -> bool:
         stdout.write("Path List\n")
         for index, value in enumerate(values, start=1):
             stdout.write(f"  {index}. {value}\n")
-        stdout.write("  a. Add path\n")
-        stdout.write("  d. Delete path\n")
-        stdout.write("  b. Back\n")
+        stdout.write("  a. Add path     # 新增路径\n")
+        stdout.write("  d. Delete path  # 删除路径\n")
+        stdout.write("  b. Back         # 返回上一级\n")
         answer = _read_line("> ", stdin=stdin, stdout=stdout, use_prompt_toolkit=False).strip().lower()
         if answer == "b" or answer == "":
             return changed
