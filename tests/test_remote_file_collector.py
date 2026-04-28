@@ -1985,6 +1985,22 @@ def test_ssh_base_command_jump_host_with_connection_sharing():
     assert cmd[cmd.index("-p") + 1] == "2222"
 
 
+def test_ssh_base_command_windows_jump_host_disables_connection_sharing(monkeypatch):
+    monkeypatch.setattr(remote_file, "_is_windows_platform", lambda: True, raising=False)
+
+    cmd = remote_file._ssh_base_command(
+        "bob@host-b", 22,
+        use_connection_sharing=True, batch_mode=False,
+        jump_host="bastion", jump_port=2222,
+    )
+
+    assert "ControlMaster=auto" not in cmd
+    assert "ControlPersist=5m" not in cmd
+    assert "ControlPath=/tmp/llm-usage-ssh-%C" not in cmd
+    assert "bob@bob@host-b@bastion" in cmd
+    assert cmd[cmd.index("-p") + 1] == "2222"
+
+
 def test_ssh_base_command_jump_host_custom_port_overrides_target_port():
     from llm_usage.collectors.remote_file import _ssh_base_command
 

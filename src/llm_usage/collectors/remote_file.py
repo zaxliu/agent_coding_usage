@@ -1667,6 +1667,10 @@ def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+def _is_windows_platform() -> bool:
+    return os.name == "nt"
+
+
 def _ssh_base_command(
     destination: str,
     port: int,
@@ -1680,6 +1684,8 @@ def _ssh_base_command(
         user, host = destination.split("@", 1)
         destination = f"{user}@{user}@{host}@{jump_host}"
         port = jump_port
+        if _is_windows_platform():
+            use_connection_sharing = False
     command = [
         "ssh",
         "-o",
