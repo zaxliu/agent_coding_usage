@@ -1679,13 +1679,13 @@ def _ssh_base_command(
     jump_host: str = "",
     jump_port: int = 2222,
 ) -> list[str]:
+    if _is_windows_platform():
+        use_connection_sharing = False
     if jump_host:
         # 堡垒机模式: ssh user@user@目标IP@跳板机IP -p 跳板机端口
         user, host = destination.split("@", 1)
         destination = f"{user}@{user}@{host}@{jump_host}"
         port = jump_port
-        if _is_windows_platform():
-            use_connection_sharing = False
     command = [
         "ssh",
         "-o",

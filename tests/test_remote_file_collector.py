@@ -1946,6 +1946,20 @@ def test_ssh_base_command_no_jump_host():
     assert cmd == ["ssh", "-o", "ConnectTimeout=10", "-p", "22", "deploy@10.0.0.5"]
 
 
+def test_ssh_base_command_windows_direct_disables_connection_sharing(monkeypatch):
+    monkeypatch.setattr(remote_file, "_is_windows_platform", lambda: True, raising=False)
+
+    cmd = remote_file._ssh_base_command(
+        "deploy@10.0.0.5", 22,
+        use_connection_sharing=True, batch_mode=True,
+    )
+
+    assert "ControlMaster=auto" not in cmd
+    assert "ControlPersist=5m" not in cmd
+    assert "ControlPath=/tmp/llm-usage-ssh-%C" not in cmd
+    assert "deploy@10.0.0.5" in cmd
+
+
 def test_ssh_base_command_with_jump_host():
     from llm_usage.collectors.remote_file import _ssh_base_command
 
