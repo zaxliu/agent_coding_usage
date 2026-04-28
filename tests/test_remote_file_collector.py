@@ -39,7 +39,8 @@ def _paramiko_python_discovery_result(cmd: list[str]) -> _Completed:
     return _Completed(returncode=0, stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
 
 
-def test_remote_file_collector_supports_python_fallback(tmp_path):
+def test_remote_file_collector_supports_python_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_file, "_is_windows_platform", lambda: False)
     calls = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
@@ -800,7 +801,8 @@ def test_remote_file_collector_logs_remote_stderr_progress(tmp_path, monkeypatch
     assert any("remote stderr: info: processing file 1 size=123" in line for line in printed)
 
 
-def test_remote_file_collector_retries_without_connection_sharing_after_timeout(tmp_path):
+def test_remote_file_collector_retries_without_connection_sharing_after_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_file, "_is_windows_platform", lambda: False)
     calls = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201

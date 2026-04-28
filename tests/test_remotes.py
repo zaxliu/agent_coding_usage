@@ -276,6 +276,7 @@ def test_default_source_label_uses_user_and_host():
 
 def test_probe_remote_ssh_uses_connection_sharing(monkeypatch):
     captured = {}
+    monkeypatch.setattr("llm_usage.collectors.remote_file._is_windows_platform", lambda: False)
 
     def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001, ANN201
         captured["cmd"] = cmd
