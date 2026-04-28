@@ -1371,6 +1371,10 @@ def test_remote_file_collector_builds_collect_payload_with_page_budget_and_curso
     assert decoded["stdout_page_budget_bytes"] == remote_file._DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES
 
 
+def test_default_remote_stdout_page_budget_stays_below_restrictive_bastion_limit():
+    assert remote_file._DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES <= 48 * 1024
+
+
 def test_remote_collect_script_emits_next_cursor_when_budget_is_tight(tmp_path):
     lines = []
     for i in range(8):

@@ -450,7 +450,7 @@ wheels = [
 
 [[package]]
 name = "llm-usage-horizon"
-version = "0.2.0rc12"
+version = "0.2.0rc13"
 source = { editable = "." }
 dependencies = [
     { name = "browser-cookie3" },
