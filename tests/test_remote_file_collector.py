@@ -1972,9 +1972,10 @@ def test_ssh_base_command_jump_host_with_batch_mode():
     assert cmd[3:5] == ["-o", "BatchMode=yes"]
 
 
-def test_ssh_base_command_jump_host_with_connection_sharing():
+def test_ssh_base_command_jump_host_with_connection_sharing(monkeypatch):
     from llm_usage.collectors.remote_file import _ssh_base_command
 
+    monkeypatch.setattr(remote_file, "_is_windows_platform", lambda: False)
     cmd = _ssh_base_command(
         "bob@host-b", 22,
         use_connection_sharing=True, batch_mode=False,
