@@ -1,5 +1,6 @@
 import ast
 import base64
+import hashlib
 import io
 import json
 import subprocess
@@ -277,13 +278,17 @@ def test_remote_file_collector_falls_back_to_common_python_paths(tmp_path):
 def test_remote_file_collector_collect_aggregates_multiple_pages():
     """collect() loops until next_cursor is null; events and warnings aggregate across pages."""
     collect_payloads: list[dict] = []
+    printed: list[str] = []
     cursor_resume = {"job_index": 0, "pattern_index": 0, "file_index": 0, "line_index": 3}
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
         if cmd[:1] == ["ssh"] and input is not None:
-            collect_payloads.append(_extract_stdin_payload(input))
+            payload = _extract_stdin_payload(input)
+            if "probe_bytes" in payload:
+                return _Completed(stdout="truncated")
+            collect_payloads.append(payload)
             if len(collect_payloads) == 1:
                 assert "cursor" not in collect_payloads[0]
                 return _Completed(
@@ -333,14 +338,23 @@ def test_remote_file_collector_collect_aggregates_multiple_pages():
         source_host_hash="hash",
         runner=_runner,
     )
-    out = collector.collect(
-        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
-        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
-    )
+    original_print = __import__("builtins").print
+    __import__("builtins").print = lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args))
+    try:
+        out = collector.collect(
+            start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        __import__("builtins").print = original_print
     assert len(collect_payloads) == 2
     assert [e.model for e in out.events] == ["alpha", "beta"]
     assert any("page1_warn" in w for w in out.warnings)
     assert any("page2_warn" in w for w in out.warnings)
+    assert any("remote page 1 start cursor=<begin>" in line for line in printed)
+    assert any("remote page 1 returned events=1 next_cursor=job=0 pattern=0 file=0 line=3" in line for line in printed)
+    assert any("remote page 2 start cursor=job=0 pattern=0 file=0 line=3" in line for line in printed)
+    assert any("remote page 2 returned events=1 next_cursor=<end>" in line for line in printed)
 
 
 def test_remote_file_collector_collect_rejects_non_advancing_cursor():
@@ -482,10 +496,11 @@ def test_remote_collect_script_emits_chunked_stdout_protocol(tmp_path):
     _cmd, script_input = collector._python_stdin_command("python3", remote_file._COLLECT_SCRIPT)
     _payload_line, script_text = script_input.split("\n", 1)
     first_line = next(line for line in script_text.splitlines() if line.strip())
-    assert first_line == "import base64, glob, hashlib, json, os, re, sys"
+    assert first_line == "import base64, glob, gzip, hashlib, json, os, re, sys"
     assert "_emit_chunked_payload" in script_text
     assert repr(remote_file._CHUNKED_STDOUT_PREFIX) in script_text
     assert f"chunk_size = {remote_file._DEFAULT_STDOUT_CHUNK_SIZE}" in script_text
+    assert "encoding=gzip" in script_text
     assert 'print(json.dumps({"events": events, "warnings": warnings}))' not in script_text
     assert '_emit_chunked_payload({"events": events, "warnings": warnings, "next_cursor":' in script_text
 
@@ -733,10 +748,148 @@ def test_remote_file_collector_writes_collect_payload_with_limits(tmp_path):
     ok, _msg = collector.probe()
 
     assert ok
-    payload = _extract_stdin_payload(next(item for item in inputs if item is not None))
+    payload = next(
+        _extract_stdin_payload(item)
+        for item in inputs
+        if item is not None and "probe_bytes" not in _extract_stdin_payload(item)
+    )
     assert payload["jobs"] == [{"tool": "claude_code", "patterns": ["~/.claude/**/*.jsonl"]}]
     assert payload["max_files"] == 12
     assert payload["max_total_bytes"] == 3456
+
+
+def test_remote_file_collector_default_max_files_is_400():
+    collector = RemoteFileCollector(
+        "claude_code",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.claude/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+    )
+    collector._active_start_value = datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc)
+    collector._active_end_value = datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc)
+
+    payload = collector._build_remote_payload()
+
+    assert payload["max_files"] == 400
+
+
+def test_remote_file_collector_collect_uses_probed_stdout_page_budget():
+    payloads: list[dict] = []
+    probe_attempts: list[int] = []
+    printed: list[str] = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            payload = _extract_stdin_payload(input)
+            if "probe_bytes" in payload:
+                probe_attempts.append(payload["probe_bytes"])
+                return _Completed(
+                    stdout=remote_file._encode_chunked_stdout_payload(
+                        {"ok": True, "probe_bytes": payload["probe_bytes"], "pad": "x" * payload["probe_bytes"]}
+                    )
+                )
+            payloads.append(payload)
+            return _Completed(stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "claude_code",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.claude/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    original_print = __import__("builtins").print
+    __import__("builtins").print = lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args))
+    try:
+        collector.collect(
+            start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        __import__("builtins").print = original_print
+
+    assert max(probe_attempts) == 1024 * 1024
+    assert payloads[0]["stdout_page_budget_bytes"] == 768 * 1024
+    assert any("探测：stdout page budget" in line for line in printed)
+    assert any("stdout 1024KB OK，使用 page budget 768KB" in line for line in printed)
+
+
+def test_remote_file_collector_collect_falls_back_when_stdout_budget_probe_fails():
+    payloads: list[dict] = []
+    printed: list[str] = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            payload = _extract_stdin_payload(input)
+            if "probe_bytes" in payload:
+                return _Completed(stdout="truncated")
+            payloads.append(payload)
+            return _Completed(stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "claude_code",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.claude/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    original_print = __import__("builtins").print
+    __import__("builtins").print = lambda *args, **kwargs: printed.append(" ".join(str(v) for v in args))
+    try:
+        collector.collect(
+            start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        __import__("builtins").print = original_print
+
+    assert payloads[0]["stdout_page_budget_bytes"] == remote_file._DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES
+    assert any("stdout budget 失败，回退 48KB" in line for line in printed)
+
+
+def test_remote_file_collector_stdout_budget_probe_rejects_corrupt_chunked_payload():
+    payloads: list[dict] = []
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            payload = _extract_stdin_payload(input)
+            if "probe_bytes" in payload:
+                broken = remote_file._encode_chunked_stdout_payload(
+                    {"ok": True, "probe_bytes": payload["probe_bytes"], "pad": "x" * payload["probe_bytes"]}
+                ).replace("LLMUSAGE_CHUNKED_V1 END", "")
+                return _Completed(stdout=broken)
+            payloads.append(payload)
+            return _Completed(stdout=json.dumps({"events": [], "warnings": [], "next_cursor": None}))
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "claude_code",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=["~/.claude/**/*.jsonl"],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert payloads[0]["stdout_page_budget_bytes"] == remote_file._DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES
 
 
 def test_remote_file_collector_collect_writes_requested_time_window(tmp_path):
@@ -765,7 +918,11 @@ def test_remote_file_collector_collect_writes_requested_time_window(tmp_path):
 
     collector.collect(start=start, end=end)
 
-    payload = _extract_stdin_payload(next(item for item in inputs if item is not None))
+    payload = next(
+        _extract_stdin_payload(item)
+        for item in inputs
+        if item is not None and "probe_bytes" not in _extract_stdin_payload(item)
+    )
     assert payload["start_ts"] == start.timestamp()
     assert payload["end_ts"] == end.timestamp()
 
@@ -839,12 +996,17 @@ def test_remote_file_collector_retries_without_connection_sharing_after_timeout(
 
 def test_remote_file_collector_combines_multiple_jobs_into_single_remote_call(tmp_path):
     commands = []
+    inputs = []
 
     def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
         commands.append(cmd)
+        inputs.append(input)
         if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
             return _Completed(stdout="python3")
         if cmd[:1] == ["ssh"] and input is not None:
+            payload = _extract_stdin_payload(input)
+            if "probe_bytes" in payload:
+                return _Completed(stdout="truncated")
             return _Completed(
                 stdout=json.dumps(
                     {
@@ -891,14 +1053,14 @@ def test_remote_file_collector_combines_multiple_jobs_into_single_remote_call(tm
     )
 
     assert [event.tool for event in out.events] == ["codex", "claude_code"]
-    execution_calls = [
-        cmd
-        for cmd in commands
+    collect_calls = [
+        (cmd, input)
+        for cmd, input in zip(commands, inputs)
         if cmd[:1] == ["ssh"]
-        and "command -v python3" not in _remote_command(cmd)
-        and "sys.version_info" not in _remote_command(cmd)
+        and input is not None
+        and "probe_bytes" not in _extract_stdin_payload(input)
     ]
-    assert len(execution_calls) == 1
+    assert len(collect_calls) == 1
 
 
 def test_remote_file_collector_falls_back_to_uploaded_script_when_stdin_is_consumed(tmp_path):
@@ -1152,6 +1314,67 @@ def test_decode_chunked_stdout_payload_returns_discarded_noise_around_frame():
     assert remote_file._CHUNKED_STDOUT_PREFIX not in discarded
 
 
+def test_decode_chunked_stdout_payload_accepts_gzip_payload():
+    payload = {
+        "events": [
+            {
+                "tool": "claude_code",
+                "model": "claude-opus",
+                "source_ref": "/tmp/" + ("repeatable-path/" * 120),
+            }
+        ],
+        "warnings": [],
+        "next_cursor": {"job_index": 0, "pattern_index": 0, "file_index": 12, "line_index": 0},
+    }
+    chunked = remote_file._encode_chunked_stdout_payload(payload, chunk_size=80)
+
+    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(chunked)
+
+    assert error is None
+    assert parsed == payload
+    assert "encoding=gzip" in chunked.splitlines()[0]
+
+
+def test_decode_chunked_stdout_payload_accepts_legacy_identity_payload():
+    payload = {"events": [{"tool": "codex", "model": "legacy"}], "warnings": []}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = base64.b64encode(raw).decode("ascii")
+    prefix = remote_file._CHUNKED_STDOUT_PREFIX
+    stdout = "\n".join(
+        [
+            f"{prefix} BEGIN total_chunks=1 total_bytes={len(raw)} sha256={digest}",
+            f"{prefix} CHUNK index=0 data={blob}",
+            f"{prefix} END",
+        ]
+    )
+
+    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout)
+
+    assert error is None
+    assert parsed == payload
+
+
+def test_encode_chunked_stdout_payload_compresses_repetitive_wire_payload():
+    payload = {
+        "events": [
+            {
+                "tool": "claude_code",
+                "model": "claude-opus",
+                "source_ref": "/home/users/example/projects/" + ("benchmark-runs/" * 100),
+            }
+            for _ in range(40)
+        ],
+        "warnings": [],
+        "next_cursor": None,
+    }
+
+    compressed = remote_file._encode_chunked_stdout_payload(payload)
+    legacy = remote_file._encode_chunked_stdout_payload(payload, encoding="identity")
+
+    assert len(compressed.encode("utf-8")) < len(legacy.encode("utf-8")) // 2
+
+
 def test_remote_file_collector_collect_accepts_chunked_stdout_with_surrounding_noise(monkeypatch):
     """Chunked frame may be embedded in SSH/bastion lines; non-protocol lines are returned as discarded noise."""
     printed: list[str] = []
@@ -1403,7 +1626,7 @@ def test_remote_collect_script_emits_next_cursor_when_budget_is_tight(tmp_path):
                 "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
                 "max_files": 100,
                 "max_total_bytes": 1024 * 1024,
-                "stdout_page_budget_bytes": 900,
+                "stdout_page_budget_bytes": 600,
                 "cursor": None,
             }
         ).encode("utf-8")
@@ -1420,12 +1643,8 @@ def test_remote_collect_script_emits_next_cursor_when_budget_is_tight(tmp_path):
     assert isinstance(parsed["next_cursor"], dict)
     assert len(parsed["events"]) < 8
 
-    budget = 900
-    raw_page = json.dumps(
-        {"events": parsed["events"], "warnings": parsed["warnings"], "next_cursor": parsed["next_cursor"]},
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert len(raw_page) <= budget
+    budget = 600
+    assert _chunked_wire_stdout_bytes(parsed) <= budget
 
     nc = parsed["next_cursor"]
     assert nc["job_index"] == 0
@@ -1459,8 +1678,12 @@ def _chunked_wire_stdout_bytes(parsed: dict) -> int:
     return len((framed + "\n").encode("utf-8"))
 
 
+def _deterministic_noisy_text(length: int) -> str:
+    return "".join(chr(33 + ((index * 73 + index // 3) % 90)) for index in range(length))
+
+
 def test_remote_collect_script_respects_budget_including_serialized_next_cursor(tmp_path):
-    """Trimmed page JSON (events + warnings + non-null next_cursor) must stay within stdout_page_budget_bytes."""
+    """Trimmed page stdout frame (events + warnings + non-null next_cursor) must stay within stdout_page_budget_bytes."""
     lines = []
     for i in range(12):
         lines.append(
@@ -1478,8 +1701,8 @@ def test_remote_collect_script_respects_budget_including_serialized_next_cursor(
     fake_file.touch()
     __import__("os").utime(fake_file, (file_mtime, file_mtime))
 
-    # Several tight budgets: page must never exceed budget once next_cursor is included in the serialized page.
-    for budget in (600, 650, 700, 800, 900, 1200):
+    # Several tight budgets: page must never exceed budget once next_cursor is included in the gzip chunked frame.
+    for budget in (350, 400, 500, 600, 650, 700):
         payload = base64.b64encode(
             json.dumps(
                 {
@@ -1502,9 +1725,9 @@ def test_remote_collect_script_respects_budget_including_serialized_next_cursor(
         assert error is None
         assert parsed is not None
         if parsed["next_cursor"] is not None:
-            assert _serialized_remote_page_bytes(parsed) <= budget
+            assert _chunked_wire_stdout_bytes(parsed) <= budget
 
-    payload_650 = base64.b64encode(
+    payload_600 = base64.b64encode(
         json.dumps(
             {
                 "jobs": [{"tool": "claude_code", "patterns": [str(fake_file)]}],
@@ -1512,18 +1735,18 @@ def test_remote_collect_script_respects_budget_including_serialized_next_cursor(
                 "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
                 "max_files": 100,
                 "max_total_bytes": 1024 * 1024,
-                "stdout_page_budget_bytes": 650,
+                "stdout_page_budget_bytes": 600,
                 "cursor": None,
             }
         ).encode("utf-8")
     ).decode("ascii")
-    stdout_650 = io.StringIO()
-    with redirect_stdout(stdout_650):
-        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload_650, "__name__": "__main__"})
-    parsed_650, _, err_650 = remote_file._decode_chunked_stdout_payload(stdout_650.getvalue())
-    assert err_650 is None and parsed_650 is not None
-    assert parsed_650["next_cursor"] is not None
-    assert len(parsed_650["events"]) < 12
+    stdout_600 = io.StringIO()
+    with redirect_stdout(stdout_600):
+        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload_600, "__name__": "__main__"})
+    parsed_600, _, err_600 = remote_file._decode_chunked_stdout_payload(stdout_600.getvalue())
+    assert err_600 is None and parsed_600 is not None
+    assert parsed_600["next_cursor"] is not None
+    assert len(parsed_600["events"]) < 12
 
 
 def test_remote_collect_script_respects_budget_for_chunked_wire_stdout(tmp_path):
@@ -1568,6 +1791,187 @@ def test_remote_collect_script_respects_budget_for_chunked_wire_stdout(tmp_path)
         assert error is None
         assert parsed is not None
         assert _chunked_wire_stdout_bytes(parsed) <= budget
+
+
+def test_remote_collect_script_respects_budget_when_max_files_stops_scan(tmp_path):
+    """The max_files early-stop path must still use the paginated chunked stdout budget."""
+    row = json.dumps(
+        {
+            "created_at": "2026-03-08T01:02:03Z",
+            "model": "m",
+            "usage": {"input_tokens": 100, "output_tokens": 2, "cache_read_input_tokens": 0},
+        }
+    )
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_text("\n".join([row] * 1000) + "\n", encoding="utf-8")
+    second.write_text(row + "\n", encoding="utf-8")
+    file_mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
+    for path in (first, second):
+        __import__("os").utime(path, (file_mtime, file_mtime))
+
+    budget = remote_file._DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES
+    payload = base64.b64encode(
+        json.dumps(
+            {
+                "jobs": [{"tool": "claude_code", "patterns": [str(tmp_path / "*.jsonl")]}],
+                "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
+                "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
+                "max_files": 1,
+                "max_total_bytes": 1024 * 1024,
+                "stdout_page_budget_bytes": budget,
+                "cursor": None,
+            }
+        ).encode("utf-8")
+    ).decode("ascii")
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
+
+    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
+    assert error is None
+    assert parsed is not None
+    assert _chunked_wire_stdout_bytes(parsed) <= budget
+    assert any("max_files=1" in warning for warning in parsed["warnings"])
+
+
+def test_remote_collect_script_returns_scan_cursor_when_max_files_stops_scan(tmp_path):
+    row = json.dumps(
+        {
+            "created_at": "2026-03-08T01:02:03Z",
+            "model": "m",
+            "usage": {"input_tokens": 100, "output_tokens": 2, "cache_read_input_tokens": 0},
+        }
+    )
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_text(row + "\n", encoding="utf-8")
+    second.write_text(row + "\n", encoding="utf-8")
+    file_mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
+    for path in (first, second):
+        __import__("os").utime(path, (file_mtime, file_mtime))
+
+    payload = base64.b64encode(
+        json.dumps(
+            {
+                "jobs": [{"tool": "claude_code", "patterns": [str(tmp_path / "*.jsonl")]}],
+                "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
+                "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
+                "max_files": 1,
+                "max_total_bytes": 1024 * 1024,
+                "stdout_page_budget_bytes": remote_file._DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES,
+                "cursor": None,
+            }
+        ).encode("utf-8")
+    ).decode("ascii")
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
+
+    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
+    assert error is None
+    assert parsed is not None
+    assert len(parsed["events"]) == 1
+    assert parsed["next_cursor"] == {"job_index": 0, "pattern_index": 0, "file_index": 1, "line_index": 0}
+    assert any("max_files=1" in warning for warning in parsed["warnings"])
+
+
+def test_remote_collect_script_returns_scan_cursor_when_max_total_bytes_stops_scan(tmp_path):
+    row = json.dumps(
+        {
+            "created_at": "2026-03-08T01:02:03Z",
+            "model": "m",
+            "usage": {"input_tokens": 100, "output_tokens": 2, "cache_read_input_tokens": 0},
+        }
+    )
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_text(row + "\n", encoding="utf-8")
+    second.write_text(row + "\n", encoding="utf-8")
+    file_mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
+    for path in (first, second):
+        __import__("os").utime(path, (file_mtime, file_mtime))
+
+    payload = base64.b64encode(
+        json.dumps(
+            {
+                "jobs": [{"tool": "claude_code", "patterns": [str(tmp_path / "*.jsonl")]}],
+                "start_ts": datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc).timestamp(),
+                "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
+                "max_files": 100,
+                "max_total_bytes": first.stat().st_size + 1,
+                "stdout_page_budget_bytes": remote_file._DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES,
+                "cursor": None,
+            }
+        ).encode("utf-8")
+    ).decode("ascii")
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        exec(remote_file._COLLECT_SCRIPT, {"PAYLOAD_B64": payload, "__name__": "__main__"})
+
+    parsed, _discarded, error = remote_file._decode_chunked_stdout_payload(stdout.getvalue())
+    assert error is None
+    assert parsed is not None
+    assert len(parsed["events"]) == 1
+    assert parsed["next_cursor"] == {"job_index": 0, "pattern_index": 0, "file_index": 1, "line_index": 0}
+    assert any("max_total_bytes=" in warning for warning in parsed["warnings"])
+
+
+def test_remote_file_collector_collect_aggregates_pages_split_by_max_files(tmp_path):
+    row_a = json.dumps(
+        {
+            "created_at": "2026-03-08T01:02:03Z",
+            "model": "first",
+            "usage": {"input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 0},
+        }
+    )
+    row_b = json.dumps(
+        {
+            "created_at": "2026-03-08T02:02:03Z",
+            "model": "second",
+            "usage": {"input_tokens": 20, "output_tokens": 1, "cache_read_input_tokens": 0},
+        }
+    )
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_text(row_a + "\n", encoding="utf-8")
+    second.write_text(row_b + "\n", encoding="utf-8")
+    file_mtime = datetime(2026, 3, 8, 2, 30, tzinfo=timezone.utc).timestamp()
+    for path in (first, second):
+        __import__("os").utime(path, (file_mtime, file_mtime))
+
+    def _runner(cmd, check, capture_output, text, input=None, timeout=None):  # noqa: ANN001, ANN201
+        if cmd[:1] == ["ssh"] and "command -v python3" in _remote_command(cmd):
+            return _Completed(stdout="python3")
+        if cmd[:1] == ["ssh"] and input is not None:
+            payload = _extract_stdin_payload(input)
+            payload["max_files"] = 1
+            payload_line = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+            _payload_line, script = input.split("\n", 1)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exec(script, {"PAYLOAD_B64": payload_line, "__name__": "__main__"})
+            return _Completed(stdout=stdout.getvalue())
+        return _Completed()
+
+    collector = RemoteFileCollector(
+        "claude_code",
+        target=SshTarget(host="host", user="alice", port=22),
+        patterns=[str(tmp_path / "*.jsonl")],
+        source_name="server_a",
+        source_host_hash="hash",
+        runner=_runner,
+    )
+
+    out = collector.collect(
+        start=datetime(2026, 3, 8, 0, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert [event.model for event in out.events] == ["first", "second"]
 
 
 def test_remote_collect_script_resumes_jsonl_from_line_cursor(tmp_path):
@@ -1619,23 +2023,30 @@ def test_remote_collect_script_resumes_jsonl_from_line_cursor(tmp_path):
 
 def test_remote_collect_script_next_cursor_reflects_file_index_after_sorted_glob(tmp_path):
     """Deterministic sorted glob: second file gets file_index=1 when resume leaves the first file."""
-    row = json.dumps(
+    first_row = json.dumps(
         {
             "created_at": "2026-03-08T01:02:03Z",
             "model": "m",
             "usage": {"input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 0},
         }
     )
+    second_row = json.dumps(
+        {
+            "created_at": "2026-03-08T01:02:03Z",
+            "model": _deterministic_noisy_text(1000),
+            "usage": {"input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 0},
+        }
+    )
 
-    (tmp_path / "a.jsonl").write_text(row + "\n", encoding="utf-8")
-    (tmp_path / "z.jsonl").write_text(row + "\n", encoding="utf-8")
+    (tmp_path / "a.jsonl").write_text(first_row + "\n", encoding="utf-8")
+    (tmp_path / "z.jsonl").write_text(second_row + "\n", encoding="utf-8")
     mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
     for path in (tmp_path / "a.jsonl", tmp_path / "z.jsonl"):
         __import__("os").utime(path, (mtime, mtime))
 
     parsed = None
     budget = None
-    for candidate_budget in (700, 800, 900, 1000, 1100, 1200):
+    for candidate_budget in (500, 550, 600, 650, 700, 800):
         payload = base64.b64encode(
             json.dumps(
                 {
@@ -1703,8 +2114,15 @@ def test_remote_collect_script_next_cursor_reflects_pattern_index_across_pattern
             "usage": {"input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 0},
         }
     )
+    large_row = json.dumps(
+        {
+            "created_at": "2026-03-08T01:02:03Z",
+            "model": _deterministic_noisy_text(500),
+            "usage": {"input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 0},
+        }
+    )
     (tmp_path / "first.jsonl").write_text(row + "\n", encoding="utf-8")
-    many = "\n".join([row] * 24) + "\n"
+    many = "\n".join([large_row] * 24) + "\n"
     (tmp_path / "second.jsonl").write_text(many, encoding="utf-8")
     mtime = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc).timestamp()
     for path in (tmp_path / "first.jsonl", tmp_path / "second.jsonl"):
@@ -1714,7 +2132,7 @@ def test_remote_collect_script_next_cursor_reflects_pattern_index_across_pattern
     # plus a resume cursor into the second pattern when counted as chunked stdout.
     parsed = None
     budget = None
-    for candidate_budget in (700, 800, 900, 1000, 1100, 1200):
+    for candidate_budget in (500, 550, 600, 650, 700, 800):
         payload = base64.b64encode(
             json.dumps(
                 {
@@ -1758,7 +2176,6 @@ def test_remote_collect_script_next_cursor_reflects_pattern_index_across_pattern
     assert parsed["next_cursor"]["pattern_index"] == 1
     assert parsed["next_cursor"]["file_index"] == 0
     assert parsed["next_cursor"]["line_index"] == 0
-    assert _serialized_remote_page_bytes(parsed) <= budget
     assert _chunked_wire_stdout_bytes(parsed) <= budget
 
 

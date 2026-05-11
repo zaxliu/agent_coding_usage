@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import hashlib
 import json
 import os
@@ -32,6 +33,15 @@ class SshAuthenticationError(Exception):
 _CHUNKED_STDOUT_PREFIX = "LLMUSAGE_CHUNKED_V1"
 _DEFAULT_STDOUT_CHUNK_SIZE = 32 * 1024
 _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES = 48 * 1024
+_REMOTE_STDOUT_BUDGET_PROBE_SIZES = (
+    48 * 1024,
+    128 * 1024,
+    256 * 1024,
+    512 * 1024,
+    768 * 1024,
+    1024 * 1024,
+)
+_MAX_AUTO_REMOTE_STDOUT_PAGE_BUDGET_BYTES = 768 * 1024
 _PACKAGE_NAME = "llm-usage-horizon"
 
 _PROBE_SCRIPT = """
@@ -52,6 +62,29 @@ for spec in payload.get("jobs", []):
             pass
 print(json.dumps({"matches": len(sorted(set(matches)))}))
 """
+
+_STDOUT_BUDGET_PROBE_SCRIPT = """
+import base64, hashlib, json
+
+payload = json.loads(base64.b64decode(PAYLOAD_B64).decode("utf-8"))
+probe_bytes = max(0, int(payload.get("probe_bytes", 0) or 0))
+
+def _emit_chunked_payload(payload_obj):
+    raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = base64.b64encode(raw).decode("ascii")
+    chunk_size = __CHUNKED_CHUNK_SIZE__
+    chunks = [blob[i : i + chunk_size] for i in range(0, len(blob), chunk_size)] or [""]
+    prefix = __CHUNKED_STDOUT_PREFIX__
+    print(prefix + " BEGIN total_chunks=" + str(len(chunks)) + " total_bytes=" + str(len(raw)) + " sha256=" + digest)
+    for index, chunk in enumerate(chunks):
+        print(prefix + " CHUNK index=" + str(index) + " data=" + chunk)
+    print(prefix + " END")
+
+_emit_chunked_payload({"ok": True, "probe_bytes": probe_bytes, "pad": "x" * probe_bytes})
+""".replace("__CHUNKED_CHUNK_SIZE__", str(_DEFAULT_STDOUT_CHUNK_SIZE)).replace(
+    "__CHUNKED_STDOUT_PREFIX__", repr(_CHUNKED_STDOUT_PREFIX)
+)
 
 _REMOTE_PARSE_TIME_HELPER = """
 def _normalize_iso_datetime_text(text):
@@ -97,7 +130,7 @@ def parse_iso_datetime(text):
 
 _COLLECT_SCRIPT = (
     """
-import base64, glob, hashlib, json, os, re, sys
+import base64, glob, gzip, hashlib, json, os, re, sys
 from datetime import datetime, timezone
 
 payload = json.loads(base64.b64decode(PAYLOAD_B64).decode("utf-8"))
@@ -148,11 +181,12 @@ def jsonl_resume_line_index(job_index, pattern_index, file_index):
 def _emit_chunked_payload(payload_obj):
     raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
-    blob = base64.b64encode(raw).decode("ascii")
+    wire = gzip.compress(raw)
+    blob = base64.b64encode(wire).decode("ascii")
     chunk_size = __CHUNKED_CHUNK_SIZE__
     chunks = [blob[i : i + chunk_size] for i in range(0, len(blob), chunk_size)] or [""]
     prefix = __CHUNKED_STDOUT_PREFIX__
-    print(prefix + " BEGIN total_chunks=" + str(len(chunks)) + " total_bytes=" + str(len(raw)) + " sha256=" + digest)
+    print(prefix + " BEGIN encoding=gzip total_chunks=" + str(len(chunks)) + " total_bytes=" + str(len(wire)) + " raw_bytes=" + str(len(raw)) + " sha256=" + digest)
     for index, chunk in enumerate(chunks):
         print(prefix + " CHUNK index=" + str(index) + " data=" + chunk)
     print(prefix + " END")
@@ -160,11 +194,12 @@ def _emit_chunked_payload(payload_obj):
 def _chunked_wire_bytes(payload_obj):
     raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
-    blob = base64.b64encode(raw).decode("ascii")
+    wire = gzip.compress(raw)
+    blob = base64.b64encode(wire).decode("ascii")
     chunk_size = __CHUNKED_CHUNK_SIZE__
     chunks = [blob[i : i + chunk_size] for i in range(0, len(blob), chunk_size)] or [""]
     prefix = __CHUNKED_STDOUT_PREFIX__
-    total = len((prefix + " BEGIN total_chunks=" + str(len(chunks)) + " total_bytes=" + str(len(raw)) + " sha256=" + digest + "\\n").encode("utf-8"))
+    total = len((prefix + " BEGIN encoding=gzip total_chunks=" + str(len(chunks)) + " total_bytes=" + str(len(wire)) + " raw_bytes=" + str(len(raw)) + " sha256=" + digest + "\\n").encode("utf-8"))
     for index, chunk in enumerate(chunks):
         total += len((prefix + " CHUNK index=" + str(index) + " data=" + chunk + "\\n").encode("utf-8"))
     total += len((prefix + " END\\n").encode("utf-8"))
@@ -668,6 +703,8 @@ warnings = []
 seen = set()
 processed_files = 0
 total_bytes = 0
+stop_scan = False
+scan_resume_cursor = None
 for job_index, spec in enumerate(jobs):
     active_tool = spec.get("tool", "unknown")
     patterns = spec.get("patterns", [])
@@ -691,14 +728,16 @@ for job_index, spec in enumerate(jobs):
                 if file_is_before_resume_cursor(job_index, pattern_index, file_index):
                     continue
                 if max_files > 0 and processed_files >= max_files:
-                    warnings.append("stopped after reaching max_files=" + str(max_files))
-                    _emit_chunked_payload({"events": events, "warnings": warnings, "next_cursor": None})
-                    raise SystemExit(0)
+                    warnings.append("remote collect page reached max_files=" + str(max_files) + "; continuing")
+                    scan_resume_cursor = {"job_index": job_index, "pattern_index": pattern_index, "file_index": file_index, "line_index": 0}
+                    stop_scan = True
+                    break
                 file_size = int(stat.st_size)
-                if max_total_bytes > 0 and total_bytes + file_size > max_total_bytes:
-                    warnings.append("stopped after reaching max_total_bytes=" + str(max_total_bytes))
-                    _emit_chunked_payload({"events": events, "warnings": warnings, "next_cursor": None})
-                    raise SystemExit(0)
+                if max_total_bytes > 0 and processed_files > 0 and total_bytes + file_size > max_total_bytes:
+                    warnings.append("remote collect page reached max_total_bytes=" + str(max_total_bytes) + "; continuing")
+                    scan_resume_cursor = {"job_index": job_index, "pattern_index": pattern_index, "file_index": file_index, "line_index": 0}
+                    stop_scan = True
+                    break
                 seen.add(dedupe_key)
                 processed_files += 1
                 total_bytes += file_size
@@ -898,9 +937,15 @@ for job_index, spec in enumerate(jobs):
                                 )
                 except Exception as exc:
                     warnings.append(active_tool + ": failed reading " + path + ": " + str(exc))
+            if stop_scan:
+                break
         except Exception:
             pass
-next_cursor = None
+        if stop_scan:
+            break
+    if stop_scan:
+        break
+next_cursor = scan_resume_cursor
 if stdout_page_budget_bytes > 0:
 
     def _page_wire_bytes(ev, wn, nc):
@@ -912,14 +957,14 @@ if stdout_page_budget_bytes > 0:
             return None
         return event_resume_cursors[k]
 
-    if _page_wire_bytes(events, warnings, None) > stdout_page_budget_bytes:
+    if _page_wire_bytes(events, warnings, next_cursor) > stdout_page_budget_bytes:
         # Choose the largest k such that events[:k] plus next_cursor fits within the full chunked stdout budget.
         chosen_k = None
         for k in range(len(events), -1, -1):
-            nc = _cursor_at(k) if k < len(events) else None
+            nc = _cursor_at(k) if k < len(events) else scan_resume_cursor
             if _page_wire_bytes(events[:k], warnings, nc) <= stdout_page_budget_bytes:
                 chosen_k = k
-                next_cursor = nc if k < len(events) else None
+                next_cursor = nc
                 break
         if chosen_k is None:
             chosen_k = 0
@@ -986,6 +1031,7 @@ class RemoteFileCollector(BaseCollector):
         self.ssh_password = ssh_password
         self._use_connection_sharing = True
         self._logged_connection_sharing_fallback = False
+        self._active_stdout_page_budget_bytes: Optional[int] = None
 
     def probe(self) -> tuple[bool, str]:
         self._log_progress("探测：查找远端 Python")
@@ -1016,60 +1062,106 @@ class RemoteFileCollector(BaseCollector):
         if not python_cmd:
             return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: no remote python interpreter found"])
         self._log_progress(f"采集：使用远端解释器 {python_cmd}")
+        self._active_stdout_page_budget_bytes = self._probe_stdout_page_budget(python_cmd)
 
         events: list[UsageEvent] = []
-        request_cursor: Optional[dict[str, Any]] = None
-        while True:
-            payload, error = self._run_python_script(
-                python_cmd, _COLLECT_SCRIPT, cursor=request_cursor, use_page_payload=True
-            )
-            if error:
-                return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: {error}"])
-
-            raw_events = payload.get("events")
-            if not isinstance(raw_events, list):
-                return CollectOutput(
-                    events=[],
-                    warnings=[f"{self.source_name}/{self.name}: remote collect returned invalid payload"],
+        try:
+            request_cursor: Optional[dict[str, Any]] = None
+            page_number = 1
+            while True:
+                self._log_progress(
+                    f"remote page {page_number} start cursor={_format_remote_cursor_for_progress(request_cursor)}"
                 )
+                payload, error = self._run_python_script(
+                    python_cmd, _COLLECT_SCRIPT, cursor=request_cursor, use_page_payload=True
+                )
+                if error:
+                    return CollectOutput(events=[], warnings=[f"{self.source_name}/{self.name}: {error}"])
 
-            warnings.extend(
-                f"{self.source_name}/{self.name}: {warning}"
-                for warning in payload.get("warnings", [])
-                if isinstance(warning, str) and warning.strip()
-            )
-            for item in raw_events:
-                if not isinstance(item, dict):
-                    continue
-                event_time = _parse_datetime_value(item.get("event_time"))
-                if event_time is None:
-                    continue
-                if start <= event_time <= end:
-                    events.append(
-                        UsageEvent(
-                            tool=str(item.get("tool") or self.name),
-                            model=str(item.get("model") or "unknown"),
-                            event_time=event_time,
-                            input_tokens=_coerce_int(item.get("input_tokens")),
-                            cache_tokens=_coerce_int(item.get("cache_tokens")),
-                            output_tokens=_coerce_int(item.get("output_tokens")),
-                            session_fingerprint=_optional_str(item.get("session_fingerprint")),
-                            source_ref=_optional_str(item.get("source_ref")),
-                            source_host_hash=self.source_host_hash,
-                        )
+                raw_events = payload.get("events")
+                if not isinstance(raw_events, list):
+                    return CollectOutput(
+                        events=[],
+                        warnings=[f"{self.source_name}/{self.name}: remote collect returned invalid payload"],
                     )
 
-            next_cursor = payload.get("next_cursor")
-            if next_cursor is None:
-                break
-            if request_cursor is not None and _remote_cursor_tuple(next_cursor) == _remote_cursor_tuple(request_cursor):
-                warnings.append(f"{self.source_name}/{self.name}: remote pagination cursor did not advance")
-                return CollectOutput(events=events, warnings=warnings)
-            request_cursor = next_cursor
+                warnings.extend(
+                    f"{self.source_name}/{self.name}: {warning}"
+                    for warning in payload.get("warnings", [])
+                    if isinstance(warning, str) and warning.strip()
+                )
+                for item in raw_events:
+                    if not isinstance(item, dict):
+                        continue
+                    event_time = _parse_datetime_value(item.get("event_time"))
+                    if event_time is None:
+                        continue
+                    if start <= event_time <= end:
+                        events.append(
+                            UsageEvent(
+                                tool=str(item.get("tool") or self.name),
+                                model=str(item.get("model") or "unknown"),
+                                event_time=event_time,
+                                input_tokens=_coerce_int(item.get("input_tokens")),
+                                cache_tokens=_coerce_int(item.get("cache_tokens")),
+                                output_tokens=_coerce_int(item.get("output_tokens")),
+                                session_fingerprint=_optional_str(item.get("session_fingerprint")),
+                                source_ref=_optional_str(item.get("source_ref")),
+                                source_host_hash=self.source_host_hash,
+                            )
+                        )
+
+                next_cursor = payload.get("next_cursor")
+                self._log_progress(
+                    "remote page "
+                    f"{page_number} returned events={len(raw_events)} "
+                    f"next_cursor={_format_remote_cursor_for_progress(next_cursor, none_label='<end>')}"
+                )
+                if next_cursor is None:
+                    break
+                if request_cursor is not None and _remote_cursor_tuple(next_cursor) == _remote_cursor_tuple(request_cursor):
+                    warnings.append(f"{self.source_name}/{self.name}: remote pagination cursor did not advance")
+                    return CollectOutput(events=events, warnings=warnings)
+                request_cursor = next_cursor
+                page_number += 1
+        finally:
+            self._active_stdout_page_budget_bytes = None
 
         if not events:
             warnings.append(f"{self.source_name}/{self.name}: no usage events in selected time range")
         return CollectOutput(events=events, warnings=warnings)
+
+    def _probe_stdout_page_budget(self, python_cmd: str) -> int:
+        self._log_progress("探测：stdout page budget")
+        largest_ok = 0
+        for probe_bytes in _REMOTE_STDOUT_BUDGET_PROBE_SIZES:
+            payload = {"probe_bytes": probe_bytes}
+            command, script_input = self._python_command_with_payload(
+                python_cmd, _STDOUT_BUDGET_PROBE_SCRIPT, payload
+            )
+            completed, error = self._ssh_run_python_command(command, input_text=script_input)
+            if error:
+                break
+            parsed, _discarded, decode_error = _decode_chunked_stdout_payload(completed.stdout)
+            if decode_error is not None or not isinstance(parsed, dict):
+                break
+            if parsed.get("ok") is not True or parsed.get("probe_bytes") != probe_bytes:
+                break
+            largest_ok = probe_bytes
+        if largest_ok <= _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES:
+            self._log_progress(
+                "探测：stdout budget 失败，回退 "
+                f"{_DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES // 1024}KB"
+            )
+            return _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES
+        selected = min(
+            _MAX_AUTO_REMOTE_STDOUT_PAGE_BUDGET_BYTES,
+            max(_DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES, (largest_ok * 3) // 4),
+        )
+        self._log_progress(
+            f"探测：stdout {largest_ok // 1024}KB OK，使用 page budget {selected // 1024}KB"
+        )
+        return selected
 
     def _discover_python(self) -> tuple[Optional[str], Optional[str]]:
         required_version = _remote_python_minimum_version()
@@ -1197,7 +1289,8 @@ class RemoteFileCollector(BaseCollector):
             "end_ts": self._active_end.timestamp(),
             "max_files": self.max_files,
             "max_total_bytes": self.max_total_bytes,
-            "stdout_page_budget_bytes": _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES,
+            "stdout_page_budget_bytes": self._active_stdout_page_budget_bytes
+            or _DEFAULT_REMOTE_STDOUT_PAGE_BUDGET_BYTES,
         }
         if cursor is not None:
             payload["cursor"] = cursor
@@ -1210,14 +1303,19 @@ class RemoteFileCollector(BaseCollector):
     def _python_stdin_command(
         self, python_cmd: str, script: str, cursor: Optional[dict[str, Any]] = None
     ) -> tuple[list[str], str]:
-        payload = self._remote_collect_payload_b64(cursor)
+        return self._python_command_with_payload(python_cmd, script, self._build_remote_payload(cursor))
+
+    def _python_command_with_payload(
+        self, python_cmd: str, script: str, payload: dict[str, object]
+    ) -> tuple[list[str], str]:
+        payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
         bootstrap = (
             "import sys;"
             "PAYLOAD_B64=sys.stdin.readline().rstrip('\\n');"
             "exec(sys.stdin.read(), {'__name__': '__main__', 'PAYLOAD_B64': PAYLOAD_B64})"
         )
         remote_command = f"{_shell_quote(python_cmd)} -c {_shell_quote(bootstrap)}"
-        return ["sh", "-lc", remote_command], payload + "\n" + script
+        return ["sh", "-lc", remote_command], payload_b64 + "\n" + script
 
     def _run_python_script_via_uploaded_file(
         self,
@@ -1988,15 +2086,30 @@ def _remote_python_minimum_version() -> tuple[int, int]:
 
 
 def _encode_chunked_stdout_payload(
-    payload: dict[str, object], *, chunk_size: int = _DEFAULT_STDOUT_CHUNK_SIZE
+    payload: dict[str, object],
+    *,
+    chunk_size: int = _DEFAULT_STDOUT_CHUNK_SIZE,
+    encoding: str = "gzip",
 ) -> str:
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
-    blob = base64.b64encode(raw).decode("ascii")
+    if encoding == "gzip":
+        wire = gzip.compress(raw)
+        begin_line = (
+            f"{_CHUNKED_STDOUT_PREFIX} BEGIN encoding=gzip total_chunks={{total_chunks}} "
+            f"total_bytes={len(wire)} raw_bytes={len(raw)} sha256={digest}"
+        )
+    elif encoding == "identity":
+        wire = raw
+        begin_line = (
+            f"{_CHUNKED_STDOUT_PREFIX} BEGIN total_chunks={{total_chunks}} "
+            f"total_bytes={len(wire)} sha256={digest}"
+        )
+    else:
+        raise ValueError(f"Unsupported chunked stdout encoding: {encoding}")
+    blob = base64.b64encode(wire).decode("ascii")
     chunks = [blob[index : index + chunk_size] for index in range(0, len(blob), chunk_size)] or [""]
-    lines = [
-        f"{_CHUNKED_STDOUT_PREFIX} BEGIN total_chunks={len(chunks)} total_bytes={len(raw)} sha256={digest}",
-    ]
+    lines = [begin_line.format(total_chunks=len(chunks))]
     for index, chunk in enumerate(chunks):
         lines.append(f"{_CHUNKED_STDOUT_PREFIX} CHUNK index={index} data={chunk}")
     lines.append(f"{_CHUNKED_STDOUT_PREFIX} END")
@@ -2006,22 +2119,35 @@ def _encode_chunked_stdout_payload(
 def _decode_chunked_stdout_payload(stdout: str) -> tuple[Optional[dict[str, object]], str, Optional[str]]:
     if _CHUNKED_STDOUT_PREFIX not in stdout:
         return None, stdout, None
-    begin_re = re.compile(
+    gzip_begin_re = re.compile(
+        rf"^{re.escape(_CHUNKED_STDOUT_PREFIX)} BEGIN encoding=gzip total_chunks=(\d+) total_bytes=(\d+) raw_bytes=(\d+) sha256=([a-f0-9]{{64}})\s*$"
+    )
+    legacy_begin_re = re.compile(
         rf"^{re.escape(_CHUNKED_STDOUT_PREFIX)} BEGIN total_chunks=(\d+) total_bytes=(\d+) sha256=([a-f0-9]{{64}})\s*$"
     )
     chunk_re = re.compile(rf"^{re.escape(_CHUNKED_STDOUT_PREFIX)} CHUNK index=(\d+) data=(.*)$")
     end_re = re.compile(rf"^{re.escape(_CHUNKED_STDOUT_PREFIX)} END\s*$")
     discarded_lines: list[str] = []
-    begin: Optional[tuple[int, int, str]] = None
+    begin: Optional[tuple[str, int, int, Optional[int], str]] = None
     chunk_data: dict[int, str] = {}
     saw_end = False
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        m_begin = begin_re.match(line)
-        if m_begin:
-            begin = (int(m_begin.group(1)), int(m_begin.group(2)), m_begin.group(3))
+        m_gzip_begin = gzip_begin_re.match(line)
+        if m_gzip_begin:
+            begin = (
+                "gzip",
+                int(m_gzip_begin.group(1)),
+                int(m_gzip_begin.group(2)),
+                int(m_gzip_begin.group(3)),
+                m_gzip_begin.group(4),
+            )
+            continue
+        m_legacy_begin = legacy_begin_re.match(line)
+        if m_legacy_begin:
+            begin = ("identity", int(m_legacy_begin.group(1)), int(m_legacy_begin.group(2)), None, m_legacy_begin.group(3))
             continue
         m_chunk = chunk_re.match(line)
         if m_chunk:
@@ -2033,16 +2159,25 @@ def _decode_chunked_stdout_payload(stdout: str) -> tuple[Optional[dict[str, obje
         discarded_lines.append(line)
     if begin is None or not saw_end:
         return None, stdout, "remote chunked stdout invalid framing"
-    total_chunks, total_bytes, expected_sha = begin
+    encoding, total_chunks, total_bytes, raw_bytes, expected_sha = begin
     if len(chunk_data) != total_chunks or any(index not in chunk_data for index in range(total_chunks)):
         return None, stdout, "remote chunked stdout missing chunks"
     blob = "".join(chunk_data[index] for index in range(total_chunks))
     try:
-        raw = base64.b64decode(blob.encode("ascii"), validate=True)
+        wire = base64.b64decode(blob.encode("ascii"), validate=True)
     except (ValueError, binascii.Error):
         return None, stdout, "remote chunked stdout invalid base64"
-    if len(raw) != total_bytes:
+    if len(wire) != total_bytes:
         return None, stdout, "remote chunked stdout length mismatch"
+    if encoding == "gzip":
+        try:
+            raw = gzip.decompress(wire)
+        except (EOFError, OSError, ValueError):
+            return None, stdout, "remote chunked stdout invalid gzip"
+        if raw_bytes is not None and len(raw) != raw_bytes:
+            return None, stdout, "remote chunked stdout length mismatch"
+    else:
+        raw = wire
     if hashlib.sha256(raw).hexdigest() != expected_sha:
         return None, stdout, "remote chunked stdout hash mismatch"
     try:
@@ -2101,6 +2236,19 @@ def _remote_cursor_tuple(cursor: dict[str, Any]) -> tuple[int, int, int, int]:
         int(cursor.get("pattern_index", 0)),
         int(cursor.get("file_index", 0)),
         int(cursor.get("line_index", 0)),
+    )
+
+
+def _format_remote_cursor_for_progress(value: object, *, none_label: str = "<begin>") -> str:
+    if value is None:
+        return none_label
+    if not isinstance(value, dict):
+        return "<invalid>"
+    return (
+        f"job={value.get('job_index', 0)} "
+        f"pattern={value.get('pattern_index', 0)} "
+        f"file={value.get('file_index', 0)} "
+        f"line={value.get('line_index', 0)}"
     )
 
 
