@@ -1607,7 +1607,10 @@ def test_remote_collect_script_emits_next_cursor_when_budget_is_tight(tmp_path):
             json.dumps(
                 {
                     "created_at": "2026-03-08T01:02:03Z",
-                    "model": "m",
+                    "model": "".join(
+                        hashlib.sha256(f"tight-budget-model-{i}-{part}".encode("utf-8")).hexdigest()
+                        for part in range(2)
+                    ),
                     "usage": {"input_tokens": 50 + i, "output_tokens": 1, "cache_read_input_tokens": 0},
                 }
             )
@@ -1626,7 +1629,7 @@ def test_remote_collect_script_emits_next_cursor_when_budget_is_tight(tmp_path):
                 "end_ts": datetime(2026, 3, 8, 3, 0, tzinfo=timezone.utc).timestamp(),
                 "max_files": 100,
                 "max_total_bytes": 1024 * 1024,
-                "stdout_page_budget_bytes": 600,
+                "stdout_page_budget_bytes": 900,
                 "cursor": None,
             }
         ).encode("utf-8")
@@ -1643,7 +1646,7 @@ def test_remote_collect_script_emits_next_cursor_when_budget_is_tight(tmp_path):
     assert isinstance(parsed["next_cursor"], dict)
     assert len(parsed["events"]) < 8
 
-    budget = 600
+    budget = 900
     assert _chunked_wire_stdout_bytes(parsed) <= budget
 
     nc = parsed["next_cursor"]
