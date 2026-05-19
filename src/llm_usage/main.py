@@ -1686,6 +1686,54 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TOOL",
         help="Skip collecting from the specified tool (can be repeated); choices: " + ", ".join(ALL_TOOL_NAMES),
     )
+
+    cost_report_parser = sub.add_parser(
+        "cost-report",
+        help="Pull Bitable records and generate an interactive HTML cost analysis report",
+        description=(
+            "Fetch aggregated usage rows from a Feishu Bitable target and emit a single-file "
+            "interactive HTML report. The report has editable per-model pricing, a global date "
+            "filter, weekly rolling 30-day breakdowns by model/user/tool with $/% toggles, "
+            "cache-savings analysis, and ranked tables with percentile statistics. "
+            "Defaults to the legacy Feishu target when none is specified."
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    cost_report_parser.add_argument(
+        "--feishu-target",
+        default=None,
+        metavar="NAME",
+        help="Select a named Feishu target. Default target is used when omitted.",
+    )
+    cost_report_parser.add_argument(
+        "-o", "--output",
+        default=None,
+        help="Output HTML path (default: <reports_dir>/cost_report.html)",
+    )
+    cost_report_parser.add_argument(
+        "--csv",
+        default=None,
+        help="Also save the raw Bitable rows to this CSV path",
+    )
+    cost_report_parser.add_argument(
+        "--from-csv",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Use a local CSV (same schema as collect's usage_report.csv) instead of fetching "
+            "from Feishu. Omit PATH to use <reports_dir>/usage_report.csv. "
+            "Cannot combine with --feishu-target."
+        ),
+    )
+    cost_report_parser.add_argument(
+        "--open",
+        action="store_true",
+        dest="open_report",
+        help="Open the generated HTML in the default browser after writing",
+    )
+
     return parser
 
 
@@ -1707,6 +1755,10 @@ def main() -> int:
         "sync": cmd_sync,
     }
     try:
+        if args.command == "cost-report":
+            from llm_usage.cost_report import cmd_cost_report
+
+            return cmd_cost_report(args)
         return cmd_map[args.command](args)
     except (OfflineBundleError, RuntimeError) as exc:
         print(f"error: {exc}")

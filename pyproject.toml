@@ -50,7 +50,7 @@ package-dir = {"" = "src"}
 license-files = ["LICENSE"]
 
 [tool.setuptools.package-data]
-llm_usage = ["resources/*.env", "resources/*.json", "web_static/*"]
+llm_usage = ["resources/*.env", "resources/*.json", "resources/*.html", "web_static/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

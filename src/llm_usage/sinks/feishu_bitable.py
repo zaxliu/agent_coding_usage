@@ -213,48 +213,44 @@ class FeishuBitableClient:
             return payload
         raise RuntimeError("feishu api retry exhausted")
 
-    def fetch_existing_row_keys(self) -> dict[str, str]:
-        row_key_to_record_id: dict[str, str] = {}
-        page_token = None
-        while True:
-            params = {"page_size": 500}
-            if page_token:
-                params["page_token"] = page_token
-            payload = self._request("GET", self.base_url, params=params)
-            data = payload.get("data", {})
-            for item in data.get("items", []):
-                fields = item.get("fields", {})
-                row_key = fields.get("row_key")
-                record_id = item.get("record_id")
-                if isinstance(row_key, str) and isinstance(record_id, str):
-                    row_key_to_record_id[row_key] = record_id
-            if not data.get("has_more"):
-                break
-            page_token = data.get("page_token")
-            if not page_token:
-                break
-        return row_key_to_record_id
-
-    def _fetch_field_type_map(self) -> dict[str, int]:
-        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
-        out: dict[str, int] = {}
+    def _paginate(self, url: str, page_size: int = 500):
         page_token: Optional[str] = None
         while True:
-            params = {"page_size": 500}
+            params: dict = {"page_size": page_size}
             if page_token:
                 params["page_token"] = page_token
             payload = self._request("GET", url, params=params)
             data = payload.get("data", {})
             for item in data.get("items", []):
-                name = item.get("field_name")
-                field_type = item.get("type")
-                if isinstance(name, str) and isinstance(field_type, int):
-                    out[name] = field_type
+                yield item
             if not data.get("has_more"):
-                break
+                return
             page_token = data.get("page_token")
             if not isinstance(page_token, str) or not page_token:
-                break
+                return
+
+    def iter_all_records(self):
+        """Yield every Bitable record dict (with fields + record_id)."""
+        yield from self._paginate(self.base_url)
+
+    def fetch_existing_row_keys(self) -> dict[str, str]:
+        row_key_to_record_id: dict[str, str] = {}
+        for item in self.iter_all_records():
+            fields = item.get("fields", {})
+            row_key = fields.get("row_key")
+            record_id = item.get("record_id")
+            if isinstance(row_key, str) and isinstance(record_id, str):
+                row_key_to_record_id[row_key] = record_id
+        return row_key_to_record_id
+
+    def _fetch_field_type_map(self) -> dict[str, int]:
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
+        out: dict[str, int] = {}
+        for item in self._paginate(url):
+            name = item.get("field_name")
+            field_type = item.get("type")
+            if isinstance(name, str) and isinstance(field_type, int):
+                out[name] = field_type
         return out
 
     def create_field(self, field_name: str, field_type: int) -> None:

@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM 成本分析</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+:root {
+  --bg: #f0f2f5; --card: #fff; --border: #e2e8f0;
+  --text: #1a202c; --muted: #718096; --primary: #4361ee;
+  --green: #38a169; --red: #e53e3e; --blue: #3182ce;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5; padding: 20px; }
+h1 { font-size: 1.6rem; margin-bottom: 4px; }
+h2 { font-size: 1.15rem; color: var(--primary); margin: 24px 0 12px; }
+.subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 16px; }
+.card { background: var(--card); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.row { display: flex; flex-wrap: wrap; gap: 16px; }
+.row > * { flex: 1; min-width: 280px; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+.controls label { font-size: 0.85rem; color: var(--muted); }
+.controls input[type=date] { padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 0.9rem; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.stat { text-align: center; padding: 12px 8px; background: var(--bg); border-radius: 8px; }
+.stat .value { font-size: 1.4rem; font-weight: 700; color: var(--primary); }
+.stat .label { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+.pricing-wrap { max-height: 300px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th { background: var(--bg); position: sticky; top: 0; z-index: 1; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+td input[type=number] { width: 80px; padding: 2px 6px; border: 1px solid var(--border);
+  border-radius: 4px; font-size: 0.85rem; text-align: right; }
+.sort-btn { cursor: pointer; user-select: none; }
+.sort-btn:hover { color: var(--primary); }
+.rank-summary { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px;
+  padding: 10px 16px; background: var(--bg); border-radius: 8px; font-size: 0.85rem; }
+.rank-summary span { white-space: nowrap; }
+.rank-summary .rlabel { color: var(--muted); }
+.rank-summary .rval { font-weight: 600; margin-left: 4px; }
+.rank-table { max-height: 400px; overflow-y: auto; }
+.rank-table tr:hover { background: #f7fafc; }
+.rank-table td { font-variant-numeric: tabular-nums; }
+.chart { min-height: 350px; }
+.toggle-btn { background: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 12px; font-size: 0.8rem; cursor: pointer; color: var(--muted); }
+.toggle-btn:hover { border-color: var(--primary); color: var(--primary); }
+.chart-hdr { display: flex; align-items: center; gap: 8px; }
+.mode-grp { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.mode-btn { padding: 2px 12px; font-size: 0.78rem; cursor: pointer; border: none;
+  background: transparent; color: var(--muted); transition: all .15s; }
+.mode-btn.active { background: var(--primary); color: #fff; }
+</style>
+</head>
+<body>
+
+<h1>LLM Token 成本分析</h1>
+<p class="subtitle">生成时间: %%GENERATED_DATE%% &nbsp;|&nbsp; 总记录数: <span id="rec-count">0</span> &nbsp;|&nbsp; 筛选后: <span id="filtered-count">0</span> &nbsp;|&nbsp; 每周滚动 30 天</p>
+
+<div class="card controls">
+  <label>起始</label> <input type="date" id="date-start">
+  <label>截止</label> <input type="date" id="date-end">
+  <button class="toggle-btn" onclick="togglePricing()">显示/隐藏定价</button>
+</div>
+
+<div class="card" id="pricing-section" style="display:none">
+  <h2 style="margin-top:0">模型定价 ($/1M tokens)</h2>
+  <div class="pricing-wrap"><table id="pricing-table"><thead>
+    <tr><th>模型</th><th>输入</th><th>输出</th><th>缓存读取</th></tr>
+  </thead><tbody></tbody></table></div>
+</div>
+
+<div class="card"><div class="stats" id="summary-cards"></div></div>
+
+<div class="card"><h2 style="margin-top:0">周度成本趋势 (滚动30天)</h2><div id="chart-trend" class="chart"></div></div>
+<div class="row">
+  <div class="card">
+    <div class="chart-hdr"><h2 style="margin:0">按模型</h2>
+      <div class="mode-grp"><button class="mode-btn active" onclick="setMode('model','$',this)">$</button><button class="mode-btn" onclick="setMode('model','%',this)">%</button></div>
+    </div><div id="chart-model" class="chart"></div>
+  </div>
+  <div class="card">
+    <div class="chart-hdr"><h2 style="margin:0">按用户</h2>
+      <div class="mode-grp"><button class="mode-btn active" onclick="setMode('user','$',this)">$</button><button class="mode-btn" onclick="setMode('user','%',this)">%</button></div>
+    </div><div id="chart-user" class="chart"></div>
+  </div>
+</div>
+<div class="row">
+  <div class="card">
+    <div class="chart-hdr"><h2 style="margin:0">按工具</h2>
+      <div class="mode-grp"><button class="mode-btn active" onclick="setMode('tool','$',this)">$</button><button class="mode-btn" onclick="setMode('tool','%',this)">%</button></div>
+    </div><div id="chart-tool" class="chart"></div>
+  </div>
+  <div class="card"><h2 style="margin-top:0">缓存节省</h2><div id="chart-cache" class="chart"></div></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">用户排名</h2>
+  <div class="rank-summary" id="user-rank-summary"></div>
+  <div class="rank-table"><table id="user-rank-table"><thead><tr>
+    <th class="sort-btn" data-col="0">#</th>
+    <th class="sort-btn" data-col="1">用户</th>
+    <th class="sort-btn" data-col="2">总消费 ($)</th>
+    <th class="sort-btn" data-col="3">月均 ($)</th>
+    <th class="sort-btn" data-col="4">占比</th>
+    <th class="sort-btn" data-col="5">P50 日消费 ($)</th>
+    <th class="sort-btn" data-col="6">P75 日消费 ($)</th>
+    <th class="sort-btn" data-col="7">P90 日消费 ($)</th>
+    <th class="sort-btn" data-col="8">活跃天数</th>
+  </tr></thead><tbody></tbody></table></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">模型排名</h2>
+  <div class="rank-summary" id="model-rank-summary"></div>
+  <div class="rank-table"><table id="model-rank-table"><thead><tr>
+    <th class="sort-btn" data-col="0">#</th>
+    <th class="sort-btn" data-col="1">模型</th>
+    <th class="sort-btn" data-col="2">总消费 ($)</th>
+    <th class="sort-btn" data-col="3">月均 ($)</th>
+    <th class="sort-btn" data-col="4">占比</th>
+    <th class="sort-btn" data-col="5">P50 日消费 ($)</th>
+    <th class="sort-btn" data-col="6">P90 日消费 ($)</th>
+    <th class="sort-btn" data-col="7">总 Tokens (M)</th>
+  </tr></thead><tbody></tbody></table></div>
+</div>
+
+<script>
+// ===========================================================================
+// Data & State
+// ===========================================================================
+const RAW = %%DATA_JSON%%;
+const pricing = %%PRICING_JSON%%;
+let sortState = {};
+const chartMode = {model:'$', user:'$', tool:'$'};
+
+// ===========================================================================
+// Utilities
+// ===========================================================================
+function $(id) { return document.getElementById(id); }
+function fmt(n, d=2) { return n.toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d}); }
+function pct(arr, p) {
+  if (!arr.length) return 0;
+  const s = arr.slice().sort((a,b)=>a-b);
+  return s[Math.max(0, Math.ceil(p/100*s.length)-1)];
+}
+function groupBy(arr, fn) {
+  const m = {};
+  arr.forEach(r => { const k = fn(r); (m[k]||(m[k]=[])).push(r); });
+  return m;
+}
+function sum(arr, fn) { return arr.reduce((s,r)=>s+fn(r), 0); }
+
+// Week: return Monday date string for any date
+function weekOf(d) {
+  const dt = new Date(d+'T12:00:00');
+  const day = dt.getDay();
+  dt.setDate(dt.getDate() - (day===0?6:day-1));
+  return dt.toISOString().slice(0,10);
+}
+
+// Format Date object to YYYY-MM-DD
+function fmtD(dt) {
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+}
+
+// ===========================================================================
+// Cost
+// ===========================================================================
+function calcCost(r) {
+  const p = pricing[r.model]||{input:0,output:0,cache:0};
+  return (Math.max(0,r.input_tokens-r.cache_tokens)*p.input + r.cache_tokens*p.cache + r.output_tokens*p.output)/1e6;
+}
+
+// All data with costs pre-computed, sorted by date for sliding-window scans
+let ALL = [];
+function initCosts() {
+  ALL = RAW.map(r=>({...r, cost:calcCost(r)}));
+  ALL.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+}
+
+// Filter by date range (for rankings/summary — no rolling)
+function getFiltered() {
+  const s=$('date-start').value, e=$('date-end').value;
+  return ALL.filter(r=>(!s||r.date>=s)&&(!e||r.date<=e));
+}
+
+// Get weeks to display (from filtered date range)
+function getDisplayWeeks(filtered) {
+  const ws = new Set(filtered.map(r=>weekOf(r.date)));
+  return [...ws].sort();
+}
+
+// Build week -> rolling 30-day records map, in one O(N+W) sweep across sorted ALL.
+function buildWeekWindows(weeks) {
+  const out = new Map();
+  if (!weeks.length) return out;
+  let lo=0, hi=0, n=ALL.length;
+  for (const w of weeks) {
+    const endDt=new Date(w+'T12:00:00'); endDt.setDate(endDt.getDate()+6);
+    const startDt=new Date(endDt); startDt.setDate(startDt.getDate()-29);
+    const s=fmtD(startDt), e=fmtD(endDt);
+    while (hi<n && ALL[hi].date<=e) hi++;
+    while (lo<hi && ALL[lo].date<s) lo++;
+    out.set(w, ALL.slice(lo, hi));
+  }
+  return out;
+}
+
+// ===========================================================================
+// Pricing table
+// ===========================================================================
+let pricingVisible = false;
+function togglePricing() {
+  pricingVisible=!pricingVisible;
+  $('pricing-section').style.display=pricingVisible?'':'none';
+}
+function buildPricingTable() {
+  const tbody=$('pricing-table').querySelector('tbody');
+  tbody.innerHTML='';
+  Object.keys(pricing).sort().forEach(m=>{
+    const p=pricing[m];
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td style="font-family:monospace;font-size:0.8rem">${m}</td>`+
+      ['input','output','cache'].map(k=>
+        `<td><input type="number" step="0.01" value="${p[k]}" data-model="${m}" data-field="${k}"></td>`).join('');
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('input').forEach(inp=>{
+    inp.addEventListener('change',()=>{
+      pricing[inp.dataset.model][inp.dataset.field]=parseFloat(inp.value)||0;
+      initCosts(); renderAll();
+    });
+  });
+}
+
+// ===========================================================================
+// Mode toggle
+// ===========================================================================
+function setMode(chart, mode, btn) {
+  chartMode[chart]=mode;
+  btn.parentElement.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderAll();
+}
+
+// ===========================================================================
+// Summary cards (uses straight filtered data, not rolling)
+// ===========================================================================
+function renderSummary(data) {
+  const total=sum(data,r=>r.cost);
+  const weeks=new Set(data.map(r=>weekOf(r.date)));
+  const users=new Set(data.map(r=>r.user));
+  const days=new Set(data.map(r=>r.date));
+  const nMonths=Math.max(1,new Set(data.map(r=>r.date.slice(0,7))).size);
+  const dailyCosts=Object.values(groupBy(data,r=>r.date)).map(g=>sum(g,r=>r.cost));
+  const items=[
+    {v:'$'+fmt(total),l:'总消费'},
+    {v:'$'+fmt(total/nMonths),l:'月均'},
+    {v:'$'+fmt(total/Math.max(1,days.size)),l:'日均'},
+    {v:users.size,l:'用户数'},
+    {v:days.size,l:'活跃天数'},
+    {v:'$'+fmt(pct(dailyCosts,50)),l:'P50 日消费'},
+    {v:'$'+fmt(pct(dailyCosts,90)),l:'P90 日消费'},
+    {v:'$'+fmt(pct(dailyCosts,99)),l:'P99 日消费'},
+  ];
+  $('summary-cards').innerHTML=items.map(i=>
+    `<div class="stat"><div class="value">${i.v}</div><div class="label">${i.l}</div></div>`).join('');
+}
+
+// ===========================================================================
+// Charts
+// ===========================================================================
+const plotCfg={responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']};
+function baseLayout(opts){
+  return {margin:{t:30,b:60,l:60,r:20},font:{family:'-apple-system,system-ui,sans-serif',size:12},
+    paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+    xaxis:{gridcolor:'#edf2f7'},yaxis:{gridcolor:'#edf2f7',title:'消费 ($)'},
+    legend:{orientation:'h',y:-0.2},barmode:'stack',...opts};
+}
+
+function renderTrend(weeks, weekRecs) {
+  const costs=weeks.map(w=>sum(weekRecs.get(w)||[],r=>r.cost));
+  Plotly.react('chart-trend',[{x:weeks,y:costs,type:'scatter',mode:'lines+markers',
+    line:{color:'#4361ee',width:2},marker:{size:6}}],baseLayout(),plotCfg);
+}
+
+function renderStacked(elId, weeks, weekRecs, keyFn, topN=10) {
+  const mode=chartMode[elId.replace('chart-','')]||'$';
+  // Group each week's records by key once
+  const perWeek=weeks.map(w=>groupBy(weekRecs.get(w)||[], keyFn));
+  // Find top N keys by total cost across all displayed weeks
+  const keyCosts={};
+  perWeek.forEach(g=>{
+    for (const k in g) keyCosts[k]=(keyCosts[k]||0)+sum(g[k],r=>r.cost);
+  });
+  let keys=Object.entries(keyCosts).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
+  const hasOther=keys.length>topN;
+  const topKeys=new Set(keys.slice(0,topN));
+  keys=keys.slice(0,topN);
+  if(hasOther) keys.push('_other');
+
+  const series=keys.map(k=>{
+    const yVals=perWeek.map(g=>{
+      if (k!=='_other') return sum(g[k]||[],r=>r.cost);
+      let s=0;
+      for (const kk in g) if (!topKeys.has(kk)) s+=sum(g[kk],r=>r.cost);
+      return s;
+    });
+    return {key:k, yVals};
+  });
+
+  if(mode==='$'){
+    const traces=series.map(({key,yVals})=>({x:weeks,y:yVals,name:key==='_other'?'其他':key,type:'bar'}));
+    Plotly.react(elId,traces,baseLayout(),plotCfg);
+  } else {
+    // Percentage stacked area (migration trend)
+    const totals=weeks.map((_,i)=>series.reduce((s,t)=>s+t.yVals[i],0));
+    const traces=series.map(({key,yVals})=>({
+      x:weeks,
+      y:yVals.map((v,i)=>totals[i]?v/totals[i]*100:0),
+      name:key==='_other'?'其他':key, stackgroup:'one',
+    }));
+    Plotly.react(elId,traces,baseLayout({yaxis:{title:'占比 %',gridcolor:'#edf2f7',range:[0,100]}}),plotCfg);
+  }
+}
+
+function renderCache(weeks, weekRecs) {
+  const hitRates=[], savings=[];
+  for (const w of weeks) {
+    const d=weekRecs.get(w)||[];
+    let totIn=0, totCache=0, sav=0;
+    for (const r of d) {
+      totIn+=r.input_tokens;
+      totCache+=r.cache_tokens;
+      const p=pricing[r.model]||{input:0,cache:0};
+      sav+=r.cache_tokens*(p.input-p.cache)/1e6;
+    }
+    hitRates.push(totIn?totCache/totIn*100:0);
+    savings.push(sav);
+  }
+  Plotly.react('chart-cache',[
+    {x:weeks,y:savings,name:'缓存节省 ($)',type:'bar',marker:{color:'#38a169'}},
+    {x:weeks,y:hitRates,name:'命中率 %',type:'scatter',mode:'lines+markers',
+     yaxis:'y2',line:{color:'#e53e3e',width:2}},
+  ],baseLayout({margin:{t:30,b:60,l:60,r:60},
+    yaxis:{title:'节省 ($)',gridcolor:'#edf2f7'},
+    yaxis2:{title:'命中率 %',overlaying:'y',side:'right',range:[0,100],gridcolor:'transparent'},
+  }),plotCfg);
+}
+
+// ===========================================================================
+// Rankings (straight filtered data, not rolling)
+// ===========================================================================
+function renderRanking(tableId, summaryId, data, keyFn, columns) {
+  const total=sum(data,r=>r.cost);
+  const byKey=groupBy(data,keyFn);
+  const rows=Object.entries(byKey).map(([k,recs])=>{
+    const kCost=sum(recs,r=>r.cost);
+    const months=new Set(recs.map(r=>r.date.slice(0,7)));
+    const days=new Set(recs.map(r=>r.date));
+    const dailyCosts=Object.values(groupBy(recs,r=>r.date)).map(g=>sum(g,r=>r.cost));
+    const totalTokens=sum(recs,r=>r.input_tokens+r.output_tokens);
+    return {key:k,total:kCost,monthlyAvg:kCost/Math.max(1,months.size),
+      share:total?kCost/total*100:0,
+      p50:pct(dailyCosts,50),p75:pct(dailyCosts,75),p90:pct(dailyCosts,90),
+      days:days.size,tokens:totalTokens};
+  }).sort((a,b)=>b.total-a.total);
+
+  $(summaryId).innerHTML=[
+    ['总计','$'+fmt(total)],['均值','$'+fmt(total/Math.max(1,rows.length))],
+    ['P50','$'+fmt(pct(rows.map(r=>r.total),50))],['P75','$'+fmt(pct(rows.map(r=>r.total),75))],
+    ['P90','$'+fmt(pct(rows.map(r=>r.total),90))],['P99','$'+fmt(pct(rows.map(r=>r.total),99))],
+    ['数量',rows.length],
+  ].map(([l,v])=>`<span><span class="rlabel">${l}:</span><span class="rval">${v}</span></span>`).join('');
+
+  const tbody=$(tableId).querySelector('tbody');
+  tbody.innerHTML=rows.map((r,i)=>'<tr>'+columns(r,i).map(v=>`<td>${v}</td>`).join('')+'</tr>').join('');
+}
+
+function renderUserRanking(data) {
+  renderRanking('user-rank-table','user-rank-summary',data,r=>r.user,
+    (r,i)=>[i+1,`<span style="font-family:monospace;font-size:0.8rem">${r.key}</span>`,
+      fmt(r.total),fmt(r.monthlyAvg),fmt(r.share,1)+'%',fmt(r.p50),fmt(r.p75),fmt(r.p90),r.days]);
+}
+function renderModelRanking(data) {
+  renderRanking('model-rank-table','model-rank-summary',data,r=>r.model,
+    (r,i)=>[i+1,`<span style="font-family:monospace;font-size:0.8rem">${r.key}</span>`,
+      fmt(r.total),fmt(r.monthlyAvg),fmt(r.share,1)+'%',fmt(r.p50),fmt(r.p90),fmt(r.tokens/1e6,2)]);
+}
+
+// ===========================================================================
+// Table sorting
+// ===========================================================================
+// Table sorting — sortState: tableId -> {col, dir}. Re-applied after every renderAll.
+function applySort(table, idx, dir) {
+  const tbody=table.querySelector('tbody');
+  const rows=Array.from(tbody.rows);
+  rows.sort((a,b)=>{
+    let va=a.cells[idx].textContent.replace(/[$,%]/g,'').trim();
+    let vb=b.cells[idx].textContent.replace(/[$,%]/g,'').trim();
+    const na=parseFloat(va),nb=parseFloat(vb);
+    if(!isNaN(na)&&!isNaN(nb)) return dir==='asc'?na-nb:nb-na;
+    return dir==='asc'?va.localeCompare(vb):vb.localeCompare(va);
+  });
+  rows.forEach(r=>tbody.appendChild(r));
+}
+
+document.querySelectorAll('.sort-btn').forEach(th=>{
+  th.addEventListener('click',function(){
+    const table=this.closest('table'), idx=parseInt(this.dataset.col), id=table.id;
+    const prev=sortState[id];
+    const dir=(prev && prev.col===idx && prev.dir==='asc')?'desc':'asc';
+    sortState[id]={col:idx, dir};
+    applySort(table, idx, dir);
+  });
+});
+
+function reapplySorts() {
+  for (const id in sortState) {
+    const t=$(id);
+    if (t) applySort(t, sortState[id].col, sortState[id].dir);
+  }
+}
+
+// ===========================================================================
+// Main render
+// ===========================================================================
+function renderAll() {
+  const filtered=getFiltered();
+  $('rec-count').textContent=RAW.length;
+  $('filtered-count').textContent=filtered.length;
+  const weeks=getDisplayWeeks(filtered);
+  const weekRecs=buildWeekWindows(weeks);
+  renderSummary(filtered);
+  renderTrend(weeks, weekRecs);
+  renderStacked('chart-model',weeks,weekRecs,r=>r.model);
+  renderStacked('chart-user',weeks,weekRecs,r=>r.user,8);
+  renderStacked('chart-tool',weeks,weekRecs,r=>r.tool,8);
+  renderCache(weeks, weekRecs);
+  renderUserRanking(filtered);
+  renderModelRanking(filtered);
+  reapplySorts();
+}
+
+// ===========================================================================
+// Init
+// ===========================================================================
+(function init(){
+  initCosts();
+  if(RAW.length){
+    const dates=RAW.map(r=>r.date).filter(Boolean).sort();
+    const maxDate=dates[dates.length-1];
+    const d=new Date(maxDate+'T12:00:00');
+    d.setDate(d.getDate()-30);
+    $('date-start').value=fmtD(d);
+    $('date-end').value=maxDate;
+  }
+  $('date-start').addEventListener('change',renderAll);
+  $('date-end').addEventListener('change',renderAll);
+  buildPricingTable();
+  renderAll();
+})();
+</script>
+</body>
+</html>

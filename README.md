@@ -20,6 +20,7 @@
 
 - `llm-usage collect`：采集并汇总本地 + 已选远端数据，输出终端表格和 `reports/usage_report.csv`
 - `llm-usage sync`：在 `collect` 基础上，将聚合结果同步到飞书多维表格
+- `llm-usage cost-report`：从飞书多维表格或本地 `usage_report.csv` 拉数据，生成交互式 HTML 成本分析报告（含周度滚动 30 天趋势、可编辑模型定价、按模型/用户/工具的金额与占比切换、用户与模型排名分位数）
 - `llm-usage web`：启动本地 Web 控制台，编辑配置、执行 collect/sync 并浏览最新结果
 - `llm-usage export-bundle`：采集并生成离线 bundle，拷回联网机器后可用 `sync --from-bundle` 上传
 - `llm-usage doctor`：检查配置和各采集器可用性
@@ -300,6 +301,57 @@ llm-usage export-bundle --help
 llm-usage export-bundle
 llm-usage export-bundle --output ~/llm-usage-devbox-a.zip
 llm-usage export-bundle --no-csv
+```
+
+### `llm-usage cost-report`
+
+行为：
+
+- 数据源二选一：
+  - **默认**：从飞书多维表格（按 `--feishu-target` 或默认 target）分页拉取全部 `AggregateRecord` 行
+  - **`--from-csv [PATH]`**：从本地 CSV 读取（默认 `<reports_dir>/usage_report.csv`，即 `collect` 的输出），跳过飞书。两个数据源不可同时使用
+- 内置主流模型（Claude/GPT/Gemini/DeepSeek/GLM/Qwen/MiniMax/Kimi/HORIZON 等）的 $/1M tokens 定价表 + alias 匹配规则
+- 渲染单文件交互式 HTML，写到 `<reports_dir>/cost_report.html`（用 `--output` 自定义）
+- 默认不写 CSV；指定 `--csv` 时额外保存一份原始 Bitable 行（仅在拉飞书时有意义）
+
+HTML 报告自带的交互能力：
+
+- 全局日期范围筛选（默认显示最近 30 天）
+- 可编辑模型定价表（改完所有图表即时重算，不持久化）
+- 周度滚动 30 天的成本趋势 + 按模型/用户/工具堆叠图，每张图可在「$」金额与「%」占比迁移之间切换
+- 缓存命中率与节省金额双轴图
+- 用户与模型排名表，含总消费、月均、占比、P50/P75/P90 日消费分位数
+
+查看帮助：
+
+```bash
+llm-usage cost-report --help
+```
+
+常用参数：
+
+- `--feishu-target NAME`：选择某个命名 target；省略时用默认 target
+- `--from-csv [PATH]`：从本地 CSV 读，跳过飞书。省略 PATH 时用 `<reports_dir>/usage_report.csv`。与 `--feishu-target` 互斥
+- `--output PATH`：HTML 输出路径（默认 `<reports_dir>/cost_report.html`）
+- `--csv PATH`：拉飞书时同时保存原始 Bitable 行到 CSV
+- `--open`：写完后用系统默认浏览器打开报告（远程 SSH 等无 GUI 场景会自动降级为警告）
+
+输出末尾会打印一行 `file://` URL，多数现代终端可以直接 Cmd/Ctrl + 点击打开。
+
+路径校验：`--output`/`--csv` 在拉取数据前会先校验（空字符串、目录、不可写父目录、两者指向同一文件等情况会清晰报错并退出，不会浪费拉取流量）。
+
+示例：
+
+```bash
+# 从飞书拉数据，生成报告
+llm-usage cost-report
+llm-usage cost-report --open
+llm-usage cost-report --feishu-target myself --output ~/Desktop/llm-cost.html
+
+# 仅用本地数据，先 collect 后从 CSV 生成报告（无需飞书凭据/网络）
+llm-usage collect
+llm-usage cost-report --from-csv --open
+llm-usage cost-report --from-csv /path/to/usage_report.csv
 ```
 
 ## 离线 Bundle 工作流
