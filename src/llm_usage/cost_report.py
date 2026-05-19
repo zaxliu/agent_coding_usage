@@ -429,11 +429,20 @@ def _load_template() -> str:
     return resources.files("llm_usage.resources").joinpath("cost_report.html").read_text(encoding="utf-8")
 
 
+def _json_for_script(obj) -> str:
+    """Serialize JSON safe to embed inside an HTML <script> tag.
+
+    Replaces sequences that could prematurely close the script tag or start
+    a new tag (e.g. ``</script>``) with escaped Unicode equivalents.
+    """
+    raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    return raw.replace("</", "<\\/").replace(" ", "\\u2028").replace(" ", "\\u2029")
+
+
 def render_html(records: list[dict], pricing: dict[str, dict[str, float]]) -> str:
     html = _load_template()
-    compact = (",", ":")
-    html = html.replace("%%DATA_JSON%%", json.dumps(records, ensure_ascii=False, separators=compact))
-    html = html.replace("%%PRICING_JSON%%", json.dumps(pricing, ensure_ascii=False, separators=compact))
+    html = html.replace("%%DATA_JSON%%", _json_for_script(records))
+    html = html.replace("%%PRICING_JSON%%", _json_for_script(pricing))
     html = html.replace("%%GENERATED_DATE%%", datetime.now().strftime("%Y-%m-%d %H:%M"))
     return html
 

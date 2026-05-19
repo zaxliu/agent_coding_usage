@@ -143,13 +143,14 @@ const chartMode = {model:'$', user:'$', tool:'$'};
 // ===========================================================================
 function $(id) { return document.getElementById(id); }
 function fmt(n, d=2) { return n.toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d}); }
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function pct(arr, p) {
   if (!arr.length) return 0;
   const s = arr.slice().sort((a,b)=>a-b);
   return s[Math.max(0, Math.ceil(p/100*s.length)-1)];
 }
 function groupBy(arr, fn) {
-  const m = {};
+  const m = Object.create(null);
   arr.forEach(r => { const k = fn(r); (m[k]||(m[k]=[])).push(r); });
   return m;
 }
@@ -173,7 +174,9 @@ function fmtD(dt) {
 // ===========================================================================
 function calcCost(r) {
   const p = pricing[r.model]||{input:0,output:0,cache:0};
-  return (Math.max(0,r.input_tokens-r.cache_tokens)*p.input + r.cache_tokens*p.cache + r.output_tokens*p.output)/1e6;
+  // input_tokens and cache_tokens are mutually exclusive: collectors store the
+  // non-cached portion in input_tokens and cache reads/creates in cache_tokens.
+  return (r.input_tokens*p.input + r.cache_tokens*p.cache + r.output_tokens*p.output) / 1e6;
 }
 
 // All data with costs pre-computed, sorted by date for sliding-window scans
@@ -225,9 +228,10 @@ function buildPricingTable() {
   Object.keys(pricing).sort().forEach(m=>{
     const p=pricing[m];
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td style="font-family:monospace;font-size:0.8rem">${m}</td>`+
+    const me = esc(m);
+    tr.innerHTML=`<td style="font-family:monospace;font-size:0.8rem">${me}</td>`+
       ['input','output','cache'].map(k=>
-        `<td><input type="number" step="0.01" value="${p[k]}" data-model="${m}" data-field="${k}"></td>`).join('');
+        `<td><input type="number" step="0.01" value="${p[k]}" data-model="${me}" data-field="${k}"></td>`).join('');
     tbody.appendChild(tr);
   });
   tbody.querySelectorAll('input').forEach(inp=>{
@@ -294,7 +298,7 @@ function renderStacked(elId, weeks, weekRecs, keyFn, topN=10) {
   // Group each week's records by key once
   const perWeek=weeks.map(w=>groupBy(weekRecs.get(w)||[], keyFn));
   // Find top N keys by total cost across all displayed weeks
-  const keyCosts={};
+  const keyCosts=Object.create(null);
   perWeek.forEach(g=>{
     for (const k in g) keyCosts[k]=(keyCosts[k]||0)+sum(g[k],r=>r.cost);
   });
@@ -384,12 +388,12 @@ function renderRanking(tableId, summaryId, data, keyFn, columns) {
 
 function renderUserRanking(data) {
   renderRanking('user-rank-table','user-rank-summary',data,r=>r.user,
-    (r,i)=>[i+1,`<span style="font-family:monospace;font-size:0.8rem">${r.key}</span>`,
+    (r,i)=>[i+1,`<span style="font-family:monospace;font-size:0.8rem">${esc(r.key)}</span>`,
       fmt(r.total),fmt(r.monthlyAvg),fmt(r.share,1)+'%',fmt(r.p50),fmt(r.p75),fmt(r.p90),r.days]);
 }
 function renderModelRanking(data) {
   renderRanking('model-rank-table','model-rank-summary',data,r=>r.model,
-    (r,i)=>[i+1,`<span style="font-family:monospace;font-size:0.8rem">${r.key}</span>`,
+    (r,i)=>[i+1,`<span style="font-family:monospace;font-size:0.8rem">${esc(r.key)}</span>`,
       fmt(r.total),fmt(r.monthlyAvg),fmt(r.share,1)+'%',fmt(r.p50),fmt(r.p90),fmt(r.tokens/1e6,2)]);
 }
 
