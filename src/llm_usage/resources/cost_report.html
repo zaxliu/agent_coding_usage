@@ -144,6 +144,9 @@ const chartMode = {model:'$', user:'$', tool:'$'};
 function $(id) { return document.getElementById(id); }
 function fmt(n, d=2) { return n.toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d}); }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Plotly parses a subset of HTML tags in trace names. Neutralize angle brackets so
+// untrusted values can't render as <b>, <a href>, or similar markup in the legend.
+function safeName(s) { return String(s).replace(/</g, '‹').replace(/>/g, '›'); }
 function pct(arr, p) {
   if (!arr.length) return 0;
   const s = arr.slice().sort((a,b)=>a-b);
@@ -319,7 +322,7 @@ function renderStacked(elId, weeks, weekRecs, keyFn, topN=10) {
   });
 
   if(mode==='$'){
-    const traces=series.map(({key,yVals})=>({x:weeks,y:yVals,name:key==='_other'?'其他':key,type:'bar'}));
+    const traces=series.map(({key,yVals})=>({x:weeks,y:yVals,name:key==='_other'?'其他':safeName(key),type:'bar'}));
     Plotly.react(elId,traces,baseLayout(),plotCfg);
   } else {
     // Percentage stacked area (migration trend)
@@ -327,7 +330,7 @@ function renderStacked(elId, weeks, weekRecs, keyFn, topN=10) {
     const traces=series.map(({key,yVals})=>({
       x:weeks,
       y:yVals.map((v,i)=>totals[i]?v/totals[i]*100:0),
-      name:key==='_other'?'其他':key, stackgroup:'one',
+      name:key==='_other'?'其他':safeName(key), stackgroup:'one',
     }));
     Plotly.react(elId,traces,baseLayout({yaxis:{title:'占比 %',gridcolor:'#edf2f7',range:[0,100]}}),plotCfg);
   }
