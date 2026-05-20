@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 reports/
+data/
 .worktrees/
 .DS_Store
 dist/

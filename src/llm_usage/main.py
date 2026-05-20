@@ -1075,8 +1075,21 @@ def cmd_collect(args: argparse.Namespace) -> int:
         _print_warnings(warnings)
 
     print_terminal_report(rows, host_labels=host_labels)
-    path = write_csv_report(rows, _reports_dir())
-    print(f"csv: {path}")
+    csv_path = write_csv_report(rows, _reports_dir())
+    print(f"csv: {csv_path}")
+
+    if getattr(args, "cost_report", False) or getattr(args, "open_report", False):
+        from llm_usage.cost_report import cmd_cost_report
+
+        cost_args = argparse.Namespace(
+            from_csv=str(csv_path),
+            output=getattr(args, "cost_report_output", None),
+            csv=None,
+            feishu_target=None,
+            open_report=getattr(args, "open_report", False),
+        )
+        cmd_cost_report(cost_args)
+
     return 0
 
 
@@ -1427,12 +1440,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Collect usage from local and selected remote sources.\n"
             "\n"
             "Terminal output is grouped by date + host + tool + model for easier reading.\n"
-            "The written reports/usage_report.csv keeps the original aggregated rows."
+            "The written reports/usage_report.csv keeps the original aggregated rows.\n"
+            "\n"
+            "With --cost-report (or --open), the collected CSV is fed into the cost analysis\n"
+            "pipeline to produce a single-file interactive HTML report in one step."
         ),
         epilog=(
             "Examples:\n"
             "  llm-usage collect --ui auto\n"
             "  llm-usage collect --ui cli --cursor-login-browser safari\n"
+            "  llm-usage collect --cost-report            # collect + generate HTML cost report\n"
+            "  llm-usage collect --open                   # collect + generate + open in browser\n"
+            "  llm-usage collect --cost-report --cost-report-output ~/report.html\n"
         ),
         formatter_class=_HelpFormatter,
     )
@@ -1496,6 +1515,24 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TOOL",
         help="Skip collecting from the specified tool (can be repeated); choices: " + ", ".join(ALL_TOOL_NAMES),
     )
+    collect_parser.add_argument(
+        "--cost-report",
+        action="store_true",
+        help="After collecting, generate an interactive HTML cost analysis report from the collected CSV",
+    )
+    collect_parser.add_argument(
+        "--cost-report-output",
+        default=None,
+        metavar="PATH",
+        help="Output path for the cost report HTML (default: <reports_dir>/cost_report.html)",
+    )
+    collect_parser.add_argument(
+        "--open",
+        action="store_true",
+        dest="open_report",
+        help="Open the cost report in the default browser (implies --cost-report)",
+    )
+    collect_parser.set_defaults(cost_report=False, open_report=False)
     export_parser = sub.add_parser(
         "export-bundle",
         help="Collect usage and write an offline bundle for later upload",
